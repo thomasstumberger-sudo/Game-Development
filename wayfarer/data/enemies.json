@@ -1,0 +1,10 @@
+{
+  "skeleton": {
+    "name": "Skeleton",
+    "sprite": "enemy_skeleton",
+    "hp": 20,
+    "attack": 4,
+    "defense": 0,
+    "xp_reward": 15
+  }
+}

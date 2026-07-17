@@ -1,0 +1,22 @@
+{
+  "name": "Entry Hall",
+  "layout": [
+    "##########",
+    "#........#",
+    "#........#",
+    "#........#",
+    "#.........",
+    "#........#",
+    "#........#",
+    "##########"
+  ],
+  "exits": [
+    { "id": "to_armory", "x": 9, "y": 4, "target_room": "armory", "target_x": 1, "target_y": 4 }
+  ],
+  "enemies": [
+    { "id": "skel_1", "type": "skeleton", "x": 5, "y": 2 }
+  ],
+  "items": [
+    { "id": "potion_1", "type": "potion", "x": 3, "y": 5 }
+  ]
+}

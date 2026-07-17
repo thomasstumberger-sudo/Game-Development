@@ -1,0 +1,9 @@
+{
+  "potion": {
+    "name": "Health Potion",
+    "sprite": "item_potion",
+    "effect": "heal",
+    "value": 15,
+    "description": "Restores 15 HP."
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "name": "Crypt",
+  "layout": [
+    "##########",
+    "#........#",
+    "#........#",
+    "#........#",
+    ".........#",
+    "#........#",
+    "#........#",
+    "##########"
+  ],
+  "exits": [
+    { "id": "to_armory", "x": 0, "y": 4, "target_room": "armory", "target_x": 8, "target_y": 4 }
+  ],
+  "enemies": [
+    { "id": "skel_4", "type": "skeleton", "x": 6, "y": 3 },
+    { "id": "skel_5", "type": "skeleton", "x": 6, "y": 5 }
+  ],
+  "items": [
+    { "id": "potion_3", "type": "potion", "x": 8, "y": 2 }
+  ]
+}

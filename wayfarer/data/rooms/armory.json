@@ -1,0 +1,24 @@
+{
+  "name": "Armory",
+  "layout": [
+    "##########",
+    "#........#",
+    "#........#",
+    "#........#",
+    "..........",
+    "#........#",
+    "#........#",
+    "##########"
+  ],
+  "exits": [
+    { "id": "to_start_hall", "x": 0, "y": 4, "target_room": "start_hall", "target_x": 8, "target_y": 4 },
+    { "id": "to_crypt", "x": 9, "y": 4, "target_room": "crypt", "target_x": 1, "target_y": 4 }
+  ],
+  "enemies": [
+    { "id": "skel_2", "type": "skeleton", "x": 5, "y": 2 },
+    { "id": "skel_3", "type": "skeleton", "x": 5, "y": 6 }
+  ],
+  "items": [
+    { "id": "potion_2", "type": "potion", "x": 2, "y": 2 }
+  ]
+}
