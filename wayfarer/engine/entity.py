@@ -2,9 +2,17 @@
 decide what movement/attack results mean. No per-frame allocation here --
 draw() only blits already-cached surfaces from AssetManager.
 
-Future work (out of scope for this pass): enemy AI/pathing, ranged
-attacks, controller input.
+Enemies act once per player action rather than on a timer (see
+Enemy.take_turn and main.py's Game._run_enemy_turns) -- movement in this
+game is already discrete/grid-stepped and driven entirely by KEYDOWN
+events, so a classic "you move, then they move" turn model costs nothing
+extra at idle: there's simply no enemy computation between player inputs.
+
+Future work (out of scope for this pass): ranged attacks, controller
+input.
 """
+
+import random
 
 import pygame
 
@@ -33,10 +41,49 @@ class Enemy(Entity):
         self.attack = stats["attack"]
         self.defense = stats["defense"]
         self.xp_reward = stats["xp_reward"]
+        self.aggro_range = stats.get("aggro_range", 4)
+        self.wander_chance = stats.get("wander_chance", 0.15)
 
     @property
     def alive(self):
         return self.hp > 0
+
+    def take_turn(self, player, room, occupied_positions):
+        """One step of simple chase-or-wander AI. Mutates self.x/y directly
+        on a successful move. occupied_positions is the set of tiles held
+        by other living enemies (collision, not the player)."""
+        if not self.alive:
+            return {"type": "idle"}
+
+        dist = max(abs(player.x - self.x), abs(player.y - self.y))
+        if dist <= self.aggro_range:
+            dx = (player.x > self.x) - (player.x < self.x)
+            dy = (player.y > self.y) - (player.y < self.y)
+            steps = []
+            if dx != 0:
+                steps.append((dx, 0))
+            if dy != 0:
+                steps.append((0, dy))
+            if abs(player.y - self.y) > abs(player.x - self.x):
+                steps.reverse()
+
+            for step_dx, step_dy in steps:
+                nx, ny = self.x + step_dx, self.y + step_dy
+                if (nx, ny) == (player.x, player.y):
+                    return {"type": "attack"}
+                if room.is_walkable(nx, ny) and (nx, ny) not in occupied_positions:
+                    self.x, self.y = nx, ny
+                    return {"type": "moved"}
+            return {"type": "idle"}
+
+        if random.random() < self.wander_chance:
+            step_dx, step_dy = random.choice([(1, 0), (-1, 0), (0, 1), (0, -1)])
+            nx, ny = self.x + step_dx, self.y + step_dy
+            if room.is_walkable(nx, ny) and (nx, ny) not in occupied_positions:
+                self.x, self.y = nx, ny
+                return {"type": "moved"}
+
+        return {"type": "idle"}
 
 
 class ItemPickup(Entity):

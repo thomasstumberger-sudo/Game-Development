@@ -5,5 +5,12 @@
     "effect": "heal",
     "value": 15,
     "description": "Restores 15 HP."
+  },
+  "whetstone": {
+    "name": "Whetstone",
+    "sprite": "item_whetstone",
+    "effect": "buff_attack",
+    "value": 2,
+    "description": "Permanently sharpens your weapon. +2 Attack."
   }
 }

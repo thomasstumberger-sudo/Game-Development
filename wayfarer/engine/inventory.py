@@ -36,6 +36,10 @@ class Inventory:
             healed = min(item_def.get("value", 0), player.max_hp - player.hp)
             player.hp += healed
             message = f"Used {name}. Restored {healed} HP."
+        elif effect == "buff_attack":
+            bonus = item_def.get("value", 0)
+            player.attack += bonus
+            message = f"Used {name}. Attack +{bonus} permanently."
         else:
             message = f"{name} has no effect."
 

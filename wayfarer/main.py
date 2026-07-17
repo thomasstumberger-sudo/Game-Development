@@ -8,8 +8,8 @@ The single most important property of this loop: it is CPU-cheap at idle.
   except while the F3 debug overlay is on, where a live reading is the
   whole point of the feature.
 
-Future work (explicitly out of scope for this pass): procedural rooms,
-networking, controller support, scrolling maps.
+Future work (explicitly out of scope for this pass): networking, controller
+support, scrolling maps.
 """
 
 import os
@@ -23,12 +23,16 @@ sys.path.append(os.path.abspath(os.path.dirname(__file__)))
 from engine.assets import AssetManager, BASE_DIR
 from engine.room import Room
 from engine.entity import Player, Enemy, ItemPickup
-from engine.combat import resolve_bump_attack
+from engine.combat import resolve_bump_attack, enemy_attack
 from engine.inventory import Inventory
 from engine.save import SaveManager
 
-WINDOW_W, WINDOW_H = 640, 480
-TILE_SIZE = 48
+# Source tiles are native 64x64 -- TILE_SIZE must match or sprites overlap
+# their neighbors instead of tiling cleanly. 800x600 is the other
+# spec-allowed window size and is what actually fits a 10x8 room at 64px/tile
+# plus HUD margins.
+WINDOW_W, WINDOW_H = 800, 600
+TILE_SIZE = 64
 ROOM_PIXEL_W, ROOM_PIXEL_H = 10 * TILE_SIZE, 8 * TILE_SIZE
 ROOM_ORIGIN = ((WINDOW_W - ROOM_PIXEL_W) // 2, 40)
 
@@ -63,6 +67,7 @@ class Game:
 
         self.player = Player(state["pos"][0], state["pos"][1], state["player"])
         self.inventory = Inventory(self.item_defs, state["inventory"])
+        self.seed = state["seed"]
 
         self.current_room_id = None
         self.room = None
@@ -83,6 +88,7 @@ class Game:
         AssetManager.load_sprite("floor", "assets/sprites/dungeon_tileset_1/tile_0_2.png")
         AssetManager.load_sprite("exit", "assets/sprites/dungeon_tileset_1/tile_12_6.png")
         AssetManager.load_sprite("item_potion", "assets/sprites/dungeon_tileset_1/tile_0_11.png")
+        AssetManager.load_sprite("item_whetstone", "assets/sprites/dungeon_tileset_1/tile_15_9.png")
         AssetManager.load_sprite("enemy_skeleton", "assets/sprites/dungeon_tileset_1/tile_0_7.png")
         # No humanoid tile exists in the source tileset -- draw the player
         # once and cache it, same as any other sprite.
@@ -120,7 +126,7 @@ class Game:
         """Full autosave: current room flags + player + inventory.
         Called on room transition and on quit -- never per-frame."""
         self.save.set_room_flags(self.current_room_id, self.dead_enemy_ids, self.taken_item_ids)
-        self.save.save_game(self.player, self.inventory, self.current_room_id)
+        self.save.save_game(self.player, self.inventory, self.current_room_id, self.seed)
 
     # -- input handlers ------------------------------------------------
 
@@ -130,34 +136,68 @@ class Game:
         result = self.player.try_move(dx, dy, self.room, self.enemies, self.items)
         self.dirty = True
         kind = result["type"]
+        messages = []
 
         if kind == "attack":
             enemy = result["enemy"]
-            log = resolve_bump_attack(self.player, enemy)
-            self.message_log = log[-3:]
+            messages += resolve_bump_attack(self.player, enemy)
             if not enemy.alive:
                 self.dead_enemy_ids.add(enemy.id)
                 self.enemies = [e for e in self.enemies if e.alive]
-            if self.player.hp <= 0:
-                self._handle_death()
 
         elif kind == "pickup":
             item = result["item"]
             if self.inventory.add_item(item.type):
                 self.taken_item_ids.add(item.id)
                 self.items = [i for i in self.items if i.id != item.id]
-                self.message_log = [f"Picked up {item.name}."]
+                messages.append(f"Picked up {item.name}.")
             else:
-                self.message_log = ["Inventory full."]
+                messages.append("Inventory full.")
 
         elif kind == "exit":
             exit_data = result["exit"]
+            target_room = exit_data["target_room"]
+            if target_room == "proc:ENTRY":
+                target_room = f"proc:{self.seed}:0:0"
+            # Flush the room we're leaving *before* load_room overwrites
+            # dead_enemy_ids/taken_item_ids with the destination's flags.
+            self.save.set_room_flags(self.current_room_id, self.dead_enemy_ids, self.taken_item_ids)
+            self.load_room(target_room, exit_data["target_x"], exit_data["target_y"])
+            # Autosave now, with current_room_id/player pos already pointing
+            # at the room we just entered -- reload should resume *there*,
+            # not at the previous room's doorway.
             self.persist()
-            self.load_room(exit_data["target_room"], exit_data["target_x"], exit_data["target_y"])
+            return  # entering a room is its own turn; enemies there haven't seen us yet
 
-        # "blocked" and "moved" need no further handling beyond the redraw.
+        # "blocked" and "moved" fall through with no extra messages, but
+        # still consume a turn -- monsters get to act on every player input.
+        self._take_turn(messages)
 
-    def _handle_death(self):
+    def _take_turn(self, messages):
+        """Common tail end of any player action that doesn't change rooms:
+        run enemy AI, then either apply the result or handle player death."""
+        if self.player.hp > 0:
+            messages += self._run_enemy_turns()
+
+        if self.player.hp <= 0:
+            self._handle_death(messages)
+        elif messages:
+            self.message_log = messages[-3:]
+
+    def _run_enemy_turns(self):
+        messages = []
+        for enemy in list(self.enemies):
+            if not enemy.alive:
+                continue
+            occupied = {(e.x, e.y) for e in self.enemies if e is not enemy and e.alive}
+            action = enemy.take_turn(self.player, self.room, occupied)
+            if action["type"] == "attack":
+                messages += enemy_attack(enemy, self.player)
+                if self.player.hp <= 0:
+                    break
+        return messages
+
+    def _handle_death(self, prior_messages=None):
         saved = self.save.load_game()
         if saved is None:
             target_room, (target_x, target_y) = self.current_room_id, (self.player.x, self.player.y)
@@ -165,7 +205,8 @@ class Game:
             target_room, (target_x, target_y) = saved["current_room"], saved["pos"]
         self.player.hp = self.player.max_hp
         self.load_room(target_room, target_x, target_y)
-        self.message_log = ["You have fallen. Reviving at your last save..."]
+        death_msg = "You have fallen. Reviving at your last save..."
+        self.message_log = ((prior_messages or []) + [death_msg])[-3:]
 
     def toggle_inventory(self):
         self.inventory_open = not self.inventory_open
@@ -179,16 +220,39 @@ class Game:
         self.inventory_cursor = (self.inventory_cursor + delta) % len(items)
         self.dirty = True
 
-    def use_selected_item(self):
+    def _use_item_at_index(self, index):
         items = self.inventory.as_list()
-        if not items:
-            return
-        item_type, _count, _def = items[self.inventory_cursor]
+        if index >= len(items):
+            return None
+        item_type, _count, _def = items[index]
         _success, message = self.inventory.use_item(item_type, self.player)
+        return message
+
+    def use_selected_item(self):
+        message = self._use_item_at_index(self.inventory_cursor)
+        if message is None:
+            return
         self.message_log = [message]
         remaining = self.inventory.as_list()
         self.inventory_cursor = min(self.inventory_cursor, max(0, len(remaining) - 1))
         self.dirty = True
+
+    def select_inventory_slot(self, index):
+        if index < len(self.inventory.as_list()):
+            self.inventory_cursor = index
+            self.dirty = True
+
+    def quick_use_item(self, index):
+        """Field hotkey (1-8): use an item without opening the inventory
+        screen. Consumes a turn just like a move, so drinking a potion
+        mid-fight still gives the enemy a chance to act."""
+        if self.player.hp <= 0 or self.inventory_open:
+            return
+        message = self._use_item_at_index(index)
+        if message is None:
+            return
+        self.dirty = True
+        self._take_turn([message])
 
     # -- rendering -----------------------------------------------------
 
@@ -274,7 +338,7 @@ class Game:
             label = f"{prefix}{item_def.get('name', item_type)} x{count}"
             panel.blit(font.render(label, True, COLOR_TEXT), (10, 36 + i * 20))
 
-        hint = font.render("Up/Down select, U use, I/Esc close", True, (160, 160, 160))
+        hint = font.render("Up/Down or 1-8 select, U use, I/Esc close", True, (160, 160, 160))
         panel.blit(hint, (10, panel_h - 24))
 
         self.screen.blit(panel, ((WINDOW_W - panel_w) // 2, (WINDOW_H - panel_h) // 2))
@@ -298,7 +362,7 @@ def main():
     fps_target = ACTIVE_FPS
     debug_overlay = False
 
-    print("Wayfarer running. Arrows/WASD move, I inventory, F3 debug, ESC quit.")
+    print("Wayfarer running. Arrows/WASD move, 1-8 quick-use item, I inventory, F3 debug, ESC quit.")
 
     while running:
         for event in pygame.event.get():
@@ -333,6 +397,8 @@ def main():
                         game.inventory_move_cursor(1)
                     elif event.key in (pygame.K_u, pygame.K_RETURN):
                         game.use_selected_item()
+                    elif pygame.K_1 <= event.key <= pygame.K_8:
+                        game.select_inventory_slot(event.key - pygame.K_1)
                 else:
                     if event.key in (pygame.K_LEFT, pygame.K_a):
                         game.handle_move(-1, 0)
@@ -342,6 +408,8 @@ def main():
                         game.handle_move(0, -1)
                     elif event.key in (pygame.K_DOWN, pygame.K_s):
                         game.handle_move(0, 1)
+                    elif pygame.K_1 <= event.key <= pygame.K_8:
+                        game.quick_use_item(event.key - pygame.K_1)
 
         # The debug overlay redraws continuously so its FPS reading is live;
         # otherwise we only ever redraw on an actual state change.

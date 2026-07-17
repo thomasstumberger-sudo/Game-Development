@@ -3,6 +3,7 @@ reused; writes only happen on room transitions and on quit -- never inside
 the per-frame render/update path (see main.py's Game.transition_to_room and
 the QUIT handler)."""
 
+import random
 import sqlite3
 
 DEFAULT_ROOM = "start_hall"
@@ -22,7 +23,8 @@ class SaveManager:
                 stamina INTEGER, max_stamina INTEGER,
                 xp INTEGER, level INTEGER,
                 attack INTEGER, defense INTEGER,
-                current_room TEXT, pos_x INTEGER, pos_y INTEGER
+                current_room TEXT, pos_x INTEGER, pos_y INTEGER,
+                dungeon_seed INTEGER
             )"""
         )
         self.conn.execute(
@@ -46,7 +48,7 @@ class SaveManager:
     def load_game(self):
         cur = self.conn.execute(
             """SELECT hp, max_hp, stamina, max_stamina, xp, level,
-                      attack, defense, current_room, pos_x, pos_y
+                      attack, defense, current_room, pos_x, pos_y, dungeon_seed
                FROM player WHERE id = 1"""
         )
         row = cur.fetchone()
@@ -61,6 +63,7 @@ class SaveManager:
         }
         current_room = row[8]
         pos = (row[9], row[10])
+        seed = row[11]
 
         inv_rows = self.conn.execute("SELECT item_type, count FROM inventory")
         inventory = {item_type: count for item_type, count in inv_rows}
@@ -70,6 +73,7 @@ class SaveManager:
             "inventory": inventory,
             "current_room": current_room,
             "pos": pos,
+            "seed": seed,
         }
 
     def new_game_defaults(self):
@@ -78,25 +82,27 @@ class SaveManager:
             "inventory": {},
             "current_room": DEFAULT_ROOM,
             "pos": DEFAULT_SPAWN,
+            "seed": random.randint(0, 2**31 - 1),
         }
 
-    def save_game(self, player, inventory, current_room_id):
+    def save_game(self, player, inventory, current_room_id, seed):
         self.conn.execute(
             """INSERT INTO player (id, hp, max_hp, stamina, max_stamina, xp,
                                     level, attack, defense, current_room,
-                                    pos_x, pos_y)
-               VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                    pos_x, pos_y, dungeon_seed)
+               VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(id) DO UPDATE SET
                  hp=excluded.hp, max_hp=excluded.max_hp,
                  stamina=excluded.stamina, max_stamina=excluded.max_stamina,
                  xp=excluded.xp, level=excluded.level,
                  attack=excluded.attack, defense=excluded.defense,
                  current_room=excluded.current_room,
-                 pos_x=excluded.pos_x, pos_y=excluded.pos_y""",
+                 pos_x=excluded.pos_x, pos_y=excluded.pos_y,
+                 dungeon_seed=excluded.dungeon_seed""",
             (
                 player.hp, player.max_hp, player.stamina, player.max_stamina,
                 player.xp, player.level, player.attack, player.defense,
-                current_room_id, player.x, player.y,
+                current_room_id, player.x, player.y, seed,
             ),
         )
         self.conn.execute("DELETE FROM inventory")

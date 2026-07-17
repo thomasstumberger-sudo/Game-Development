@@ -5,6 +5,8 @@
     "hp": 20,
     "attack": 4,
     "defense": 0,
-    "xp_reward": 15
+    "xp_reward": 15,
+    "aggro_range": 4,
+    "wander_chance": 0.15
   }
 }

@@ -78,9 +78,19 @@ class Room:
     def load(cls, room_id):
         if room_id in _ROOM_CACHE:
             return _ROOM_CACHE[room_id]
-        path = os.path.join(ROOMS_DIR, f"{room_id}.json")
-        with open(path, "r") as f:
-            data = json.load(f)
+
+        if room_id.startswith("proc:"):
+            # "proc:<seed>:<gx>:<gy>" -- procedurally generated, never read
+            # from disk. The seed is embedded in the id itself, so this is
+            # still a pure function of room_id and safe to cache forever.
+            from engine.procgen import generate_room
+            _, seed_str, gx_str, gy_str = room_id.split(":")
+            data = generate_room(int(seed_str), int(gx_str), int(gy_str))
+        else:
+            path = os.path.join(ROOMS_DIR, f"{room_id}.json")
+            with open(path, "r") as f:
+                data = json.load(f)
+
         room = cls(room_id, data)
         _ROOM_CACHE[room_id] = room
         return room

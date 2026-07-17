@@ -34,6 +34,20 @@ def resolve_bump_attack(player, enemy):
     return log
 
 
+def enemy_attack(enemy, player):
+    """A single enemy-initiated hit (no counter -- it's the enemy's turn)."""
+    dmg = max(1, enemy.attack - player.defense)
+    player.hp -= dmg
+    log = [f"{enemy.name} hits you for {dmg}."]
+    AssetManager.play_sfx("hit")
+
+    if player.hp <= 0:
+        player.hp = 0
+        log.append("You have fallen...")
+
+    return log
+
+
 def _grant_xp(player, amount, log):
     player.xp += amount
     threshold = player.level * XP_PER_LEVEL
