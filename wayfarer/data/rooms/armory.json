@@ -1,24 +1,47 @@
 {
   "name": "Armory",
   "layout": [
-    "##########",
-    "#........#",
-    "#........#",
-    "#........#",
-    "..........",
-    "#........#",
-    "#........#",
-    "##########"
+    "##############",
+    "#............#",
+    "#............#",
+    "#............#",
+    "#............#",
+    "#............#",
+    "#............#",
+    "#............#",
+    "#............#",
+    "#######.######"
   ],
   "exits": [
-    { "id": "to_start_hall", "x": 0, "y": 4, "target_room": "start_hall", "target_x": 8, "target_y": 4 },
-    { "id": "to_crypt", "x": 9, "y": 4, "target_room": "crypt", "target_x": 1, "target_y": 4 }
-  ],
-  "enemies": [
-    { "id": "skel_2", "type": "skeleton", "x": 5, "y": 2 },
-    { "id": "skel_3", "type": "skeleton", "x": 5, "y": 6 }
+    {
+      "id": "to_town_hub",
+      "x": 7,
+      "y": 9,
+      "target_room": "town_hub",
+      "target_x": 10,
+      "target_y": 9
+    }
   ],
   "items": [
-    { "id": "potion_2", "type": "potion", "x": 2, "y": 2 }
+    {
+      "id": "potion_2",
+      "type": "potion",
+      "x": 11,
+      "y": 6
+    },
+    {
+      "id": "mana_potion_0",
+      "type": "mana_potion_minor",
+      "x": 3,
+      "y": 6
+    }
+  ],
+  "npcs": [
+    {
+      "id": "merchant",
+      "type": "merchant",
+      "x": 7,
+      "y": 3
+    }
   ]
 }

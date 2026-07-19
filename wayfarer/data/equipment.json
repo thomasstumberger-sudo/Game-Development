@@ -1,0 +1,137 @@
+{
+  "shortsword": {
+    "name": "Shortsword",
+    "slot": "weapon",
+    "tier": 1,
+    "attack": 2,
+    "value": 20,
+    "sprite": "eq_weapon_basic",
+    "description": "A simple blade. +2 Attack."
+  },
+  "longsword": {
+    "name": "Longsword",
+    "slot": "weapon",
+    "tier": 2,
+    "attack": 4,
+    "value": 55,
+    "sprite": "eq_weapon",
+    "description": "A well-balanced longsword. +4 Attack."
+  },
+  "greatsword": {
+    "name": "Greatsword",
+    "slot": "weapon",
+    "tier": 3,
+    "attack": 7,
+    "value": 140,
+    "sprite": "eq_weapon_masterwork",
+    "description": "A masterfully forged greatsword. +7 Attack."
+  },
+  "buckler": {
+    "name": "Buckler",
+    "slot": "shield",
+    "tier": 1,
+    "defense": 1,
+    "value": 15,
+    "sprite": "eq_shield_basic",
+    "description": "A small wooden shield. +1 Defense."
+  },
+  "kite_shield": {
+    "name": "Kite Shield",
+    "slot": "shield",
+    "tier": 2,
+    "defense": 2,
+    "value": 40,
+    "sprite": "eq_shield",
+    "description": "A sturdy kite shield. +2 Defense."
+  },
+  "tower_shield": {
+    "name": "Tower Shield",
+    "slot": "shield",
+    "tier": 3,
+    "defense": 4,
+    "value": 100,
+    "sprite": "eq_shield_masterwork",
+    "description": "A massive tower shield. +4 Defense."
+  },
+  "leather_cap": {
+    "name": "Leather Cap",
+    "slot": "helmet",
+    "tier": 1,
+    "defense": 1,
+    "value": 12,
+    "sprite": "eq_helmet_basic",
+    "description": "Boiled leather headgear. +1 Defense."
+  },
+  "iron_helm": {
+    "name": "Iron Helm",
+    "slot": "helmet",
+    "tier": 2,
+    "defense": 2,
+    "value": 32,
+    "sprite": "eq_helmet",
+    "description": "A solid iron helm. +2 Defense."
+  },
+  "great_helm": {
+    "name": "Great Helm",
+    "slot": "helmet",
+    "tier": 3,
+    "defense": 3,
+    "value": 80,
+    "sprite": "eq_helmet_masterwork",
+    "description": "A masterwork great helm. +3 Defense."
+  },
+  "leather_armor": {
+    "name": "Leather Armor",
+    "slot": "armor",
+    "tier": 1,
+    "defense": 2,
+    "value": 25,
+    "sprite": "eq_armor_basic",
+    "description": "Simple hardened leather. +2 Defense."
+  },
+  "chainmail": {
+    "name": "Chainmail",
+    "slot": "armor",
+    "tier": 2,
+    "defense": 4,
+    "value": 65,
+    "sprite": "eq_armor",
+    "description": "Interlocking steel rings. +4 Defense."
+  },
+  "plate_armor": {
+    "name": "Plate Armor",
+    "slot": "armor",
+    "tier": 3,
+    "defense": 7,
+    "value": 150,
+    "sprite": "eq_armor_masterwork",
+    "description": "Full plate, masterfully fitted. +7 Defense."
+  },
+  "worn_boots": {
+    "name": "Worn Boots",
+    "slot": "boots",
+    "tier": 1,
+    "defense": 1,
+    "value": 10,
+    "sprite": "eq_boots_basic",
+    "description": "Scuffed old boots. +1 Defense."
+  },
+  "leather_boots": {
+    "name": "Leather Boots",
+    "slot": "boots",
+    "tier": 2,
+    "defense": 2,
+    "value": 28,
+    "sprite": "eq_boots",
+    "description": "Supple leather boots. +2 Defense."
+  },
+  "steel_greaves": {
+    "name": "Steel Greaves",
+    "slot": "boots",
+    "tier": 3,
+    "defense": 3,
+    "value": 70,
+    "sprite": "eq_boots_masterwork",
+    "description": "Reinforced steel greaves. +3 Defense."
+  }
+}

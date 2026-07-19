@@ -1,0 +1,75 @@
+[
+  {
+    "id": "spark",
+    "name": "Spark",
+    "description": "A crackling bolt of arcane energy strikes the nearest foe ahead of you.",
+    "category": "attack",
+    "unlock_level": 1,
+    "mana_cost": 3,
+    "effect": "bolt",
+    "value": 5,
+    "range": 5
+  },
+  {
+    "id": "minor_heal",
+    "name": "Minor Heal",
+    "description": "Mend your wounds with a whispered word.",
+    "category": "healing",
+    "unlock_level": 2,
+    "mana_cost": 4,
+    "effect": "heal",
+    "value": 12
+  },
+  {
+    "id": "stone_skin",
+    "name": "Stone Skin",
+    "description": "Your skin hardens like granite for a short while. +4 Defense for 12 turns.",
+    "category": "defense",
+    "unlock_level": 3,
+    "mana_cost": 5,
+    "effect": "buff_defense",
+    "value": 4,
+    "duration": 12
+  },
+  {
+    "id": "firebolt",
+    "name": "Firebolt",
+    "description": "A roaring gout of flame lances out ahead of you.",
+    "category": "attack",
+    "unlock_level": 4,
+    "mana_cost": 7,
+    "effect": "bolt",
+    "value": 12,
+    "range": 6
+  },
+  {
+    "id": "blink",
+    "name": "Blink",
+    "description": "Fold space and step through the wind itself.",
+    "category": "movement",
+    "unlock_level": 5,
+    "mana_cost": 6,
+    "effect": "blink",
+    "range": 4
+  },
+  {
+    "id": "detect_monsters",
+    "name": "Detect Monsters",
+    "description": "Sense every living foe in this chamber, even those hidden in shadow.",
+    "category": "divination",
+    "unlock_level": 6,
+    "mana_cost": 5,
+    "effect": "detect_monsters",
+    "duration": 40
+  },
+  {
+    "id": "detect_treasure",
+    "name": "Detect Treasure",
+    "description": "Sense loose valuables and sealed chests hidden in shadow.",
+    "category": "divination",
+    "unlock_level": 7,
+    "mana_cost": 5,
+    "effect": "detect_treasure",
+    "duration": 40
+  }
+]

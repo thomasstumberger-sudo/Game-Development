@@ -1,0 +1,17 @@
+{
+  "quartermaster": {
+    "name": "Quartermaster",
+    "sprite": "npc_quartermaster",
+    "greeting": "The Depths need thinning, adventurer. Bring me proof of your kills."
+  },
+  "merchant": {
+    "name": "Merchant",
+    "sprite": "npc_merchant",
+    "greeting": "Coin for gear, adventurer? Have a look at my wares."
+  },
+  "healer": {
+    "name": "Healer",
+    "sprite": "npc_healer",
+    "greeting": "You look worn thin. Rest here a while, for a little coin."
+  }
+}

@@ -15,6 +15,7 @@ support, scrolling maps.
 import os
 import sys
 import json
+import math
 
 import pygame
 
@@ -22,35 +23,70 @@ sys.path.append(os.path.abspath(os.path.dirname(__file__)))
 
 from engine.assets import AssetManager, BASE_DIR
 from engine.room import Room
-from engine.entity import Player, Enemy, ItemPickup
-from engine.combat import resolve_bump_attack, enemy_attack
+from engine.entity import Player, Enemy, ItemPickup, EquipmentDrop, NPC
+from engine.combat import resolve_bump_attack, resolve_spell_hit, enemy_attack, grant_xp
 from engine.inventory import Inventory
 from engine.save import SaveManager
+from engine.procgen import generate_room, scale_stats_for_level, room_doors
+from engine.equipment import (
+    SLOTS, equip as equip_item, next_offer, create_instance,
+    create_shop_instance, bag_instances, display_name as equip_display_name,
+    remove_curse as remove_curse_item,
+)
+from engine.spells import newly_learned
 
-# Source tiles are native 64x64 -- TILE_SIZE must match or sprites overlap
-# their neighbors instead of tiling cleanly. 800x600 is the other
-# spec-allowed window size and is what actually fits a 10x8 room at 64px/tile
-# plus HUD margins.
+# Session 9: switched from the original 64x64 placeholder/tileset art to a
+# native-16px icon/character/dungeon set (see PROGRESS.MD). TILE_SIZE must
+# match the source art's native size or sprites overlap their neighbors
+# instead of tiling cleanly -- same rule as before, just a smaller number.
+# Rooms grew from 10x8 to ROOM_TILES_W x ROOM_TILES_H (40x32, exactly 4x
+# each dimension) so the *pixel* footprint of a room is unchanged
+# (40*16=640, 32*16=512, identical to 10*64/8*64) -- more tiles visible on
+# screen at the same window size and CPU/render cost, not a bigger window.
 WINDOW_W, WINDOW_H = 800, 600
-TILE_SIZE = 64
-ROOM_PIXEL_W, ROOM_PIXEL_H = 10 * TILE_SIZE, 8 * TILE_SIZE
-ROOM_ORIGIN = ((WINDOW_W - ROOM_PIXEL_W) // 2, 40)
+TILE_SIZE = 16
+ROOM_TILES_W, ROOM_TILES_H = 40, 32
+ROOM_PIXEL_W, ROOM_PIXEL_H = ROOM_TILES_W * TILE_SIZE, ROOM_TILES_H * TILE_SIZE
+ROOM_ORIGIN = ((WINDOW_W - ROOM_PIXEL_W) // 2, 56)
 
 ACTIVE_FPS = 30
 IDLE_FPS = 5
+
+# Physical key -> single-step direction, shared by the initial KEYDOWN move
+# and by held-key repeat (session 13) so both agree on what counts as a
+# "movement key" without duplicating the mapping.
+MOVE_KEYS = {
+    pygame.K_LEFT: (-1, 0), pygame.K_a: (-1, 0),
+    pygame.K_RIGHT: (1, 0), pygame.K_d: (1, 0),
+    pygame.K_UP: (0, -1), pygame.K_w: (0, -1),
+    pygame.K_DOWN: (0, 1), pygame.K_s: (0, 1),
+}
+# Session 13: holding a direction (keyboard) or the left mouse button
+# (click-to-walk) keeps moving one tile at a time rather than needing a
+# fresh tap/click per step -- DELAY is how long a key/button must be held
+# before repeat kicks in (matches the first move that already happened on
+# press/click), INTERVAL is the pace of each repeat step after that.
+MOVE_REPEAT_DELAY_MS = 220
+MOVE_REPEAT_INTERVAL_MS = 120
+
+# Player actions (not wall-clock time -- this stays free at idle, matching
+# the turn model) before a fully-cleared Depths room repopulates.
+RESPAWN_THRESHOLD = 150
 
 SAVE_PATH = os.path.join(BASE_DIR, "save.db")
 
 COLOR_BG = (10, 10, 14)
 COLOR_HP = (200, 40, 40)
 COLOR_HP_BG = (50, 15, 15)
+COLOR_MP = (60, 110, 220)
+COLOR_MP_BG = (15, 20, 50)
 COLOR_TEXT = (230, 230, 230)
 COLOR_DEBUG = (0, 255, 0)
 COLOR_PANEL_BG = (20, 20, 28, 235)
 
 
 class Game:
-    def __init__(self, screen):
+    def __init__(self, screen, new_game=False):
         self.screen = screen
         self.room_surface = screen.subsurface(
             pygame.Rect(*ROOM_ORIGIN, ROOM_PIXEL_W, ROOM_PIXEL_H)
@@ -59,81 +95,424 @@ class Game:
         self._load_assets()
         with open(os.path.join(BASE_DIR, "data", "items.json")) as f:
             self.item_defs = json.load(f)
+        with open(os.path.join(BASE_DIR, "data", "equipment.json")) as f:
+            self.equipment_defs = json.load(f)
         with open(os.path.join(BASE_DIR, "data", "enemies.json")) as f:
             self.enemy_defs = json.load(f)
+        with open(os.path.join(BASE_DIR, "data", "npcs.json")) as f:
+            self.npc_defs = json.load(f)
+        with open(os.path.join(BASE_DIR, "data", "quests.json")) as f:
+            self.quests = json.load(f)
+        with open(os.path.join(BASE_DIR, "data", "spells.json")) as f:
+            self.spell_defs = json.load(f)  # ordered list -- unlock order matters, see engine/spells.py
 
         self.save = SaveManager(SAVE_PATH)
+        if new_game:
+            self.save.reset()
         state = self.save.load_game() or self.save.new_game_defaults()
 
-        self.player = Player(state["pos"][0], state["pos"][1], state["player"])
+        self.player = Player(
+            state["pos"][0], state["pos"][1], state["player"],
+            state.get("equipment"), state.get("equipment_instances"),
+        )
         self.inventory = Inventory(self.item_defs, state["inventory"])
         self.seed = state["seed"]
+        self.turn_count = state["turn_count"]
+        self.depths_kills = state["depths_kills"]
+        self.quest_index = state["quest_index"]
+        self.known_spells = set(state.get("known_spells", set()))
+        # Catches up a returning save to any spell it already qualifies for
+        # (e.g. this session's new content, or simply level 1's starting
+        # spell on a brand new character) -- silent, no message spam on boot.
+        self._learn_new_spells(None)
 
         self.current_room_id = None
         self.room = None
         self.enemies = []
         self.items = []
+        self.npcs = []
         self.dead_enemy_ids = set()
         self.taken_item_ids = set()
+        # Session 10: interactive dungeon fixtures for the current room.
+        # locked_doors/gates hold only the currently-CLOSED ones (mirrors
+        # how self.enemies/self.items already only hold live/untaken ones);
+        # chests/switches always hold ALL of them since they stay visible
+        # (just change sprite) once resolved rather than disappearing.
+        self.locked_doors = []
+        self.gates = []
+        self.switches = []
+        self.chests = []
+        self.unlocked_door_ids = set()
+        self.open_gate_ids = set()
+        self.opened_chest_ids = set()
+        # Room-based fog of war (session 10): region ids the player has
+        # physically stood in, for the *current* room. Persisted via
+        # room_flags like everything else above -- see load_room/persist.
+        self.revealed_regions = set()
+        # Divination (session 15): turns remaining that enemies/items+chests
+        # bypass the fog check below and render regardless of
+        # revealed_regions. Deliberately NOT persisted through save/reload
+        # (unlike Stone Skin's buff_defense_turns) -- it's a purely visual
+        # effect, so losing it on a save/quit is low-stakes and this avoids
+        # a schema migration for it.
+        self.detect_monsters_turns = 0
+        self.detect_treasure_turns = 0
+        # Depths-only: per-room repopulation state, keyed by room_id.
+        # Lazily loaded from save.room_meta via _room_meta(), flushed back
+        # in persist() -- same on-transition-only write discipline as
+        # room_flags.
+        self.room_epoch = {}
+        self.room_cleared_turn = {}
+        self.current_room_enemy_ids = set()
+        # Depths automap (session 8): (gx, gy) sets of visited rooms, keyed
+        # by dungeon level. Lazily loaded from save.discovered_rooms per
+        # level (mirrors self.room_epoch's lazy-load pattern above), written
+        # through immediately on first visit -- see load_room().
+        self.discovered = {}
 
         self.message_log = []
         self.inventory_open = False
         self.inventory_cursor = 0
+        self.quest_open = False
+        self.shop_open = False
+        self.shop_cursor = 0
+        self.healer_open = False
+        self.journal_open = False
+        self.spellbook_open = False
+        self.spellbook_cursor = 0
+        self.active_npc = None
+        # Mouse support (session 13): whichever panel is currently drawn
+        # re-populates these two just before it blits itself, so a click
+        # can be hit-tested against the panel that's actually on screen
+        # right now without main.py needing to know that panel's layout.
+        self.panel_outer_rect = None
+        self.panel_click_targets = []
+        # Held-input continuous movement (session 13): see tick_move_repeat.
+        # held_move_key tracks which *physical* key is driving the repeat so
+        # handle_key_up only stops it when that specific key is released
+        # (not some unrelated key going up), held_move_dir is the direction
+        # it repeats; mouse_held is the click-and-hold equivalent, which has
+        # no fixed direction since it's recomputed from the live cursor
+        # position every repeat step (see handle_mouse_down).
+        self.held_move_key = None
+        self.held_move_dir = None
+        self.mouse_held = False
+        self.next_move_repeat_at = 0
+        self.debug_overlay = False
         self.dirty = True
 
         self.load_room(state["current_room"], state["pos"][0], state["pos"][1])
 
     def _load_assets(self):
-        AssetManager.load_sprite("wall", "assets/sprites/dungeon_tileset_1/tile_1_0.png")
-        AssetManager.load_sprite("floor", "assets/sprites/dungeon_tileset_1/tile_0_2.png")
-        AssetManager.load_sprite("exit", "assets/sprites/dungeon_tileset_1/tile_12_6.png")
-        AssetManager.load_sprite("item_potion", "assets/sprites/dungeon_tileset_1/tile_0_11.png")
-        AssetManager.load_sprite("item_whetstone", "assets/sprites/dungeon_tileset_1/tile_15_9.png")
-        AssetManager.load_sprite("enemy_skeleton", "assets/sprites/dungeon_tileset_1/tile_0_7.png")
-        # No humanoid tile exists in the source tileset -- draw the player
-        # once and cache it, same as any other sprite.
-        AssetManager.make_placeholder("player", (70, 130, 220))
+        """Session 9: real art, hand-picked from four user-supplied
+        spritesheets (see PROGRESS.MD for the full curation notes) instead
+        of the original 64px tileset + procedural placeholders. Sheets were
+        pre-sliced to individual tile_<row>_<col>.png files by a one-off
+        script (not checked in as a tool, mirrors the repo-root
+        slice_spritesheet.py pattern) into assets/sprites/{dungeon_v2,
+        characters,items16}/ -- dungeon_v2 was downscaled 32px->16px at
+        slice time so every sheet here is already native TILE_SIZE, no
+        runtime scaling.
+        """
+        D = "assets/sprites/dungeon_v2"
+        C = "assets/sprites/characters"
+        I = "assets/sprites/items16"
+        O = "assets/sprites/overworld"
+
+        # "_dungeon"/"_hub" suffixes match Room.tileset (session 10) so a
+        # room can pick which wall/floor art it wants -- see engine/room.py.
+        AssetManager.load_sprite("wall_dungeon", f"{D}/tile_4_1.png")
+        AssetManager.load_sprite("floor_dungeon", f"{D}/tile_0_4.png")
+        AssetManager.load_sprite("exit", f"{D}/tile_6_0.png")
+        AssetManager.load_sprite("stairs_down", f"{D}/tile_8_3.png")
+        # No second staircase graphic in the sheet -- tint the same one
+        # violet for "up" rather than draw new art (see make_tint_variant).
+        AssetManager.make_tint_variant("stairs_up", "stairs_down", (170, 140, 220))
+
+        # Overworld hub (session 10): grass floor, hedge/tree border, plus
+        # "building"/"cave" exit-kind markers (same mechanism Room.draw()
+        # already uses for stairs_down/up -- a sprite registered under the
+        # exact kind name wins over the generic "exit" arch).
+        AssetManager.load_sprite("floor_hub", f"{O}/tile_1_3.png")
+        AssetManager.load_sprite("wall_hub", f"{O}/tile_5_6.png")
+        AssetManager.load_sprite("building", f"{O}/tile_2_16.png")
+        AssetManager.load_sprite("cave", f"{O}/tile_3_13.png")
+
+        # Interactive dungeon fixtures (session 10). Gate and locked_door
+        # share one "iron bars" source image, tinted cool blue vs. warm gold
+        # (make_tint_variant) so they read as different obstacles at a
+        # glance despite being the same underlying art. Switches have no
+        # matching sprite in either sheet -- small placeholders, same as
+        # the slime -- and chests are real closed/open art.
+        AssetManager.load_sprite("chest_closed", f"{D}/chest_closed.png")
+        AssetManager.load_sprite("chest_open", f"{D}/chest_open.png")
+        AssetManager.load_sprite("gate_bars", f"{D}/gate_bars.png")
+        AssetManager.make_tint_variant("gate", "gate_bars", (120, 170, 220))
+        AssetManager.make_tint_variant("locked_door", "gate_bars", (210, 160, 60))
+        AssetManager.make_placeholder("switch_off", (150, 40, 40), shape="square")
+        AssetManager.make_placeholder("switch_on", (50, 180, 70), shape="square")
+        AssetManager.load_sprite("item_key", f"{I}/tile_30_9.png")
+
+        AssetManager.load_sprite("enemy_skeleton", f"{C}/tile_24_0.png")
+        AssetManager.load_sprite("enemy_cultist", f"{C}/tile_30_6.png")
+        # No slime/blob-shaped monster anywhere in the character sheet (it's
+        # all bipedal humanoids) -- kept as the original procedural
+        # placeholder rather than force a bad fit.
+        AssetManager.make_placeholder("enemy_slime", (60, 170, 90))
+        AssetManager.load_sprite("player", f"{C}/tile_12_6.png")
+        AssetManager.load_sprite("npc_quartermaster", f"{C}/tile_12_12.png")
+        AssetManager.load_sprite("npc_merchant", f"{C}/tile_12_27.png")
+        AssetManager.load_sprite("npc_healer", f"{C}/tile_12_9.png")
+
+        # Consumables: each minor/normal/greater tier is now real distinct
+        # art (not a color-dot variant of one image like session 5's
+        # placeholder-art era), picked for a visible size/quality
+        # progression within the same item family.
+        AssetManager.load_sprite("item_potion_minor", f"{I}/tile_37_11.png")
+        AssetManager.load_sprite("item_potion", f"{I}/tile_40_6.png")
+        AssetManager.load_sprite("item_potion_greater", f"{I}/tile_43_14.png")
+        AssetManager.load_sprite("item_whetstone_minor", f"{I}/tile_2_9.png")
+        AssetManager.load_sprite("item_whetstone", f"{I}/tile_2_5.png")
+        AssetManager.load_sprite("item_whetstone_greater", f"{I}/tile_2_0.png")
+        AssetManager.load_sprite("item_shield_minor", f"{I}/tile_72_9.png")
+        AssetManager.load_sprite("item_shield", f"{I}/tile_71_4.png")
+        AssetManager.load_sprite("item_shield_greater", f"{I}/tile_71_9.png")
+        AssetManager.load_sprite("item_gold_minor", f"{I}/tile_32_2.png")
+        AssetManager.load_sprite("item_gold", f"{I}/tile_32_1.png")
+        AssetManager.load_sprite("item_gold_greater", f"{I}/tile_32_0.png")
+
+        # Mana potions (session 12): no blue-potion art in the item sheet at
+        # these tile coordinates, so derive them from the existing red health
+        # potions the same way stairs_up/gate/locked_door already reuse one
+        # base image via make_tint_variant, rather than hand-picking new
+        # (unverified) sheet coordinates.
+        AssetManager.make_tint_variant("item_mana_potion_minor", "item_potion_minor", (60, 110, 220))
+        AssetManager.make_tint_variant("item_mana_potion", "item_potion", (60, 110, 220))
+        AssetManager.make_tint_variant("item_mana_potion_greater", "item_potion_greater", (60, 110, 220))
+
+        # Equipment: same "three real images per slot" approach.
+        AssetManager.load_sprite("eq_weapon_basic", f"{I}/tile_108_9.png")
+        AssetManager.load_sprite("eq_weapon", f"{I}/tile_107_1.png")
+        AssetManager.load_sprite("eq_weapon_masterwork", f"{I}/tile_107_8.png")
+        AssetManager.load_sprite("eq_shield_basic", f"{I}/tile_71_3.png")
+        AssetManager.load_sprite("eq_shield", f"{I}/tile_71_6.png")
+        AssetManager.load_sprite("eq_shield_masterwork", f"{I}/tile_71_12.png")
+        AssetManager.load_sprite("eq_helmet_basic", f"{I}/tile_26_11.png")
+        AssetManager.load_sprite("eq_helmet", f"{I}/tile_25_15.png")
+        AssetManager.load_sprite("eq_helmet_masterwork", f"{I}/tile_25_7.png")
+        AssetManager.load_sprite("eq_armor_basic", f"{I}/tile_3_11.png")
+        AssetManager.load_sprite("eq_armor", f"{I}/tile_4_9.png")
+        AssetManager.load_sprite("eq_armor_masterwork", f"{I}/tile_3_14.png")
+        AssetManager.load_sprite("eq_boots_basic", f"{I}/tile_10_8.png")
+        AssetManager.load_sprite("eq_boots", f"{I}/tile_11_8.png")
+        AssetManager.load_sprite("eq_boots_masterwork", f"{I}/tile_10_12.png")
+
+        for name in ("hit", "kill", "pickup", "levelup", "door"):
+            AssetManager.load_sfx(name, f"assets/sfx/{name}.wav")
+
         AssetManager.get_font(14)
         AssetManager.get_font(16, bold=True)
         AssetManager.get_font(20, bold=True)
 
     # -- room lifecycle ----------------------------------------------------
 
+    def _room_meta(self, room_id):
+        """Lazily load (epoch, cleared_turn) for a Depths room from save,
+        caching in memory so repeated lookups within a session don't hit
+        the DB -- mutated in place by callers, flushed by persist()."""
+        if room_id not in self.room_epoch:
+            meta = self.save.get_room_meta(room_id)
+            self.room_epoch[room_id] = meta["epoch"]
+            self.room_cleared_turn[room_id] = meta["cleared_turn"]
+        return self.room_epoch[room_id], self.room_cleared_turn[room_id]
+
     def load_room(self, room_id, spawn_x, spawn_y):
         self.current_room_id = room_id
         self.room = Room.load(room_id)
 
         flags = self.save.get_room_flags(room_id)
-        self.dead_enemy_ids = set(flags["dead_enemies"])
-        self.taken_item_ids = set(flags["taken_items"])
+        dead_ids = set(flags.get("enemy_dead", set()))
+        taken_ids = set(flags.get("item_taken", set()))
+        # Session 10: region/door/gate/chest state is NOT epoch-suffixed
+        # (see procgen.py's module docstring) -- once seen/solved, it
+        # stays that way regardless of the room's enemy/item epoch below.
+        self.revealed_regions = set(flags.get("region_seen", set()))
+        self.unlocked_door_ids = set(flags.get("door_unlocked", set()))
+        self.open_gate_ids = set(flags.get("gate_open", set()))
+        self.opened_chest_ids = set(flags.get("chest_opened", set()))
 
-        self.enemies = [
-            Enemy(t["id"], t["type"], t["x"], t["y"], self.enemy_defs[t["type"]])
-            for t in self.room.enemy_templates
-            if t["id"] not in self.dead_enemy_ids
-        ]
+        if room_id.startswith("proc:"):
+            _, _seed_str, level_str, gx_str, gy_str = room_id.split(":")
+            level, gx, gy = int(level_str), int(gx_str), int(gy_str)
+
+            if level not in self.discovered:
+                self.discovered[level] = self.save.get_discovered_rooms(level)
+            if (gx, gy) not in self.discovered[level]:
+                self.discovered[level].add((gx, gy))
+                self.save.mark_discovered(level, gx, gy)
+
+            epoch, cleared_turn = self._room_meta(room_id)
+            if cleared_turn is not None and self.turn_count - cleared_turn >= RESPAWN_THRESHOLD:
+                epoch += 1
+                cleared_turn = None
+                dead_ids, taken_ids = set(), set()
+                self.room_epoch[room_id] = epoch
+                self.room_cleared_turn[room_id] = cleared_turn
+
+            # Structure (layout/exits) is cached on self.room already;
+            # this second generate_room call is only to fetch this epoch's
+            # enemy/item rolls -- cheap (small fixed-size room), only runs
+            # on room transitions, not the per-frame hot path.
+            population = generate_room(self.seed, level, gx, gy, epoch)
+            enemy_templates = population["enemies"]
+            item_templates = population["items"]
+            equipment_drop_templates = population["equipment_drops"]
+        else:
+            enemy_templates = self.room.enemy_templates
+            item_templates = self.room.item_templates
+            equipment_drop_templates = self.room.equipment_drop_templates
+
+        self.current_room_enemy_ids = {t["id"] for t in enemy_templates}
+        self.dead_enemy_ids = dead_ids
+        self.taken_item_ids = taken_ids
+
+        # Structure (including locked_door/gate/switch/chest templates) is
+        # cached on self.room and, like layout/exits, is never epoch-scoped
+        # -- see procgen.py's module docstring -- so no second fetch is
+        # needed here the way enemy/item population above needed one.
+        self.locked_doors = [d for d in self.room.locked_door_templates if d["id"] not in self.unlocked_door_ids]
+        self.gates = [g for g in self.room.gate_templates if g["id"] not in self.open_gate_ids]
+        self.switches = list(self.room.switch_templates)
+        self.chests = list(self.room.chest_templates)
+
+        self.enemies = []
+        for t in enemy_templates:
+            if t["id"] in self.dead_enemy_ids:
+                continue
+            stats = self.enemy_defs[t["type"]]
+            if t.get("level", 1) > 1:
+                stats = scale_stats_for_level(stats, t["level"])
+            self.enemies.append(Enemy(t["id"], t["type"], t["x"], t["y"], stats))
         self.items = [
             ItemPickup(t["id"], t["type"], t["x"], t["y"], self.item_defs[t["type"]])
-            for t in self.room.item_templates
+            for t in item_templates
             if t["id"] not in self.taken_item_ids
+        ] + [
+            # Session 16: dungeon-found gear lives on the floor the same way
+            # a consumable does (walk onto it to pick it up -- see
+            # Player.try_move's generic items collision check), just as a
+            # distinct entity type so main.py's pickup handler can route it
+            # to the per-instance equipment path instead of Inventory.
+            EquipmentDrop(t["id"], t["base_type"], t["enchant"], t["x"], t["y"], self.equipment_defs[t["base_type"]])
+            for t in equipment_drop_templates
+            if t["id"] not in self.taken_item_ids
+        ]
+        # NPCs never appear in proc rooms (self.room.npc_templates is
+        # always [] there) and are never "dead" -- no flags to filter by.
+        self.npcs = [
+            NPC(t["id"], t["type"], t["x"], t["y"], self.npc_defs[t["type"]])
+            for t in self.room.npc_templates
         ]
 
         self.player.x, self.player.y = spawn_x, spawn_y
+        self._reveal_region_at_player()
         self.message_log = [f"Entered {self.room.name}."]
         self.dirty = True
 
+    def _reveal_region_at_player(self):
+        """Room-based fog of war (session 10): mark whichever region the
+        player is physically standing on as seen. A no-op (region_at
+        returns None) for any room with no `regions` defined, so simple
+        hand-authored rooms are never fogged. Called on room entry and
+        after every in-room move -- see handle_move."""
+        region_id = self.room.region_at(self.player.x, self.player.y)
+        if region_id is not None and region_id not in self.revealed_regions:
+            self.revealed_regions.add(region_id)
+            self.dirty = True
+
+    def _is_visible(self, x, y, detect_turns=0):
+        """Whether (x, y) is currently un-fogged -- used to gate rendering
+        of enemies/items/npcs/fixtures the same way Room.draw() already
+        gates tile rendering, so nothing in an unseen region is spoiled.
+        detect_turns > 0 (session 15's Detect Monsters/Treasure) bypasses
+        the fog check entirely -- callers pass the relevant counter only
+        for the entity kinds that spell should reveal (enemies for
+        detect_monsters_turns, items/chests for detect_treasure_turns);
+        NPCs/switches/gates/locked doors always use the plain check."""
+        if detect_turns > 0:
+            return True
+        if not self.room.regions:
+            return True
+        return self.room.is_revealed(x, y, self.revealed_regions)
+
+    def _blocked_positions(self):
+        """Currently-closed locked doors/gates, as a set of (x, y) --
+        passed to Player.try_move/Room.is_walkable so a still-closed
+        fixture blocks movement like a wall would."""
+        return {(d["x"], d["y"]) for d in self.locked_doors} | {(g["x"], g["y"]) for g in self.gates}
+
+    def _current_room_flags(self):
+        """All flag types tracked for the current room, in the generic
+        {flag_type: {entity_id, ...}} shape save.set_room_flags expects."""
+        return {
+            "enemy_dead": self.dead_enemy_ids,
+            "item_taken": self.taken_item_ids,
+            "region_seen": self.revealed_regions,
+            "door_unlocked": self.unlocked_door_ids,
+            "gate_open": self.open_gate_ids,
+            "chest_opened": self.opened_chest_ids,
+        }
+
     def persist(self):
-        """Full autosave: current room flags + player + inventory.
+        """Full autosave: current room flags/meta + player + inventory.
         Called on room transition and on quit -- never per-frame."""
-        self.save.set_room_flags(self.current_room_id, self.dead_enemy_ids, self.taken_item_ids)
-        self.save.save_game(self.player, self.inventory, self.current_room_id, self.seed)
+        self.save.set_room_flags(self.current_room_id, self._current_room_flags())
+        if self.current_room_id.startswith("proc:"):
+            epoch, cleared_turn = self._room_meta(self.current_room_id)
+            self.save.set_room_meta(self.current_room_id, epoch, cleared_turn)
+        self.save.save_game(
+            self.player, self.inventory, self.current_room_id, self.seed,
+            self.turn_count, self.depths_kills, self.quest_index,
+            self.known_spells,
+        )
 
     # -- input handlers ------------------------------------------------
+
+    def _advance_turn(self):
+        """Every player action that counts as a turn (move, quick-use item,
+        cast a spell) goes through here instead of touching turn_count
+        directly, so the temporary-buff countdown (session 12) can never be
+        threaded through only some of the call sites and drift out of sync."""
+        self.turn_count += 1
+        if self.player.buff_defense_turns > 0:
+            self.player.buff_defense_turns -= 1
+            if self.player.buff_defense_turns == 0:
+                self.player.buff_defense_bonus = 0
+        if self.detect_monsters_turns > 0:
+            self.detect_monsters_turns -= 1
+        if self.detect_treasure_turns > 0:
+            self.detect_treasure_turns -= 1
+
+    def _learn_new_spells(self, messages):
+        """Grants any spell whose unlock_level the player's current level
+        now meets. Safe to call after any XP gain (or with messages=None at
+        boot, to catch up silently) -- see engine.spells.newly_learned."""
+        for spell in newly_learned(self.spell_defs, self.player.level, self.known_spells):
+            self.known_spells.add(spell["id"])
+            if messages is not None:
+                messages.append(f"You have learned {spell['name']}!")
 
     def handle_move(self, dx, dy):
         if self.player.hp <= 0:
             return
-        result = self.player.try_move(dx, dy, self.room, self.enemies, self.items)
+        self._advance_turn()
+        result = self.player.try_move(
+            dx, dy, self.room, self.enemies, self.items, self.npcs,
+            locked_doors=self.locked_doors, gates=self.gates,
+            chests=self.chests, switches=self.switches,
+            blocked=self._blocked_positions(),
+        )
+        self._reveal_region_at_player()
         self.dirty = True
         kind = result["type"]
         messages = []
@@ -141,28 +520,126 @@ class Game:
         if kind == "attack":
             enemy = result["enemy"]
             messages += resolve_bump_attack(self.player, enemy)
+            self._learn_new_spells(messages)
             if not enemy.alive:
                 self.dead_enemy_ids.add(enemy.id)
                 self.enemies = [e for e in self.enemies if e.alive]
+                if self.current_room_id.startswith("proc:"):
+                    self.depths_kills += 1
+                if (
+                    self.current_room_id.startswith("proc:")
+                    and self.current_room_enemy_ids
+                    and self.current_room_enemy_ids <= self.dead_enemy_ids
+                    and self.room_cleared_turn.get(self.current_room_id) is None
+                ):
+                    self.room_cleared_turn[self.current_room_id] = self.turn_count
+
+        elif kind == "npc":
+            npc = result["npc"]
+            self.active_npc = npc
+            self.message_log = [npc.greeting]
+            if npc.type == "merchant":
+                self.shop_open = True
+                self.shop_cursor = 0
+            elif npc.type == "healer":
+                self.healer_open = True
+            else:
+                self.quest_open = True
+            return  # talking doesn't give nearby enemies a free turn
 
         elif kind == "pickup":
             item = result["item"]
-            if self.inventory.add_item(item.type):
+            if isinstance(item, EquipmentDrop):
+                # Session 16: lands in the bag unidentified -- the player
+                # won't know its enchant/curse until it's equipped or paid
+                # identification at the Merchant reveals it first. Never
+                # stack/slot-limited by Inventory -- it's a separate bag,
+                # see engine/equipment.py.
+                create_instance(self.player, item.base_type, item.enchant, identified=False)
                 self.taken_item_ids.add(item.id)
                 self.items = [i for i in self.items if i.id != item.id]
-                messages.append(f"Picked up {item.name}.")
+                base_name = self.equipment_defs[item.base_type]["name"]
+                messages.append(f"Found {base_name} (unidentified).")
+                AssetManager.play_sfx("pickup")
             else:
-                messages.append("Inventory full.")
+                item_def = self.item_defs[item.type]
+                if item_def.get("effect") == "gold":
+                    # Gold is never stack-limited by the 8-slot inventory --
+                    # it's not a carried item, just a running total.
+                    amount = item_def.get("value", 0)
+                    self.player.gold += amount
+                    self.taken_item_ids.add(item.id)
+                    self.items = [i for i in self.items if i.id != item.id]
+                    messages.append(f"Found {amount} gold.")
+                    AssetManager.play_sfx("pickup")
+                elif self.inventory.add_item(item.type):
+                    self.taken_item_ids.add(item.id)
+                    self.items = [i for i in self.items if i.id != item.id]
+                    messages.append(f"Picked up {item.name}.")
+                    AssetManager.play_sfx("pickup")
+                else:
+                    messages.append("Inventory full.")
+
+        elif kind == "locked_door":
+            door = result["door"]
+            if self.inventory.remove_item("key"):
+                self.unlocked_door_ids.add(door["id"])
+                self.locked_doors = [d for d in self.locked_doors if d["id"] != door["id"]]
+                messages.append("You unlock the door with a key.")
+                AssetManager.play_sfx("door")
+            else:
+                messages.append("The door is locked. You need a key.")
+
+        elif kind == "gate":
+            messages.append("An iron gate blocks the way. Find the switch.")
+
+        elif kind == "chest":
+            chest = result["chest"]
+            if chest["id"] in self.opened_chest_ids:
+                pass  # already looted -- just a normal walk-through
+            else:
+                item_type = chest["item_type"]
+                item_def = self.item_defs[item_type]
+                if item_def.get("effect") == "gold":
+                    amount = item_def.get("value", 0)
+                    self.player.gold += amount
+                    self.opened_chest_ids.add(chest["id"])
+                    messages.append(f"The chest holds {amount} gold!")
+                    AssetManager.play_sfx("pickup")
+                elif self.inventory.add_item(item_type):
+                    self.opened_chest_ids.add(chest["id"])
+                    messages.append(f"The chest holds {item_def['name']}!")
+                    AssetManager.play_sfx("pickup")
+                else:
+                    messages.append("The chest is full of treasure, but your pack is full.")
+
+        elif kind == "switch":
+            gate_id = result["switch"]["gate_id"]
+            if gate_id not in self.open_gate_ids:
+                self.open_gate_ids.add(gate_id)
+                self.gates = [g for g in self.gates if g["id"] != gate_id]
+                messages.append("You hear a distant mechanism unlock.")
+                AssetManager.play_sfx("door")
 
         elif kind == "exit":
+            AssetManager.play_sfx("door")
             exit_data = result["exit"]
             target_room = exit_data["target_room"]
             if target_room == "proc:ENTRY":
-                target_room = f"proc:{self.seed}:0:0"
+                target_room = f"proc:{self.seed}:1:0:0"
+            stairs_message = {
+                "stairs_down": "You descend deeper into the dungeon.",
+                "stairs_up": "You climb back up.",
+            }.get(exit_data.get("kind"))
             # Flush the room we're leaving *before* load_room overwrites
-            # dead_enemy_ids/taken_item_ids with the destination's flags.
-            self.save.set_room_flags(self.current_room_id, self.dead_enemy_ids, self.taken_item_ids)
+            # this state with the destination's.
+            self.save.set_room_flags(self.current_room_id, self._current_room_flags())
+            if self.current_room_id.startswith("proc:"):
+                epoch, cleared_turn = self._room_meta(self.current_room_id)
+                self.save.set_room_meta(self.current_room_id, epoch, cleared_turn)
             self.load_room(target_room, exit_data["target_x"], exit_data["target_y"])
+            if stairs_message:
+                self.message_log = [stairs_message] + self.message_log
             # Autosave now, with current_room_id/player pos already pointing
             # at the room we just entered -- reload should resume *there*,
             # not at the previous room's doorway.
@@ -186,10 +663,13 @@ class Game:
 
     def _run_enemy_turns(self):
         messages = []
+        blocked = self._blocked_positions()
         for enemy in list(self.enemies):
             if not enemy.alive:
                 continue
             occupied = {(e.x, e.y) for e in self.enemies if e is not enemy and e.alive}
+            occupied |= {(n.x, n.y) for n in self.npcs}
+            occupied |= blocked
             action = enemy.take_turn(self.player, self.room, occupied)
             if action["type"] == "attack":
                 messages += enemy_attack(enemy, self.player)
@@ -213,14 +693,29 @@ class Game:
         self.inventory_cursor = 0
         self.dirty = True
 
+    def _inventory_rows(self):
+        """Combined list backing the Inventory panel's Up/Down cursor and
+        U/click action (session 16): consumable stacks first (unchanged
+        indices, so the existing 1-8 field hotkey range is untouched), then
+        unequipped found gear appended after -- lets Up/Down/U reach both
+        without a second keybinding namespace. Field quick-use (1-8, see
+        quick_use_item) deliberately stays scoped to consumables only via
+        _use_item_at_index below -- equipping (and risking a curse) is a
+        panel-only action, never a stray field hotkey away."""
+        rows = [("item", item_type, count, item_def) for item_type, count, item_def in self.inventory.as_list()]
+        rows += [("gear", inst) for inst in bag_instances(self.player)]
+        return rows
+
     def inventory_move_cursor(self, delta):
-        items = self.inventory.as_list()
-        if not items:
+        rows = self._inventory_rows()
+        if not rows:
             return
-        self.inventory_cursor = (self.inventory_cursor + delta) % len(items)
+        self.inventory_cursor = (self.inventory_cursor + delta) % len(rows)
         self.dirty = True
 
     def _use_item_at_index(self, index):
+        """Consumables only, bounded to Inventory's own list -- see
+        quick_use_item, the field-hotkey path this feeds."""
         items = self.inventory.as_list()
         if index >= len(items):
             return None
@@ -228,12 +723,34 @@ class Game:
         _success, message = self.inventory.use_item(item_type, self.player)
         return message
 
+    def _activate_inventory_row(self, index):
+        """Panel-only U/click/Enter action across the combined consumable +
+        found-gear list (see _inventory_rows). Equipping unidentified gear
+        reveals it on the spot -- and if it turns out cursed, whatever was
+        in that slot before is what refuses to come off, not the new item."""
+        rows = self._inventory_rows()
+        if index >= len(rows):
+            return None
+        row = rows[index]
+        if row[0] == "item":
+            _, item_type, _count, _def = row
+            _success, message = self.inventory.use_item(item_type, self.player)
+            return message
+
+        _, instance = row
+        slot = self.equipment_defs[instance["base_type"]]["slot"]
+        result = equip_item(self.player, self.equipment_defs, instance["instance_id"])
+        if result == "cursed":
+            stuck = self.player.equipment_instances[self.player.equipment[slot]]
+            return f"Cannot remove {equip_display_name(self.equipment_defs, stuck)} -- it's cursed!"
+        return f"Equipped {equip_display_name(self.equipment_defs, instance)}."
+
     def use_selected_item(self):
-        message = self._use_item_at_index(self.inventory_cursor)
+        message = self._activate_inventory_row(self.inventory_cursor)
         if message is None:
             return
         self.message_log = [message]
-        remaining = self.inventory.as_list()
+        remaining = self._inventory_rows()
         self.inventory_cursor = min(self.inventory_cursor, max(0, len(remaining) - 1))
         self.dirty = True
 
@@ -251,48 +768,429 @@ class Game:
         message = self._use_item_at_index(index)
         if message is None:
             return
+        self._advance_turn()
         self.dirty = True
         self._take_turn([message])
 
+    # -- quests ----------------------------------------------------------
+
+    def current_quest(self):
+        if self.quest_index < len(self.quests):
+            return self.quests[self.quest_index]
+        return None
+
+    def close_quest_panel(self):
+        self.quest_open = False
+        self.dirty = True
+
+    def claim_quest_reward(self):
+        quest = self.current_quest()
+        if quest is None or self.depths_kills < quest["target"]:
+            return
+
+        if quest["reward_type"] == "item":
+            item_type = quest["reward_item"]
+            if not self.inventory.add_item(item_type):
+                self.message_log = ["Inventory full -- come back when you have room."]
+                self.dirty = True
+                return
+            message = f"Quest complete! Received {self.item_defs[item_type]['name']}."
+        else:
+            log = []
+            grant_xp(self.player, quest["reward_xp"], log)
+            self._learn_new_spells(log)
+            message = "Quest complete! " + " ".join(log)
+
+        self.quest_index += 1
+        self.message_log = [message]
+        self.dirty = True
+
+    # -- shop --------------------------------------------------------------
+
+    def close_shop_panel(self):
+        self.shop_open = False
+        self.dirty = True
+
+    def _shop_rows(self):
+        """Combined list backing the shop panel's Up/Down cursor and
+        U/click action (session 16): one row per gear slot (buy/upgrade,
+        unchanged indices/order from before this session), then one row per
+        unidentified Found Gear instance (pay to identify), then one row
+        per cursed equipped slot (pay to remove the curse) -- same
+        "append extra actions after the original list, one shared cursor"
+        pattern this session gave the Inventory panel."""
+        rows = [("slot", slot) for slot in SLOTS]
+        rows += [("identify", inst["instance_id"]) for inst in self.unidentified_bag_instances()]
+        rows += [("remove_curse", slot) for slot in self.cursed_equipped_slots()]
+        return rows
+
+    def shop_move_cursor(self, delta):
+        self.shop_cursor = (self.shop_cursor + delta) % len(self._shop_rows())
+        self.dirty = True
+
+    def activate_shop_row(self, index):
+        rows = self._shop_rows()
+        if index >= len(rows):
+            return
+        kind, payload = rows[index]
+        if kind == "slot":
+            self.buy_or_upgrade(payload)
+        elif kind == "identify":
+            self.identify_instance(payload)
+        else:
+            self.remove_curse_from_slot(payload)
+        # An identify/remove-curse row can vanish once acted on (the
+        # instance/slot it named no longer qualifies) -- keep the cursor in
+        # range of whatever's left rather than pointing past the new list.
+        self.shop_cursor = min(self.shop_cursor, max(0, len(self._shop_rows()) - 1))
+
+    def buy_or_upgrade(self, slot):
+        """Buy (or, if something's already equipped in the slot, upgrade
+        to) the next tier for the selected slot. Always replaces whatever
+        was worn there -- there's no way to buy a spare."""
+        offer_type = next_offer(self.player, self.equipment_defs, slot)
+        if offer_type is None:
+            self.message_log = ["Already own the finest gear for that slot."]
+            self.dirty = True
+            return
+        cost = self.equipment_defs[offer_type]["value"]
+        if self.player.gold < cost:
+            self.message_log = ["Not enough gold."]
+            self.dirty = True
+            return
+        self.player.gold -= cost
+        instance_id = create_shop_instance(self.player, offer_type)
+        result = equip_item(self.player, self.equipment_defs, instance_id)
+        name = self.equipment_defs[offer_type]["name"]
+        if result == "cursed":
+            # The gold's already spent -- same as the source material,
+            # buying a replacement doesn't refund what you can't take off.
+            # The new purchase sits in the Found Gear bag until it can be
+            # equipped (see engine/equipment.py's unequip cursed-lock).
+            slot = self.equipment_defs[offer_type]["slot"]
+            stuck_id = self.player.equipment[slot]
+            stuck = equip_display_name(self.equipment_defs, self.player.equipment_instances[stuck_id])
+            self.message_log = [f"Purchased {name}, but {stuck} is cursed and won't come off!"]
+        else:
+            self.message_log = [f"Purchased {name} for {cost} gold."]
+        self.dirty = True
+
+    # -- identify / remove curse (session 16) -------------------------------
+
+    IDENTIFY_COST = 15
+    REMOVE_CURSE_COST = 30
+
+    def unidentified_bag_instances(self):
+        return [inst for inst in bag_instances(self.player) if not inst["identified"]]
+
+    def cursed_equipped_slots(self):
+        return [
+            slot for slot in SLOTS
+            if self.player.equipment.get(slot)
+            and self.player.equipment_instances[self.player.equipment[slot]]["cursed"]
+        ]
+
+    def identify_instance(self, instance_id):
+        instance = self.player.equipment_instances.get(instance_id)
+        if instance is None or instance["identified"]:
+            return
+        if self.player.gold < self.IDENTIFY_COST:
+            self.message_log = ["Not enough gold."]
+            self.dirty = True
+            return
+        self.player.gold -= self.IDENTIFY_COST
+        instance["identified"] = True
+        name = equip_display_name(self.equipment_defs, instance)
+        self.message_log = [f"Identified: {name}."]
+        self.dirty = True
+
+    def remove_curse_from_slot(self, slot):
+        if self.player.gold < self.REMOVE_CURSE_COST:
+            self.message_log = ["Not enough gold."]
+            self.dirty = True
+            return
+        if not remove_curse_item(self.player, self.equipment_defs, slot):
+            return
+        self.player.gold -= self.REMOVE_CURSE_COST
+        self.message_log = [f"The curse on your {slot} lifts."]
+        self.dirty = True
+
+    # -- healer (session 15) ------------------------------------------------
+
+    HEAL_COST_PER_POINT = 0.5  # 1 gold restores 2 combined HP/mana points
+
+    def close_healer_panel(self):
+        self.healer_open = False
+        self.dirty = True
+
+    def rest_cost(self):
+        """Gold to fully restore HP+mana right now -- 0 if already full.
+        A pure function of current state so the panel can preview the
+        exact price it's about to charge before the player commits."""
+        missing = (self.player.max_hp - self.player.hp) + (self.player.max_mana - self.player.mana)
+        return math.ceil(missing * self.HEAL_COST_PER_POINT)
+
+    def rest_at_healer(self):
+        """Fully restores HP and mana for gold, same insufficient-gold-is-
+        a-no-op pattern buy_or_upgrade already uses. Free (no gold spent,
+        no turn consumed) when already at full HP/mana -- resting doesn't
+        need to punish a player who's already topped off. Doesn't consume
+        a turn even when it does charge gold: unlike a spell cast, this
+        can't affect combat outcomes, it's a pure convenience the player
+        pays for in gold instead of Depths grinding."""
+        cost = self.rest_cost()
+        if cost == 0:
+            self.message_log = ["Already at full strength."]
+            self.dirty = True
+            return
+        if self.player.gold < cost:
+            self.message_log = ["Not enough gold to rest."]
+            self.dirty = True
+            return
+        self.player.gold -= cost
+        self.player.hp = self.player.max_hp
+        self.player.mana = self.player.max_mana
+        self.message_log = [f"You rest and recover fully for {cost} gold."]
+        self.dirty = True
+
+    # -- spells --------------------------------------------------------
+
+    def toggle_spellbook(self):
+        self.spellbook_open = not self.spellbook_open
+        self.spellbook_cursor = 0
+        self.dirty = True
+
+    def close_spellbook_panel(self):
+        self.spellbook_open = False
+        self.dirty = True
+
+    def spellbook_move_cursor(self, delta):
+        spells = self._known_spell_list()
+        if not spells:
+            return
+        self.spellbook_cursor = (self.spellbook_cursor + delta) % len(spells)
+        self.dirty = True
+
+    def _known_spell_list(self):
+        return [s for s in self.spell_defs if s["id"] in self.known_spells]
+
+    def _bolt_target(self, spell):
+        """First live enemy along the player's facing direction, within the
+        spell's range, with an unobstructed line (walls and closed locked
+        doors/gates block it same as they block movement). Facing is set by
+        Player.try_move on every move attempt -- even a blocked one -- so
+        bumping a wall first is a free way to aim without actually moving."""
+        dx, dy = self.player.facing
+        if dx == 0 and dy == 0:
+            return None
+        blocked = self._blocked_positions()
+        x, y = self.player.x, self.player.y
+        for _ in range(spell.get("range", 5)):
+            x, y = x + dx, y + dy
+            if not self.room.is_walkable(x, y) or (x, y) in blocked:
+                return None
+            for enemy in self.enemies:
+                if enemy.alive and enemy.x == x and enemy.y == y:
+                    return enemy
+        return None
+
+    def _resolve_blink(self, spell):
+        """Slide the player up to `range` tiles along their facing
+        direction, stopping just short of a wall, a closed locked
+        door/gate, or any enemy/NPC -- landing on an exit tile is fine, it
+        just behaves like walking there normally would on the next move."""
+        dx, dy = self.player.facing
+        if dx == 0 and dy == 0:
+            return False
+        blocked = self._blocked_positions()
+        x, y = self.player.x, self.player.y
+        landed = False
+        for _ in range(spell.get("range", 4)):
+            nx, ny = x + dx, y + dy
+            if not self.room.is_walkable(nx, ny) or (nx, ny) in blocked:
+                break
+            if any(e.alive and e.x == nx and e.y == ny for e in self.enemies):
+                break
+            if any(n.x == nx and n.y == ny for n in self.npcs):
+                break
+            x, y = nx, ny
+            landed = True
+        if landed:
+            self.player.x, self.player.y = x, y
+            self._reveal_region_at_player()
+        return landed
+
+    def cast_selected_spell(self):
+        """Casting only happens from this panel (no field hotkey yet, see
+        engine/spells.py) and always consumes a turn on a successful cast --
+        unlike inventory items, a bolt spell directly damages an enemy, so
+        letting it be spammed for free from a paused menu would let the
+        player fight risk-free. The panel closes after a successful cast so
+        the player immediately sees the room update (and any enemy
+        retaliation); an insufficient-mana attempt is a no-op that leaves it
+        open to try something else."""
+        if self.player.hp <= 0:
+            return
+        spells = self._known_spell_list()
+        if self.spellbook_cursor >= len(spells):
+            return
+        spell = spells[self.spellbook_cursor]
+        if self.player.mana < spell["mana_cost"]:
+            self.message_log = ["Not enough mana."]
+            self.dirty = True
+            return
+
+        effect = spell["effect"]
+        message = None
+        if effect == "heal":
+            healed = min(spell.get("value", 0), self.player.max_hp - self.player.hp)
+            self.player.hp += healed
+            message = f"You cast {spell['name']}. Restored {healed} HP."
+        elif effect == "buff_defense":
+            self.player.buff_defense_bonus = spell.get("value", 0)
+            self.player.buff_defense_turns = spell.get("duration", 1)
+            message = f"You cast {spell['name']}. Defense +{spell.get('value', 0)} for {spell.get('duration', 1)} turns."
+        elif effect == "bolt":
+            target = self._bolt_target(spell)
+            if target is None:
+                message = f"You cast {spell['name']}, but it finds no target."
+            else:
+                dmg = max(1, spell.get("value", 0) - target.defense)
+                spell_log = resolve_spell_hit(self.player, target, dmg, spell["name"])
+                self._learn_new_spells(spell_log)
+                message = " ".join(spell_log)
+                if not target.alive:
+                    self.dead_enemy_ids.add(target.id)
+                    self.enemies = [e for e in self.enemies if e.alive]
+                    if self.current_room_id.startswith("proc:"):
+                        self.depths_kills += 1
+                    if (
+                        self.current_room_id.startswith("proc:")
+                        and self.current_room_enemy_ids
+                        and self.current_room_enemy_ids <= self.dead_enemy_ids
+                        and self.room_cleared_turn.get(self.current_room_id) is None
+                    ):
+                        self.room_cleared_turn[self.current_room_id] = self.turn_count
+        elif effect == "blink":
+            landed = self._resolve_blink(spell)
+            message = f"You cast {spell['name']}." if landed else f"You cast {spell['name']}, but nothing happens."
+        elif effect == "detect_monsters":
+            self.detect_monsters_turns = spell.get("duration", 1)
+            message = f"You cast {spell['name']}. You sense the foes hidden nearby."
+        elif effect == "detect_treasure":
+            self.detect_treasure_turns = spell.get("duration", 1)
+            message = f"You cast {spell['name']}. You sense the treasure hidden nearby."
+
+        self.player.mana -= spell["mana_cost"]
+        self._advance_turn()
+        self.spellbook_open = False
+        self.dirty = True
+        self._take_turn([message] if message else [])
+
+    # -- journal (quest log + dungeon automap) ------------------------------
+
+    def toggle_journal(self):
+        self.journal_open = not self.journal_open
+        self.dirty = True
+
     # -- rendering -----------------------------------------------------
 
-    def draw(self, fps_target, is_focused, actual_fps, debug_overlay):
+    def draw(self, fps_target, is_focused, actual_fps):
         screen = self.screen
         screen.fill(COLOR_BG)
 
         self.room_surface.fill((0, 0, 0))
-        self.room.draw(self.room_surface, TILE_SIZE)
+        self.room.draw(self.room_surface, TILE_SIZE, self.revealed_regions)
+        self._draw_fixtures()
         for item in self.items:
-            item.draw(self.room_surface, TILE_SIZE)
+            if self._is_visible(item.x, item.y, self.detect_treasure_turns):
+                item.draw(self.room_surface, TILE_SIZE)
+        for npc in self.npcs:
+            if self._is_visible(npc.x, npc.y):
+                npc.draw(self.room_surface, TILE_SIZE)
         for enemy in self.enemies:
-            enemy.draw(self.room_surface, TILE_SIZE)
+            if self._is_visible(enemy.x, enemy.y, self.detect_monsters_turns):
+                enemy.draw(self.room_surface, TILE_SIZE)
         self.player.draw(self.room_surface, TILE_SIZE)
 
         self._draw_hud()
         self._draw_message_log()
-        if debug_overlay:
+        if self.debug_overlay:
             self._draw_debug_overlay(fps_target, is_focused, actual_fps)
         if self.inventory_open:
             self._draw_inventory()
+        if self.quest_open:
+            self._draw_quest_panel()
+        if self.shop_open:
+            self._draw_shop_panel()
+        if self.healer_open:
+            self._draw_healer_panel()
+        if self.spellbook_open:
+            self._draw_spellbook_panel()
+        if self.journal_open:
+            self._draw_journal_panel()
 
         pygame.display.flip()
+
+    def _draw_fixtures(self):
+        """Chests/switches/gates/locked doors (session 10) -- drawn as
+        overlays on top of the floor tile Room.draw() already put there,
+        same as items/NPCs/enemies below. Chests and switches always exist
+        in their list (state is which sprite they pick); gates/locked_doors
+        are removed from their list entirely once solved, so simply not
+        being in the list is their "open" state -- nothing left to draw."""
+        for chest in self.chests:
+            if not self._is_visible(chest["x"], chest["y"], self.detect_treasure_turns):
+                continue
+            name = "chest_open" if chest["id"] in self.opened_chest_ids else "chest_closed"
+            sprite = AssetManager.get_sprite(name)
+            if sprite:
+                self.room_surface.blit(sprite, (chest["x"] * TILE_SIZE, chest["y"] * TILE_SIZE))
+        for switch in self.switches:
+            if not self._is_visible(switch["x"], switch["y"]):
+                continue
+            name = "switch_on" if switch["gate_id"] in self.open_gate_ids else "switch_off"
+            sprite = AssetManager.get_sprite(name)
+            if sprite:
+                self.room_surface.blit(sprite, (switch["x"] * TILE_SIZE, switch["y"] * TILE_SIZE))
+        for gate in self.gates:
+            if not self._is_visible(gate["x"], gate["y"]):
+                continue
+            sprite = AssetManager.get_sprite("gate")
+            if sprite:
+                self.room_surface.blit(sprite, (gate["x"] * TILE_SIZE, gate["y"] * TILE_SIZE))
+        for door in self.locked_doors:
+            if not self._is_visible(door["x"], door["y"]):
+                continue
+            sprite = AssetManager.get_sprite("locked_door")
+            if sprite:
+                self.room_surface.blit(sprite, (door["x"] * TILE_SIZE, door["y"] * TILE_SIZE))
 
     def _draw_hud(self):
         font = AssetManager.get_font(16, bold=True)
         hp_text = font.render(f"HP {self.player.hp}/{self.player.max_hp}", True, COLOR_TEXT)
+        mana_text = font.render(f"MP {self.player.mana}/{self.player.max_mana}", True, COLOR_TEXT)
         lvl_text = font.render(
             f"Lv {self.player.level}  XP {self.player.xp}/{self.player.level * 30}", True, COLOR_TEXT
         )
         room_text = font.render(self.room.name, True, COLOR_TEXT)
+        gold_text = font.render(f"Gold {self.player.gold}", True, (230, 190, 60))
 
-        bar_x, bar_y, bar_w, bar_h = 10, 10, 140, 14
+        bar_x, bar_y, bar_w, bar_h = 10, 8, 140, 12
         pygame.draw.rect(self.screen, COLOR_HP_BG, (bar_x, bar_y, bar_w, bar_h))
         fill_w = int(bar_w * max(0, self.player.hp) / self.player.max_hp)
         pygame.draw.rect(self.screen, COLOR_HP, (bar_x, bar_y, fill_w, bar_h))
 
-        self.screen.blit(hp_text, (bar_x + bar_w + 10, 6))
-        self.screen.blit(lvl_text, (bar_x + bar_w + 10, 22))
+        mana_bar_y = bar_y + bar_h + 4
+        pygame.draw.rect(self.screen, COLOR_MP_BG, (bar_x, mana_bar_y, bar_w, bar_h))
+        mana_fill_w = int(bar_w * max(0, self.player.mana) / self.player.max_mana) if self.player.max_mana else 0
+        pygame.draw.rect(self.screen, COLOR_MP, (bar_x, mana_bar_y, mana_fill_w, bar_h))
+
+        self.screen.blit(hp_text, (bar_x + bar_w + 10, bar_y - 2))
+        self.screen.blit(mana_text, (bar_x + bar_w + 10, mana_bar_y - 2))
+        self.screen.blit(lvl_text, (bar_x + bar_w + 10, mana_bar_y + bar_h + 4))
         self.screen.blit(room_text, (WINDOW_W - room_text.get_width() - 10, 10))
+        self.screen.blit(gold_text, (WINDOW_W - gold_text.get_width() - 10, 28))
 
     def _draw_message_log(self):
         font = AssetManager.get_font(14)
@@ -316,32 +1214,732 @@ class Game:
             panel.blit(font.render(line, True, COLOR_DEBUG), (6, 6 + i * 18))
         self.screen.blit(panel, (WINDOW_W - panel.get_width() - 8, 34))
 
+    def _begin_panel_hitboxes(self, panel_w, panel_h):
+        """Call at the top of any panel's draw method, before laying out
+        rows: records the panel's screen-space bounding rect (so clicking
+        outside it can close it, see handle_panel_click) and resets the
+        per-row click list for that method to append (row_rect, callback)
+        pairs to as it lays out each row. Returns the panel's screen origin
+        so the caller's own final `self.screen.blit(panel, origin)` and the
+        hitboxes below are guaranteed to agree on where the panel actually
+        is -- no separate copy of the centering math to drift out of sync."""
+        origin = ((WINDOW_W - panel_w) // 2, (WINDOW_H - panel_h) // 2)
+        self.panel_outer_rect = pygame.Rect(*origin, panel_w, panel_h)
+        self.panel_click_targets = []
+        return origin
+
+    def _click_use_inventory(self, index):
+        """Doesn't route through select_inventory_slot (that's bounded to
+        consumables only, for the 1-8 field-hotkey contract -- see
+        _inventory_rows) since a click can land on a Found Gear row past
+        that range; activates the row directly instead."""
+        message = self._activate_inventory_row(index)
+        if message is None:
+            return
+        self.message_log = [message]
+        remaining = self._inventory_rows()
+        self.inventory_cursor = min(index, max(0, len(remaining) - 1))
+        self.dirty = True
+
+    def _click_cast_spell(self, index):
+        self.spellbook_cursor = index
+        self.cast_selected_spell()
+
+    def _click_shop_slot(self, index):
+        self.shop_cursor = index
+        self.activate_shop_row(index)
+
+    def _any_panel_open(self):
+        return (
+            self.inventory_open or self.quest_open or self.shop_open
+            or self.spellbook_open or self.journal_open or self.healer_open
+        )
+
+    def handle_room_click(self, pos):
+        """A single grid step toward the clicked tile, exactly as if the
+        corresponding arrow key had been pressed -- reuses handle_move
+        entirely, so every adjacent-tile interaction (attack/pickup/talk/
+        door/chest/switch/exit) already works with zero new game logic. A
+        tile more than one step away just takes one step along whichever
+        axis is further off (this engine has no pathfinding or diagonal
+        movement anywhere, on keyboard or otherwise, so a click isn't an
+        exception to that). Called once per click and, while the button
+        stays held, again on each held-repeat tick (see tick_move_repeat)
+        with the *current* cursor position each time -- so holding and
+        dragging follows the mouse, the same way a Diablo-style
+        click-to-walk would, without this method needing to know whether
+        it's being called from a fresh click or a repeat."""
+        if self.player.hp <= 0:
+            return
+        local_x, local_y = pos[0] - ROOM_ORIGIN[0], pos[1] - ROOM_ORIGIN[1]
+        if not (0 <= local_x < ROOM_PIXEL_W and 0 <= local_y < ROOM_PIXEL_H):
+            return
+        tile_x, tile_y = local_x // TILE_SIZE, local_y // TILE_SIZE
+        dx_raw, dy_raw = tile_x - self.player.x, tile_y - self.player.y
+        if dx_raw == 0 and dy_raw == 0:
+            return
+        if abs(dx_raw) >= abs(dy_raw):
+            dx, dy = (1 if dx_raw > 0 else -1), 0
+        else:
+            dx, dy = 0, (1 if dy_raw > 0 else -1)
+        self.handle_move(dx, dy)
+
+    def handle_panel_click(self, pos):
+        """Left-click while a panel is open: hits a row's action if the
+        click landed on one (set by whichever panel most recently drew
+        itself), otherwise closes the panel if the click landed outside it
+        -- clicking blank space inside the panel does nothing, same as
+        clicking blank space in the room doesn't move the player."""
+        for rect, callback in self.panel_click_targets:
+            if rect.collidepoint(pos):
+                callback()
+                return
+        if self.panel_outer_rect and not self.panel_outer_rect.collidepoint(pos):
+            self.close_active_panel()
+
+    def close_active_panel(self):
+        """Closes whichever single panel is currently open (only one ever
+        is -- see main.py's key/click guards) and reports whether one was,
+        so both Esc and a click-outside-the-panel can share this."""
+        if self.inventory_open:
+            self.toggle_inventory()
+        elif self.quest_open:
+            self.close_quest_panel()
+        elif self.shop_open:
+            self.close_shop_panel()
+        elif self.healer_open:
+            self.close_healer_panel()
+        elif self.spellbook_open:
+            self.close_spellbook_panel()
+        elif self.journal_open:
+            self.toggle_journal()
+        else:
+            return False
+        return True
+
+    # -- input dispatch (session 13) ----------------------------------
+    #
+    # Everything main.py's event loop used to inline directly now lives
+    # here as methods on Game, taking a raw key/pos rather than a pygame
+    # Event -- this is what makes it possible to unit-test the *actual*
+    # dispatch logic (which key does what, in which mode) without spinning
+    # up a live window and posting real SDL events, and it's also what
+    # let held-key/held-click repeat slot in cleanly: KEYUP and a
+    # once-per-frame repeat tick both need to share state with KEYDOWN,
+    # which was awkward to thread through main()'s inline if/elif chain.
+
+    def handle_mouse_down(self, pos):
+        """Left mouse button pressed: panel clicks are one-shot (see
+        handle_panel_click) but a room click also arms click-and-hold --
+        holding the button repeats handle_room_click at the live cursor
+        position via tick_move_repeat, exactly like a held movement key."""
+        if self._any_panel_open():
+            self.handle_panel_click(pos)
+            return
+        self.handle_room_click(pos)
+        self.mouse_held = True
+        self.next_move_repeat_at = pygame.time.get_ticks() + MOVE_REPEAT_DELAY_MS
+
+    def handle_mouse_up(self):
+        self.mouse_held = False
+
+    def handle_key_down(self, key):
+        """Dispatches one KEYDOWN. Returns True to request quitting the
+        game (Esc pressed with no panel open to close instead) -- main.py
+        still owns the actual `running` flag/event loop, everything else
+        about what a keypress *means* lives here now."""
+        if key == pygame.K_ESCAPE:
+            return not self.close_active_panel()
+        if key == pygame.K_F3:
+            self.debug_overlay = not self.debug_overlay
+            self.dirty = True
+            return False
+        if key == pygame.K_i and not (self.quest_open or self.shop_open or self.journal_open or self.spellbook_open or self.healer_open):
+            self.toggle_inventory()
+            return False
+        if key == pygame.K_m and not (self.quest_open or self.shop_open or self.inventory_open or self.spellbook_open or self.healer_open):
+            self.toggle_journal()
+            return False
+        if key == pygame.K_c and not (self.quest_open or self.shop_open or self.inventory_open or self.journal_open or self.healer_open):
+            self.toggle_spellbook()
+            return False
+
+        if self.quest_open:
+            if key in (pygame.K_u, pygame.K_RETURN):
+                self.claim_quest_reward()
+            return False
+        if self.healer_open:
+            if key in (pygame.K_u, pygame.K_RETURN):
+                self.rest_at_healer()
+            return False
+        if self.shop_open:
+            if key in (pygame.K_UP, pygame.K_w):
+                self.shop_move_cursor(-1)
+            elif key in (pygame.K_DOWN, pygame.K_s):
+                self.shop_move_cursor(1)
+            elif key in (pygame.K_u, pygame.K_RETURN):
+                self.activate_shop_row(self.shop_cursor)
+            return False
+        if self.spellbook_open:
+            if key in (pygame.K_UP, pygame.K_w):
+                self.spellbook_move_cursor(-1)
+            elif key in (pygame.K_DOWN, pygame.K_s):
+                self.spellbook_move_cursor(1)
+            elif key in (pygame.K_u, pygame.K_RETURN):
+                self.cast_selected_spell()
+            return False
+        if self.journal_open:
+            return False  # only Esc/M close it -- nothing else to interact with
+        if self.inventory_open:
+            if key in (pygame.K_UP, pygame.K_w):
+                self.inventory_move_cursor(-1)
+            elif key in (pygame.K_DOWN, pygame.K_s):
+                self.inventory_move_cursor(1)
+            elif key in (pygame.K_u, pygame.K_RETURN):
+                self.use_selected_item()
+            elif pygame.K_1 <= key <= pygame.K_8:
+                self.select_inventory_slot(key - pygame.K_1)
+            return False
+
+        # No panel open: movement (+ arms held-key repeat) and quick-use.
+        if key in MOVE_KEYS:
+            self.handle_move(*MOVE_KEYS[key])
+            self.held_move_key = key
+            self.held_move_dir = MOVE_KEYS[key]
+            self.next_move_repeat_at = pygame.time.get_ticks() + MOVE_REPEAT_DELAY_MS
+        elif pygame.K_1 <= key <= pygame.K_8:
+            self.quick_use_item(key - pygame.K_1)
+        return False
+
+    def handle_key_up(self, key):
+        """Stops keyboard hold-repeat when the key driving it is released.
+        If a different movement key is still physically held (checked live
+        rather than tracked separately), switches the repeat to that
+        direction instead of stopping -- releasing Right while still
+        holding Down, say, keeps walking down rather than freezing."""
+        if key != self.held_move_key:
+            return
+        pressed = pygame.key.get_pressed()
+        for other_key, direction in MOVE_KEYS.items():
+            if other_key != key and pressed[other_key]:
+                self.held_move_key = other_key
+                self.held_move_dir = direction
+                return
+        self.held_move_key = None
+        self.held_move_dir = None
+
+    def clear_held_input(self):
+        """Releases any held-key/held-click movement state -- called on
+        WINDOWFOCUSLOST, since alt-tabbing away can lose a KEYUP/
+        MOUSEBUTTONUP the same way it would for any other app, which would
+        otherwise leave the player walking on their own after the window
+        loses focus (and, if `is_focused` throttles the loop to IDLE_FPS
+        while that's happening, walking as a slow stutter instead of
+        stopping)."""
+        self.held_move_key = None
+        self.held_move_dir = None
+        self.mouse_held = False
+
+    def tick_move_repeat(self):
+        """Continuous movement while a direction key or the left mouse
+        button is held (session 13: a single tap/click only ever advanced
+        one tile, which is far too slow for actual play). A per-frame
+        timestamp check, nothing more -- at most one extra handle_move/
+        handle_room_click call per repeat interval, never per-frame
+        busy-work, so this doesn't threaten the idle-cheap budget the rest
+        of the loop is built around. Gating on `_any_panel_open()` fresh
+        every call (rather than clearing held state when a panel opens)
+        means a held-direction walk that bumps into an NPC and opens their
+        panel just stops advancing immediately, with nothing extra to
+        reset by hand."""
+        if self.player.hp <= 0 or self._any_panel_open():
+            return
+        if self.held_move_dir is None and not self.mouse_held:
+            return
+        now = pygame.time.get_ticks()
+        if now < self.next_move_repeat_at:
+            return
+        if self.held_move_dir is not None:
+            self.handle_move(*self.held_move_dir)
+        else:
+            self.handle_room_click(pygame.mouse.get_pos())
+        self.next_move_repeat_at = now + MOVE_REPEAT_INTERVAL_MS
+
     def _draw_inventory(self):
+        """Panel height grows to fit the Found Gear section (session 16:
+        variable-length, unlike the fixed 8-slot consumable list above it)
+        -- same measure-content-then-build-surface approach session 15's
+        spellbook panel established, rather than a hardcoded offset that a
+        long enough gear bag could eventually clip past."""
         overlay = pygame.Surface((WINDOW_W, WINDOW_H), pygame.SRCALPHA)
         overlay.fill((0, 0, 0, 140))
         self.screen.blit(overlay, (0, 0))
 
-        panel_w, panel_h = 300, 220
-        panel = pygame.Surface((panel_w, panel_h), pygame.SRCALPHA)
-        panel.fill(COLOR_PANEL_BG)
-
+        # 400 (pre-session-16 width) clips the "U/click use/equip" hint
+        # line added below -- measured directly with font.size(), same
+        # discipline session 13 used for this exact class of bug, not
+        # eyeballed.
+        panel_w = 450
         title_font = AssetManager.get_font(16, bold=True)
         font = AssetManager.get_font(14)
 
+        items = self.inventory.as_list()
+        gear = bag_instances(self.player)
+
+        equip_y = 36 + max(1, len(items)) * 20 + 10
+        gear_y = equip_y + 24 + len(SLOTS) * 18 + 14
+        panel_h = gear_y + 24 + max(1, len(gear)) * 18 + 30
+
+        panel = pygame.Surface((panel_w, panel_h), pygame.SRCALPHA)
+        panel.fill(COLOR_PANEL_BG)
+        origin = self._begin_panel_hitboxes(panel_w, panel_h)
+
         panel.blit(title_font.render("Inventory", True, COLOR_TEXT), (10, 8))
 
-        items = self.inventory.as_list()
         if not items:
             panel.blit(font.render("(empty)", True, COLOR_TEXT), (10, 36))
         for i, (item_type, count, item_def) in enumerate(items):
             prefix = "> " if i == self.inventory_cursor else "  "
             label = f"{prefix}{item_def.get('name', item_type)} x{count}"
-            panel.blit(font.render(label, True, COLOR_TEXT), (10, 36 + i * 20))
+            row_y = 36 + i * 20
+            panel.blit(font.render(label, True, COLOR_TEXT), (10, row_y))
+            row_rect = pygame.Rect(origin[0], origin[1] + row_y, panel_w, 18)
+            self.panel_click_targets.append((row_rect, lambda idx=i: self._click_use_inventory(idx)))
 
-        hint = font.render("Up/Down or 1-8 select, U use, I/Esc close", True, (160, 160, 160))
+        # Equipped gear -- bought/upgraded at the Merchant or equipped from
+        # Found Gear below (see _draw_shop_panel / _activate_inventory_row).
+        panel.blit(title_font.render("Equipped", True, COLOR_TEXT), (10, equip_y))
+        for i, slot in enumerate(SLOTS):
+            instance_id = self.player.equipment.get(slot)
+            instance = self.player.equipment_instances.get(instance_id) if instance_id else None
+            line = f"{slot.title()}: {equip_display_name(self.equipment_defs, instance)}"
+            panel.blit(font.render(line, True, COLOR_TEXT), (10, equip_y + 24 + i * 18))
+
+        # Found Gear -- unequipped instances (session 16), whether bought as
+        # a spare or picked up in the Depths. Selecting one here equips it,
+        # sharing the same combined cursor/row indices as the consumable
+        # list above (see _inventory_rows) rather than a second cursor.
+        panel.blit(title_font.render("Found Gear", True, COLOR_TEXT), (10, gear_y))
+        if not gear:
+            panel.blit(font.render("(none)", True, COLOR_TEXT), (10, gear_y + 24))
+        consumable_count = len(items)
+        for gi, instance in enumerate(gear):
+            idx = consumable_count + gi
+            prefix = "> " if idx == self.inventory_cursor else "  "
+            label = f"{prefix}{equip_display_name(self.equipment_defs, instance)}"
+            row_y = gear_y + 24 + gi * 18
+            panel.blit(font.render(label, True, COLOR_TEXT), (10, row_y))
+            row_rect = pygame.Rect(origin[0], origin[1] + row_y, panel_w, 16)
+            self.panel_click_targets.append((row_rect, lambda idx=idx: self._click_use_inventory(idx)))
+
+        hint = font.render("Up/Down or 1-8 select, U/click use/equip, I/Esc close", True, (160, 160, 160))
         panel.blit(hint, (10, panel_h - 24))
 
-        self.screen.blit(panel, ((WINDOW_W - panel_w) // 2, (WINDOW_H - panel_h) // 2))
+        self.screen.blit(panel, origin)
+
+    def _draw_quest_panel(self):
+        overlay = pygame.Surface((WINDOW_W, WINDOW_H), pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, 140))
+        self.screen.blit(overlay, (0, 0))
+
+        panel_w, panel_h = 340, 160
+        panel = pygame.Surface((panel_w, panel_h), pygame.SRCALPHA)
+        panel.fill(COLOR_PANEL_BG)
+        origin = self._begin_panel_hitboxes(panel_w, panel_h)
+
+        title_font = AssetManager.get_font(16, bold=True)
+        font = AssetManager.get_font(14)
+
+        npc_name = self.active_npc.name if self.active_npc else "Quartermaster"
+        panel.blit(title_font.render(npc_name, True, COLOR_TEXT), (10, 8))
+
+        quest = self.current_quest()
+        if quest is None:
+            body = ["No further tasks. You've proven yourself, adventurer."]
+        else:
+            progress = min(self.depths_kills, quest["target"])
+            body = [
+                quest["description"],
+                f"Progress: {progress}/{quest['target']}",
+            ]
+            if self.depths_kills >= quest["target"]:
+                body.append("Press U or click here to claim your reward.")
+
+        for i, line in enumerate(body):
+            row_y = 40 + i * 20
+            panel.blit(font.render(line, True, COLOR_TEXT), (10, row_y))
+            if quest is not None and self.depths_kills >= quest["target"] and i == len(body) - 1:
+                row_rect = pygame.Rect(origin[0], origin[1] + row_y, panel_w, 18)
+                self.panel_click_targets.append((row_rect, self.claim_quest_reward))
+
+        hint = font.render("Esc to close", True, (160, 160, 160))
+        panel.blit(hint, (10, panel_h - 24))
+
+        self.screen.blit(panel, origin)
+
+    def _draw_healer_panel(self):
+        overlay = pygame.Surface((WINDOW_W, WINDOW_H), pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, 140))
+        self.screen.blit(overlay, (0, 0))
+
+        panel_w, panel_h = 340, 160
+        panel = pygame.Surface((panel_w, panel_h), pygame.SRCALPHA)
+        panel.fill(COLOR_PANEL_BG)
+        origin = self._begin_panel_hitboxes(panel_w, panel_h)
+
+        title_font = AssetManager.get_font(16, bold=True)
+        font = AssetManager.get_font(14)
+
+        npc_name = self.active_npc.name if self.active_npc else "Healer"
+        panel.blit(
+            title_font.render(f"{npc_name} -- Gold: {self.player.gold}", True, COLOR_TEXT),
+            (10, 8),
+        )
+
+        cost = self.rest_cost()
+        body = [f"HP {self.player.hp}/{self.player.max_hp}  Mana {self.player.mana}/{self.player.max_mana}"]
+        if cost == 0:
+            body.append("You are already at full strength.")
+        else:
+            body.append(f"Rest and recover fully for {cost} gold.")
+            body.append("Press U or click here to rest.")
+
+        for i, line in enumerate(body):
+            row_y = 40 + i * 20
+            panel.blit(font.render(line, True, COLOR_TEXT), (10, row_y))
+            if cost > 0 and i == len(body) - 1:
+                row_rect = pygame.Rect(origin[0], origin[1] + row_y, panel_w, 18)
+                self.panel_click_targets.append((row_rect, self.rest_at_healer))
+
+        hint = font.render("Esc to close", True, (160, 160, 160))
+        panel.blit(hint, (10, panel_h - 24))
+
+        self.screen.blit(panel, origin)
+
+    def _draw_shop_panel(self):
+        """Session 16: gained two more row types past the original 5 (one
+        per gear slot) -- Identify (pay to reveal a Found Gear instance's
+        enchant/curse before risking equipping it blind) and Remove Curse
+        (pay to free an equipped slot that's stuck, see engine/equipment.py)
+        -- both only appear when there's actually something to act on, so a
+        character who's never touched cursed/unidentified gear sees exactly
+        the same 5-row panel session 8 shipped. Height grows to fit
+        whichever of those rows are present, same pattern as the Inventory
+        panel's Found Gear section above."""
+        overlay = pygame.Surface((WINDOW_W, WINDOW_H), pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, 140))
+        self.screen.blit(overlay, (0, 0))
+
+        panel_w = 460
+        title_font = AssetManager.get_font(16, bold=True)
+        font = AssetManager.get_font(14)
+
+        rows = self._shop_rows()
+        panel_h = 36 + len(rows) * 20 + 34
+
+        panel = pygame.Surface((panel_w, panel_h), pygame.SRCALPHA)
+        panel.fill(COLOR_PANEL_BG)
+        origin = self._begin_panel_hitboxes(panel_w, panel_h)
+
+        npc_name = self.active_npc.name if self.active_npc else "Merchant"
+        panel.blit(
+            title_font.render(f"{npc_name} -- Gold: {self.player.gold}", True, COLOR_TEXT),
+            (10, 8),
+        )
+
+        for i, (kind, payload) in enumerate(rows):
+            prefix = "> " if i == self.shop_cursor else "  "
+            if kind == "slot":
+                slot = payload
+                instance_id = self.player.equipment.get(slot)
+                instance = self.player.equipment_instances.get(instance_id) if instance_id else None
+                equipped_name = equip_display_name(self.equipment_defs, instance)
+                offer_type = next_offer(self.player, self.equipment_defs, slot)
+                if offer_type is None:
+                    line = f"{prefix}{slot.title()}: {equipped_name} (finest owned)"
+                else:
+                    offer = self.equipment_defs[offer_type]
+                    line = f"{prefix}{slot.title()}: {equipped_name} -> {offer['name']} ({offer['value']}g)"
+            elif kind == "identify":
+                instance = self.player.equipment_instances[payload]
+                base_name = self.equipment_defs[instance["base_type"]]["name"]
+                line = f"{prefix}Identify {base_name} ({self.IDENTIFY_COST}g)"
+            else:
+                line = f"{prefix}Remove curse: {payload.title()} ({self.REMOVE_CURSE_COST}g)"
+            row_y = 36 + i * 20
+            panel.blit(font.render(line, True, COLOR_TEXT), (10, row_y))
+            row_rect = pygame.Rect(origin[0], origin[1] + row_y, panel_w, 18)
+            self.panel_click_targets.append((row_rect, lambda idx=i: self._click_shop_slot(idx)))
+
+        hint = font.render("Up/Down select, U/Enter/click act, Esc close", True, (160, 160, 160))
+        panel.blit(hint, (10, panel_h - 24))
+
+        self.screen.blit(panel, origin)
+
+    def _draw_spellbook_panel(self):
+        """Panel height is computed from the actual known-spell count
+        (session 15: fixed at 340 since session 12, which fit the original
+        5 spells -- adding divination pushed a 7th spell past that and
+        garbled the hint line into the last description, the same class of
+        clipping bug session 13's panel-width fix addressed). A fixed
+        *width* is still fine (descriptions word-wrap to it), only height
+        needs to grow with content, so this measures wrapped line counts
+        first, then builds the panel surface at the exact height needed --
+        no arbitrary cap, since the spell list is small and only grows by
+        one entry per future session."""
+        overlay = pygame.Surface((WINDOW_W, WINDOW_H), pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, 140))
+        self.screen.blit(overlay, (0, 0))
+
+        panel_w = 420
+        title_font = AssetManager.get_font(16, bold=True)
+        font = AssetManager.get_font(14)
+
+        def wrap(text, max_width):
+            words = text.split(" ")
+            lines, current = [], ""
+            for word in words:
+                candidate = f"{current} {word}".strip()
+                if font.size(candidate)[0] <= max_width:
+                    current = candidate
+                else:
+                    if current:
+                        lines.append(current)
+                    current = word
+            if current:
+                lines.append(current)
+            return lines
+
+        spells = self._known_spell_list()
+        entries = [(spell, wrap(spell["description"], panel_w - 36)) for spell in spells]
+
+        y = 40
+        if not entries:
+            y += 20
+        for _spell, wrapped_lines in entries:
+            y += 18 + 16 * len(wrapped_lines) + 8
+        panel_h = max(160, y + 34)  # +34: hint line and its bottom margin
+
+        panel = pygame.Surface((panel_w, panel_h), pygame.SRCALPHA)
+        panel.fill(COLOR_PANEL_BG)
+        origin = self._begin_panel_hitboxes(panel_w, panel_h)
+
+        panel.blit(
+            title_font.render(f"Spellbook -- Mana {self.player.mana}/{self.player.max_mana}", True, COLOR_TEXT),
+            (10, 8),
+        )
+
+        y = 40
+        if not entries:
+            panel.blit(font.render("No spells known yet.", True, COLOR_TEXT), (10, y))
+        for i, (spell, wrapped_lines) in enumerate(entries):
+            row_top = y
+            prefix = "> " if i == self.spellbook_cursor else "  "
+            line = f"{prefix}{spell['name']} ({spell['mana_cost']} MP)"
+            panel.blit(font.render(line, True, COLOR_TEXT), (10, y))
+            y += 18
+            for wrapped_line in wrapped_lines:
+                panel.blit(font.render(wrapped_line, True, (170, 170, 170)), (26, y))
+                y += 16
+            y += 8
+            row_rect = pygame.Rect(origin[0], origin[1] + row_top, panel_w, y - row_top)
+            self.panel_click_targets.append((row_rect, lambda idx=i: self._click_cast_spell(idx)))
+
+        hint = font.render("Up/Down select, U/Enter/click cast, Esc close", True, (160, 160, 160))
+        panel.blit(hint, (10, panel_h - 24))
+
+        self.screen.blit(panel, origin)
+
+    def _draw_journal_panel(self):
+        overlay = pygame.Surface((WINDOW_W, WINDOW_H), pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, 140))
+        self.screen.blit(overlay, (0, 0))
+
+        panel_w, panel_h = 460, 470
+        panel = pygame.Surface((panel_w, panel_h), pygame.SRCALPHA)
+        panel.fill(COLOR_PANEL_BG)
+        origin = self._begin_panel_hitboxes(panel_w, panel_h)
+
+        title_font = AssetManager.get_font(16, bold=True)
+        font = AssetManager.get_font(14)
+
+        panel.blit(title_font.render("Quest Log", True, COLOR_TEXT), (10, 8))
+        for i, quest in enumerate(self.quests):
+            if i < self.quest_index:
+                status = "Complete"
+            elif i == self.quest_index:
+                status = f"{min(self.depths_kills, quest['target'])}/{quest['target']}"
+            else:
+                status = "Locked"
+            line = f"{quest['description']} -- {status}"
+            panel.blit(font.render(line, True, COLOR_TEXT), (10, 32 + i * 18))
+
+        map_top = 32 + len(self.quests) * 18 + 16
+        panel.blit(title_font.render("Dungeon Map", True, COLOR_TEXT), (10, map_top))
+        self._draw_dungeon_map(panel, 10, map_top + 24)
+
+        hint = font.render("M or Esc to close", True, (160, 160, 160))
+        panel.blit(hint, (10, panel_h - 24))
+
+        self.screen.blit(panel, origin)
+
+    def _draw_dungeon_map(self, panel, origin_x, origin_y):
+        """A room-grid automap of the current Depths floor, centered on the
+        player -- every dungeon level is an unbounded plane (see
+        procgen.py), so there's no fixed level size to fit on screen, only
+        a window around wherever the player currently is. Undiscovered
+        cells are simply left blank; (0, 0) is always where both stairs
+        live (see engine/save.py's get_discovered_rooms docstring)."""
+        font = AssetManager.get_font(14)
+        if not self.current_room_id.startswith("proc:"):
+            panel.blit(
+                font.render("Not in the Depths -- no floor map here.", True, (160, 160, 160)),
+                (origin_x, origin_y),
+            )
+            return
+
+        _, _seed_str, level_str, gx_str, gy_str = self.current_room_id.split(":")
+        level, px, py = int(level_str), int(gx_str), int(gy_str)
+        visited = self.discovered.get(level, set())
+
+        cell = 26
+        radius = 4  # a 9x9 window of rooms around the player
+        for dy in range(-radius, radius + 1):
+            for dx in range(-radius, radius + 1):
+                gx, gy = px + dx, py + dy
+                if (gx, gy) not in visited:
+                    continue
+                cx = origin_x + (dx + radius) * cell
+                cy = origin_y + (dy + radius) * cell
+                rect = pygame.Rect(cx, cy, cell - 3, cell - 3)
+
+                color = (220, 180, 40) if (gx, gy) == (0, 0) else (70, 70, 82)
+                pygame.draw.rect(panel, color, rect)
+                if (gx, gy) == (0, 0) and level > 1:
+                    pygame.draw.rect(panel, (170, 140, 220), rect, 3)
+                if (gx, gy) == (px, py):
+                    pygame.draw.rect(panel, (255, 255, 255), rect, 2)
+
+                doors = room_doors(self.seed, level, gx, gy)
+                door_color = (130, 130, 145)
+                if doors.get("N"):
+                    pygame.draw.rect(panel, door_color, (cx + cell // 2 - 3, cy - 2, 6, 6))
+                if doors.get("S"):
+                    pygame.draw.rect(panel, door_color, (cx + cell // 2 - 3, cy + cell - 7, 6, 6))
+                if doors.get("E"):
+                    pygame.draw.rect(panel, door_color, (cx + cell - 7, cy + cell // 2 - 3, 6, 6))
+                if doors.get("W"):
+                    pygame.draw.rect(panel, door_color, (cx - 2, cy + cell // 2 - 3, 6, 6))
+
+
+def _draw_menu(screen, options, cursor, confirming_new_game, hit_rects):
+    """`hit_rects` is cleared and repopulated with (pygame.Rect, index)
+    pairs for each clickable option, mirroring Game._begin_panel_hitboxes'
+    pattern for the in-game panels -- run_menu hit-tests clicks against
+    whatever this draw call actually put on screen. The Y/N confirmation
+    step deliberately gets no hit rects (see run_menu's docstring): erasing
+    a save is destructive enough to want a real keypress, not a stray
+    click."""
+    screen.fill(COLOR_BG)
+    title_font = AssetManager.get_font(20, bold=True)
+    option_font = AssetManager.get_font(16, bold=True)
+    hint_font = AssetManager.get_font(14)
+
+    title = title_font.render("Wayfarer", True, COLOR_TEXT)
+    screen.blit(title, (WINDOW_W // 2 - title.get_width() // 2, 140))
+
+    hit_rects.clear()
+    if confirming_new_game:
+        lines = [
+            "Erase your current save and start a new game?",
+            "Y to confirm, N or Esc to cancel",
+        ]
+        for i, line in enumerate(lines):
+            text = hint_font.render(line, True, COLOR_TEXT)
+            screen.blit(text, (WINDOW_W // 2 - text.get_width() // 2, 280 + i * 22))
+    else:
+        for i, label in enumerate(options):
+            color = COLOR_TEXT if i == cursor else (140, 140, 140)
+            prefix = "> " if i == cursor else "  "
+            text = option_font.render(f"{prefix}{label}", True, color)
+            pos = (WINDOW_W // 2 - 90, 240 + i * 34)
+            screen.blit(text, pos)
+            hit_rects.append((pygame.Rect(pos[0], pos[1], 160, text.get_height()), i))
+        hint = hint_font.render("Up/Down select, Enter/click confirm, Esc quit", True, (160, 160, 160))
+        screen.blit(hint, (WINDOW_W // 2 - hint.get_width() // 2, WINDOW_H - 40))
+
+    pygame.display.flip()
+
+
+def run_menu(screen, has_save):
+    """Title screen shown before a Game exists. Returns "continue",
+    "new_game", or "quit". Same hard-capped, dirty-flag-redraw discipline
+    as the main loop, just simpler (no idle throttling -- it's a transient
+    screen, not something the game sits in for long). Mouse support
+    (session 13) only covers the plain option list -- the New-Game-over-an-
+    existing-save Y/N confirmation stays keyboard-only, deliberately: it's
+    a destructive action (wipes the save), and a stray click shouldn't be
+    able to trigger it the way a deliberate keypress can."""
+    options = ["Continue", "New Game", "Quit"] if has_save else ["New Game", "Quit"]
+    cursor = 0
+    confirming_new_game = False
+    clock = pygame.time.Clock()
+    dirty = True
+    hit_rects = []
+
+    def activate(choice):
+        """Resolves a selected option -- shared by Enter/Space and a mouse
+        click on that option's row so the two input paths can't drift."""
+        nonlocal confirming_new_game, dirty
+        if choice == "Continue":
+            return "continue"
+        elif choice == "New Game":
+            if has_save:
+                confirming_new_game = True
+                dirty = True
+            else:
+                return "new_game"
+        elif choice == "Quit":
+            return "quit"
+        return None
+
+    while True:
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                return "quit"
+            elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1 and not confirming_new_game:
+                for rect, i in hit_rects:
+                    if rect.collidepoint(event.pos):
+                        cursor = i
+                        dirty = True
+                        result = activate(options[i])
+                        if result is not None:
+                            return result
+                        break
+            elif event.type == pygame.KEYDOWN:
+                if confirming_new_game:
+                    if event.key == pygame.K_y:
+                        return "new_game"
+                    elif event.key in (pygame.K_n, pygame.K_ESCAPE):
+                        confirming_new_game = False
+                        dirty = True
+                elif event.key in (pygame.K_UP, pygame.K_w):
+                    cursor = (cursor - 1) % len(options)
+                    dirty = True
+                elif event.key in (pygame.K_DOWN, pygame.K_s):
+                    cursor = (cursor + 1) % len(options)
+                    dirty = True
+                elif event.key in (pygame.K_RETURN, pygame.K_SPACE):
+                    result = activate(options[cursor])
+                    if result is not None:
+                        return result
+                elif event.key == pygame.K_ESCAPE:
+                    return "quit"
+
+        if dirty:
+            _draw_menu(screen, options, cursor, confirming_new_game, hit_rects)
+            dirty = False
+        clock.tick(ACTIVE_FPS)
 
 
 def main():
@@ -355,14 +1953,22 @@ def main():
     pygame.display.set_caption("Wayfarer")
     clock = pygame.time.Clock()
 
-    game = Game(screen)
+    save_probe = SaveManager(SAVE_PATH)
+    has_save = save_probe.has_save()
+    save_probe.close()
+
+    action = run_menu(screen, has_save)
+    if action == "quit":
+        pygame.quit()
+        sys.exit()
+
+    game = Game(screen, new_game=(action == "new_game"))
 
     running = True
     is_focused = True
     fps_target = ACTIVE_FPS
-    debug_overlay = False
 
-    print("Wayfarer running. Arrows/WASD move, 1-8 quick-use item, I inventory, F3 debug, ESC quit.")
+    print("Wayfarer running. Arrows/WASD move (bump an NPC to talk; hold to keep walking), left-click an adjacent tile to do the same (hold and drag to keep walking toward the cursor), 1-8 quick-use item, I inventory, C spellbook, M quest log/map, F3 debug, ESC quit. Panels: click a row to use/cast/buy it, click outside to close.")
 
     while running:
         for event in pygame.event.get():
@@ -372,6 +1978,7 @@ def main():
             elif event.type == pygame.WINDOWFOCUSLOST:
                 is_focused = False
                 fps_target = IDLE_FPS
+                game.clear_held_input()
                 game.dirty = True
 
             elif event.type == pygame.WINDOWFOCUSGAINED:
@@ -379,42 +1986,29 @@ def main():
                 fps_target = ACTIVE_FPS
                 game.dirty = True
 
+            elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                game.handle_mouse_down(event.pos)
+
+            elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
+                game.handle_mouse_up()
+
             elif event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_ESCAPE:
-                    if game.inventory_open:
-                        game.toggle_inventory()
-                    else:
-                        running = False
-                elif event.key == pygame.K_F3:
-                    debug_overlay = not debug_overlay
-                    game.dirty = True
-                elif event.key == pygame.K_i:
-                    game.toggle_inventory()
-                elif game.inventory_open:
-                    if event.key in (pygame.K_UP, pygame.K_w):
-                        game.inventory_move_cursor(-1)
-                    elif event.key in (pygame.K_DOWN, pygame.K_s):
-                        game.inventory_move_cursor(1)
-                    elif event.key in (pygame.K_u, pygame.K_RETURN):
-                        game.use_selected_item()
-                    elif pygame.K_1 <= event.key <= pygame.K_8:
-                        game.select_inventory_slot(event.key - pygame.K_1)
-                else:
-                    if event.key in (pygame.K_LEFT, pygame.K_a):
-                        game.handle_move(-1, 0)
-                    elif event.key in (pygame.K_RIGHT, pygame.K_d):
-                        game.handle_move(1, 0)
-                    elif event.key in (pygame.K_UP, pygame.K_w):
-                        game.handle_move(0, -1)
-                    elif event.key in (pygame.K_DOWN, pygame.K_s):
-                        game.handle_move(0, 1)
-                    elif pygame.K_1 <= event.key <= pygame.K_8:
-                        game.quick_use_item(event.key - pygame.K_1)
+                if game.handle_key_down(event.key):
+                    running = False
+
+            elif event.type == pygame.KEYUP:
+                game.handle_key_up(event.key)
+
+        # Held-key/held-click continuous movement (session 13) is a timer
+        # check, not an event -- ticked once per frame here so it fires at
+        # a steady pace regardless of how many (or few) real input events
+        # showed up this frame.
+        game.tick_move_repeat()
 
         # The debug overlay redraws continuously so its FPS reading is live;
         # otherwise we only ever redraw on an actual state change.
-        if game.dirty or debug_overlay:
-            game.draw(fps_target, is_focused, clock.get_fps(), debug_overlay)
+        if game.dirty or game.debug_overlay:
+            game.draw(fps_target, is_focused, clock.get_fps())
             game.dirty = False
 
         clock.tick(fps_target)

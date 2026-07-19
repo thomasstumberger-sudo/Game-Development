@@ -1,16 +1,129 @@
 {
+  "potion_minor": {
+    "name": "Minor Health Potion",
+    "sprite": "item_potion_minor",
+    "effect": "heal",
+    "value": 8,
+    "description": "Restores 8 HP.",
+    "family": "potion"
+  },
   "potion": {
     "name": "Health Potion",
     "sprite": "item_potion",
     "effect": "heal",
     "value": 15,
-    "description": "Restores 15 HP."
+    "description": "Restores 15 HP.",
+    "family": "potion"
+  },
+  "potion_greater": {
+    "name": "Potion of Greater Healing",
+    "sprite": "item_potion_greater",
+    "effect": "heal",
+    "value": 26,
+    "description": "Restores 26 HP.",
+    "family": "potion"
+  },
+  "whetstone_minor": {
+    "name": "Worn Whetstone",
+    "sprite": "item_whetstone_minor",
+    "effect": "buff_attack",
+    "value": 1,
+    "description": "Slightly hones your weapon. +1 Attack permanently.",
+    "family": "whetstone"
   },
   "whetstone": {
     "name": "Whetstone",
     "sprite": "item_whetstone",
     "effect": "buff_attack",
     "value": 2,
-    "description": "Permanently sharpens your weapon. +2 Attack."
+    "description": "Permanently sharpens your weapon. +2 Attack.",
+    "family": "whetstone"
+  },
+  "whetstone_greater": {
+    "name": "Whetstone of Might",
+    "sprite": "item_whetstone_greater",
+    "effect": "buff_attack",
+    "value": 4,
+    "description": "A masterwork hone. +4 Attack permanently.",
+    "family": "whetstone"
+  },
+  "shield_minor": {
+    "name": "Cracked Shield",
+    "sprite": "item_shield_minor",
+    "effect": "buff_defense",
+    "value": 1,
+    "description": "A dented buckler. +1 Defense permanently.",
+    "family": "shield"
+  },
+  "shield": {
+    "name": "Shield",
+    "sprite": "item_shield",
+    "effect": "buff_defense",
+    "value": 2,
+    "description": "A sturdy shield. Permanently +2 Defense.",
+    "family": "shield"
+  },
+  "shield_greater": {
+    "name": "Shield of Warding",
+    "sprite": "item_shield_greater",
+    "effect": "buff_defense",
+    "value": 4,
+    "description": "A masterfully wrought shield. +4 Defense permanently.",
+    "family": "shield"
+  },
+  "gold_minor": {
+    "name": "Small Pouch of Gold",
+    "sprite": "item_gold_minor",
+    "effect": "gold",
+    "value": 5,
+    "description": "5 gold.",
+    "family": "gold"
+  },
+  "gold": {
+    "name": "Pouch of Gold",
+    "sprite": "item_gold",
+    "effect": "gold",
+    "value": 12,
+    "description": "12 gold.",
+    "family": "gold"
+  },
+  "gold_greater": {
+    "name": "Sack of Gold",
+    "sprite": "item_gold_greater",
+    "effect": "gold",
+    "value": 25,
+    "description": "25 gold.",
+    "family": "gold"
+  },
+  "mana_potion_minor": {
+    "name": "Minor Mana Potion",
+    "sprite": "item_mana_potion_minor",
+    "effect": "restore_mana",
+    "value": 6,
+    "description": "Restores 6 mana.",
+    "family": "mana_potion"
+  },
+  "mana_potion": {
+    "name": "Mana Potion",
+    "sprite": "item_mana_potion",
+    "effect": "restore_mana",
+    "value": 12,
+    "description": "Restores 12 mana.",
+    "family": "mana_potion"
+  },
+  "mana_potion_greater": {
+    "name": "Potion of Greater Mana",
+    "sprite": "item_mana_potion_greater",
+    "effect": "restore_mana",
+    "value": 20,
+    "description": "Restores 20 mana.",
+    "family": "mana_potion"
+  },
+  "key": {
+    "name": "Rusty Key",
+    "sprite": "item_key",
+    "effect": "none",
+    "value": 0,
+    "description": "Opens a nearby locked door. Consumed automatically -- no need to press U."
   }
 }
