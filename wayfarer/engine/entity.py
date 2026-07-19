@@ -46,6 +46,36 @@ class Enemy(Entity):
         self.gold_reward = stats.get("gold_reward", [0, 0])
         self.aggro_range = stats.get("aggro_range", 4)
         self.wander_chance = stats.get("wander_chance", 0.15)
+        # Session 21: a bite/sting chance that inflicts the player with a
+        # damage-over-time status (Castle of the Winds' Viper) -- zero for
+        # every enemy type that doesn't define these keys, so existing
+        # enemies (data/enemies.json) needed no changes.
+        self.poison_chance = stats.get("poison_chance", 0)
+        self.poison_damage = stats.get("poison_damage", 0)
+        self.poison_duration = stats.get("poison_duration", 0)
+        # Session 22: elemental damage (Castle of the Winds' fire/cold/
+        # lightning) -- "physical" (the default, every pre-existing enemy)
+        # is mitigated by the player's defense as always; anything else
+        # bypasses defense entirely and is mitigated by resist_elemental
+        # instead (see combat.py). resist_elements is the reverse case: how
+        # much *this* enemy resists an incoming elemental spell of a given
+        # type (1.0 = immune, matching CotW's dragons being immune to their
+        # own breath element), keyed by damage_type, empty for everything
+        # that doesn't define it.
+        self.damage_type = stats.get("damage_type", "physical")
+        self.resist_elements = stats.get("resist_elements", {})
+        # Session 24: the Wraith (Castle of the Winds' mana/intelligence-
+        # draining undead) -- a bite/touch chance that permanently lowers
+        # the player's usable mana ceiling rather than a wears-off-on-its-
+        # own DoT like the Viper's poison (see Player.mana_drain, cured only
+        # by paying the Healer, not by time). Zero for every enemy that
+        # doesn't define these, same convention as poison_chance above.
+        self.drain_chance = stats.get("drain_chance", 0)
+        self.drain_amount = stats.get("drain_amount", 0)
+        # CotW's wraiths "pass through walls and doors" -- take_turn below
+        # skips the wall check (not the closed-door/gate one, still folded
+        # into occupied_positions by the caller) when this is set.
+        self.phases_walls = stats.get("phases_walls", False)
 
     @property
     def alive(self):
@@ -77,7 +107,7 @@ class Enemy(Entity):
                 nx, ny = self.x + step_dx, self.y + step_dy
                 if (nx, ny) == (player.x, player.y):
                     return {"type": "attack"}
-                if room.is_walkable(nx, ny) and (nx, ny) not in occupied_positions:
+                if room.is_walkable(nx, ny, ignore_walls=self.phases_walls) and (nx, ny) not in occupied_positions:
                     self.x, self.y = nx, ny
                     return {"type": "moved"}
             return {"type": "idle"}
@@ -85,7 +115,7 @@ class Enemy(Entity):
         if random.random() < self.wander_chance:
             step_dx, step_dy = random.choice([(1, 0), (-1, 0), (0, 1), (0, -1)])
             nx, ny = self.x + step_dx, self.y + step_dy
-            if room.is_walkable(nx, ny) and (nx, ny) not in occupied_positions:
+            if room.is_walkable(nx, ny, ignore_walls=self.phases_walls) and (nx, ny) not in occupied_positions:
                 self.x, self.y = nx, ny
                 return {"type": "moved"}
 
@@ -151,6 +181,37 @@ class Player(Entity):
         # (see save.py) so a buff survives a save/quit mid-fight.
         self.buff_defense_bonus = stats.get("buff_defense_bonus", 0)
         self.buff_defense_turns = stats.get("buff_defense_turns", 0)
+        # Session 21: poison (Castle of the Winds' Viper/Giant Scorpion bite)
+        # -- a damage-over-time status, same "separate persisted field, not a
+        # mutate-then-reverse stat" reasoning as the buff above (it has to
+        # expire/tick on its own schedule, see main.py's Game._advance_turn).
+        self.poison_turns = stats.get("poison_turns", 0)
+        self.poison_damage = stats.get("poison_damage", 0)
+        # Session 22: elemental resistance (a percentage, 0-100), sourced
+        # entirely from an equipped amulet -- see engine/equipment.py, which
+        # replaces amulets' old flat max_hp bonus with this. Baked in and
+        # reversed the same permanent way attack/defense's equipment bonuses
+        # already are (equip()/unequip() add/subtract it directly), so it
+        # survives a save/reload without re-deriving it from gear.
+        self.resist_elemental = stats.get("resist_elemental", 0)
+        # Session 24: Castle of the Winds' other amulet-worthy resistance --
+        # "resistance to an element or undead stat draining" (session 18's
+        # own docstring note). Mitigates a Wraith's drain the same way
+        # resist_elemental mitigates fire/cold/lightning, sourced from the
+        # same Amulet line (see engine/equipment.py) rather than a second
+        # item line -- this engine keeps one amulet slot doing double duty.
+        self.resist_undead = stats.get("resist_undead", 0)
+        # Permanent (until paid off at the Healer, see main.py's
+        # cure_mana_drain) reduction to the *usable* mana ceiling -- a
+        # separate field rather than mutating max_mana directly, same
+        # "needs its own reversal path, can't just subtract and forget"
+        # reasoning buff_defense_bonus/poison already established, except
+        # this one doesn't wear off on a timer at all, it has to be paid
+        # off. See effective_max_mana() below and main.py's Game._advance_turn
+        # callers, all of which now cap `mana` against that instead of the
+        # raw stat.
+        self.mana_drain = stats.get("mana_drain", 0)
+        self.mana = min(self.mana, self.effective_max_mana())
         # Equipment bonuses are already baked into attack/defense above (see
         # engine/equipment.py) -- this dict only records what's worn (an
         # instance_id since session 16, a bare item_type before it), for the
@@ -169,6 +230,14 @@ class Player(Entity):
         ]
         self.next_equip_instance_num = max(existing_nums, default=0)
         self.facing = (0, 1)
+
+    def effective_max_mana(self):
+        """The mana ceiling after a Wraith's drain (session 24) -- every
+        place that used to cap against max_mana directly (level-up refill,
+        mana potions, resting at the Healer, the HUD bar/text) now caps
+        against this instead, so a drained player can't be topped back up
+        past what they're actually able to hold right now."""
+        return max(0, self.max_mana - self.mana_drain)
 
     def try_move(self, dx, dy, room, enemies, items, npcs=(),
                  locked_doors=(), gates=(), chests=(), switches=(), blocked=None):

@@ -9,9 +9,14 @@ PROGRESS.MD). Casting itself (targeting, mana spend, effect resolution)
 needs live Room/Enemy state, so it lives on Game in main.py rather than
 here, the same split combat.py/main.py already have for bump attacks.
 
-Future work (out of scope for this pass): purchasable spellbooks, more than
-one spell per category, quick-cast hotkey (today casting only happens from
-the Spellbook panel).
+Session 19 added the other half of the source material's system: a Scholar
+NPC (see main.py's buy_spellbook) sells any not-yet-known spell for gold,
+learned immediately regardless of level -- it adds straight to the same
+known_spells set newly_learned() feeds, so nothing here needed to change.
+
+Future work (out of scope for this pass): spellbooks as dungeon loot rather
+than shop-only, more than one spell per category, quick-cast hotkey (today
+casting only happens from the Spellbook panel).
 """
 
 

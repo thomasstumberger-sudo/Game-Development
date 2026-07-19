@@ -31,7 +31,7 @@ from engine.procgen import generate_room, scale_stats_for_level, room_doors
 from engine.equipment import (
     SLOTS, equip as equip_item, next_offer, create_instance,
     create_shop_instance, bag_instances, display_name as equip_display_name,
-    remove_curse as remove_curse_item,
+    remove_curse as remove_curse_item, discard_instance,
 )
 from engine.spells import newly_learned
 
@@ -51,6 +51,16 @@ ROOM_ORIGIN = ((WINDOW_W - ROOM_PIXEL_W) // 2, 56)
 
 ACTIVE_FPS = 30
 IDLE_FPS = 5
+
+# Session 18: most slot keys read fine through plain .title() (weapon ->
+# "Weapon"), but ring1/ring2/amulet don't -- this is the one departure from
+# that generic formatting, everything else about SLOTS stays untouched.
+SLOT_LABELS = {"ring1": "Ring 1", "ring2": "Ring 2"}
+
+
+def slot_label(slot):
+    return SLOT_LABELS.get(slot, slot.title())
+
 
 # Physical key -> single-step direction, shared by the initial KEYDOWN move
 # and by held-key repeat (session 13) so both agree on what counts as a
@@ -82,6 +92,8 @@ COLOR_MP = (60, 110, 220)
 COLOR_MP_BG = (15, 20, 50)
 COLOR_TEXT = (230, 230, 230)
 COLOR_DEBUG = (0, 255, 0)
+COLOR_POISON = (120, 200, 90)
+COLOR_DRAIN = (150, 150, 230)
 COLOR_PANEL_BG = (20, 20, 28, 235)
 
 
@@ -177,6 +189,9 @@ class Game:
         self.shop_open = False
         self.shop_cursor = 0
         self.healer_open = False
+        self.healer_cursor = 0
+        self.bookshop_open = False
+        self.bookshop_cursor = 0
         self.journal_open = False
         self.spellbook_open = False
         self.spellbook_cursor = 0
@@ -255,14 +270,36 @@ class Game:
 
         AssetManager.load_sprite("enemy_skeleton", f"{C}/tile_24_0.png")
         AssetManager.load_sprite("enemy_cultist", f"{C}/tile_30_6.png")
+        # Session 24: the Wraith -- no incorporeal/ghost sprite anywhere in
+        # the (bipedal-humanoid) character sheet, so tint the skeleton's own
+        # art a cold pale blue-violet (make_tint_variant, same trick as
+        # stairs_up/gate/locked_door/mana potions) rather than force a bad
+        # fit or add another shape placeholder -- an undead reusing an
+        # undead's own silhouette, just ghostlier, reads correctly at a
+        # glance next to the plain white Skeleton.
+        AssetManager.make_tint_variant("enemy_wraith", "enemy_skeleton", (130, 150, 220), strength=0.8)
         # No slime/blob-shaped monster anywhere in the character sheet (it's
         # all bipedal humanoids) -- kept as the original procedural
         # placeholder rather than force a bad fit.
         AssetManager.make_placeholder("enemy_slime", (60, 170, 90))
+        # Session 21: same reasoning as the slime above -- no matching
+        # sprite exists, and a diamond silhouette keeps it visually distinct
+        # from the slime's circle at a glance.
+        AssetManager.make_placeholder("enemy_viper", (150, 170, 40), shape="diamond")
+        # Session 22: same reasoning again -- no dragon anywhere in the
+        # character sheet either. A red triangle reads as more aggressive
+        # than the viper's diamond, distinct at a glance from every other
+        # enemy silhouette in the game.
+        AssetManager.make_placeholder("enemy_dragon", (200, 60, 30), shape="triangle")
         AssetManager.load_sprite("player", f"{C}/tile_12_6.png")
         AssetManager.load_sprite("npc_quartermaster", f"{C}/tile_12_12.png")
         AssetManager.load_sprite("npc_merchant", f"{C}/tile_12_27.png")
         AssetManager.load_sprite("npc_healer", f"{C}/tile_12_9.png")
+        # Session 19: unarmored, no bow/helmet -- the one portrait in this
+        # row that doesn't read as a fighter, picked (via a rendered/
+        # labeled contact sheet, same discipline session 9 established) to
+        # stand apart from the three already-placed NPCs at a glance.
+        AssetManager.load_sprite("npc_scholar", f"{C}/tile_12_21.png")
 
         # Consumables: each minor/normal/greater tier is now real distinct
         # art (not a color-dot variant of one image like session 5's
@@ -306,6 +343,21 @@ class Game:
         AssetManager.load_sprite("eq_boots_basic", f"{I}/tile_10_8.png")
         AssetManager.load_sprite("eq_boots", f"{I}/tile_11_8.png")
         AssetManager.load_sprite("eq_boots_masterwork", f"{I}/tile_10_12.png")
+        # Session 18: ring/amulet slots. Sprites verified by rendering and
+        # visually inspecting eval/_sheet.png before picking coordinates,
+        # same discipline session 9 established -- rings live in the
+        # sheet's dedicated jewelry rows (64/65/68), amulets in its pendant
+        # row (0), both found by cropping and labeling candidate rows
+        # rather than guessing from divisibility.
+        AssetManager.load_sprite("eq_ring_might_basic", f"{I}/tile_65_6.png")
+        AssetManager.load_sprite("eq_ring_might_fine", f"{I}/tile_64_10.png")
+        AssetManager.load_sprite("eq_ring_might_masterwork", f"{I}/tile_68_15.png")
+        AssetManager.load_sprite("eq_ring_warding_basic", f"{I}/tile_65_10.png")
+        AssetManager.load_sprite("eq_ring_warding_fine", f"{I}/tile_64_7.png")
+        AssetManager.load_sprite("eq_ring_warding_masterwork", f"{I}/tile_64_13.png")
+        AssetManager.load_sprite("eq_amulet_basic", f"{I}/tile_0_3.png")
+        AssetManager.load_sprite("eq_amulet_fine", f"{I}/tile_0_4.png")
+        AssetManager.load_sprite("eq_amulet_masterwork", f"{I}/tile_0_5.png")
 
         for name in ("hit", "kill", "pickup", "levelup", "door"):
             AssetManager.load_sfx(name, f"assets/sfx/{name}.wav")
@@ -482,7 +534,10 @@ class Game:
         """Every player action that counts as a turn (move, quick-use item,
         cast a spell) goes through here instead of touching turn_count
         directly, so the temporary-buff countdown (session 12) can never be
-        threaded through only some of the call sites and drift out of sync."""
+        threaded through only some of the call sites and drift out of sync.
+        Returns any messages the tick itself generated (session 21's poison
+        damage/wear-off) -- callers fold these into whatever message list
+        they're building for this turn."""
         self.turn_count += 1
         if self.player.buff_defense_turns > 0:
             self.player.buff_defense_turns -= 1
@@ -492,6 +547,19 @@ class Game:
             self.detect_monsters_turns -= 1
         if self.detect_treasure_turns > 0:
             self.detect_treasure_turns -= 1
+
+        messages = []
+        if self.player.poison_turns > 0:
+            self.player.poison_turns -= 1
+            dmg = self.player.poison_damage
+            self.player.hp = max(0, self.player.hp - dmg)
+            messages.append(f"The poison saps {dmg} HP from you.")
+            if self.player.poison_turns == 0:
+                self.player.poison_damage = 0
+                messages.append("The poison wears off.")
+            if self.player.hp <= 0:
+                messages.append("You succumb to the poison...")
+        return messages
 
     def _learn_new_spells(self, messages):
         """Grants any spell whose unlock_level the player's current level
@@ -505,7 +573,14 @@ class Game:
     def handle_move(self, dx, dy):
         if self.player.hp <= 0:
             return
-        self._advance_turn()
+        poison_msgs = self._advance_turn()
+        if self.player.hp <= 0:
+            # Poison finished the player off before the move itself ever
+            # resolved -- don't also process an attack/npc-talk/exit this
+            # turn, same "a dead player takes no further action" contract
+            # the top-of-function guard above already enforces.
+            self._handle_death(poison_msgs)
+            return
         result = self.player.try_move(
             dx, dy, self.room, self.enemies, self.items, self.npcs,
             locked_doors=self.locked_doors, gates=self.gates,
@@ -515,7 +590,7 @@ class Game:
         self._reveal_region_at_player()
         self.dirty = True
         kind = result["type"]
-        messages = []
+        messages = list(poison_msgs)
 
         if kind == "attack":
             enemy = result["enemy"]
@@ -537,12 +612,16 @@ class Game:
         elif kind == "npc":
             npc = result["npc"]
             self.active_npc = npc
-            self.message_log = [npc.greeting]
+            self.message_log = messages + [npc.greeting]
             if npc.type == "merchant":
                 self.shop_open = True
                 self.shop_cursor = 0
             elif npc.type == "healer":
                 self.healer_open = True
+                self.healer_cursor = 0
+            elif npc.type == "scholar":
+                self.bookshop_open = True
+                self.bookshop_cursor = 0
             else:
                 self.quest_open = True
             return  # talking doesn't give nearby enemies a free turn
@@ -597,6 +676,17 @@ class Game:
             chest = result["chest"]
             if chest["id"] in self.opened_chest_ids:
                 pass  # already looted -- just a normal walk-through
+            elif "equipment" in chest:
+                # Session 17: a vault chest can hold a per-instance gear
+                # drop, same as floor loot -- lands unidentified in the bag,
+                # never slot-limited (see the pickup branch above, which
+                # this mirrors exactly).
+                eq = chest["equipment"]
+                create_instance(self.player, eq["base_type"], eq["enchant"], identified=False)
+                self.opened_chest_ids.add(chest["id"])
+                base_name = self.equipment_defs[eq["base_type"]]["name"]
+                messages.append(f"The chest holds {base_name} (unidentified)!")
+                AssetManager.play_sfx("pickup")
             else:
                 item_type = chest["item_type"]
                 item_def = self.item_defs[item_type]
@@ -638,8 +728,10 @@ class Game:
                 epoch, cleared_turn = self._room_meta(self.current_room_id)
                 self.save.set_room_meta(self.current_room_id, epoch, cleared_turn)
             self.load_room(target_room, exit_data["target_x"], exit_data["target_y"])
-            if stairs_message:
-                self.message_log = [stairs_message] + self.message_log
+            # load_room already set self.message_log to ["Entered <room>."];
+            # prepend this turn's poison tick (if any) and the stairs
+            # message (if any) in front of it, rather than replacing it.
+            self.message_log = messages + ([stairs_message] if stairs_message else []) + self.message_log
             # Autosave now, with current_room_id/player pos already pointing
             # at the room we just entered -- reload should resume *there*,
             # not at the previous room's doorway.
@@ -684,6 +776,11 @@ class Game:
         else:
             target_room, (target_x, target_y) = saved["current_room"], saved["pos"]
         self.player.hp = self.player.max_hp
+        # Session 21: a revive shouldn't leave the player still poisoned --
+        # otherwise the very next tick could kill them again before they've
+        # even taken a step, with no fight to have caused it.
+        self.player.poison_turns = 0
+        self.player.poison_damage = 0
         self.load_room(target_room, target_x, target_y)
         death_msg = "You have fallen. Reviving at your last save..."
         self.message_log = ((prior_messages or []) + [death_msg])[-3:]
@@ -768,9 +865,9 @@ class Game:
         message = self._use_item_at_index(index)
         if message is None:
             return
-        self._advance_turn()
+        poison_msgs = self._advance_turn()
         self.dirty = True
-        self._take_turn([message])
+        self._take_turn(poison_msgs + [message])
 
     # -- quests ----------------------------------------------------------
 
@@ -818,10 +915,19 @@ class Game:
         unidentified Found Gear instance (pay to identify), then one row
         per cursed equipped slot (pay to remove the curse) -- same
         "append extra actions after the original list, one shared cursor"
-        pattern this session gave the Inventory panel."""
+        pattern this session gave the Inventory panel. Session 20 appends
+        two more sections after that, same pattern again: one row per
+        sellable consumable stack, then one row per bag (unequipped) gear
+        instance -- selling never reaches an equipped slot, see
+        engine/equipment.py's discard_instance docstring."""
         rows = [("slot", slot) for slot in SLOTS]
         rows += [("identify", inst["instance_id"]) for inst in self.unidentified_bag_instances()]
         rows += [("remove_curse", slot) for slot in self.cursed_equipped_slots()]
+        rows += [
+            ("sell_item", item_type) for item_type, _count, item_def in self.inventory.as_list()
+            if item_def.get("value", 0) > 0
+        ]
+        rows += [("sell_gear", inst["instance_id"]) for inst in bag_instances(self.player)]
         return rows
 
     def shop_move_cursor(self, delta):
@@ -837,10 +943,14 @@ class Game:
             self.buy_or_upgrade(payload)
         elif kind == "identify":
             self.identify_instance(payload)
-        else:
+        elif kind == "remove_curse":
             self.remove_curse_from_slot(payload)
-        # An identify/remove-curse row can vanish once acted on (the
-        # instance/slot it named no longer qualifies) -- keep the cursor in
+        elif kind == "sell_item":
+            self.sell_item(payload)
+        else:
+            self.sell_gear(payload)
+        # A row can vanish once acted on (the instance/slot/stack it named
+        # no longer qualifies, or sold out entirely) -- keep the cursor in
         # range of whatever's left rather than pointing past the new list.
         self.shop_cursor = min(self.shop_cursor, max(0, len(self._shop_rows()) - 1))
 
@@ -912,7 +1022,48 @@ class Game:
         if not remove_curse_item(self.player, self.equipment_defs, slot):
             return
         self.player.gold -= self.REMOVE_CURSE_COST
-        self.message_log = [f"The curse on your {slot} lifts."]
+        self.message_log = [f"The curse on your {slot_label(slot).lower()} lifts."]
+        self.dirty = True
+
+    # -- sell (session 20) --------------------------------------------------
+
+    # Classic buy-high-sell-low economy -- CotW's shopkeepers pay well under
+    # sticker price too. A flat rate rather than per-item haggling, same
+    # "one number, not a system" scope call session 16 made for enchant.
+    SELL_RATE = 0.4
+
+    def _sell_price(self, value):
+        return max(1, round(value * self.SELL_RATE))
+
+    def sell_item(self, item_type):
+        """Sells exactly one unit of a consumable stack -- pressing U/click
+        again sells another, same one-action-per-row convention every other
+        shop row already uses (buy one tier, identify one instance...).
+        Items with no positive value (just the quest key today) never reach
+        this method at all -- see _shop_rows's filter."""
+        item_def = self.item_defs.get(item_type, {})
+        value = item_def.get("value", 0)
+        if value <= 0 or not self.inventory.remove_item(item_type, 1):
+            return
+        price = self._sell_price(value)
+        self.player.gold += price
+        self.message_log = [f"Sold {item_def.get('name', item_type)} for {price} gold."]
+        self.dirty = True
+
+    def sell_gear(self, instance_id):
+        """Sells a bag (unequipped) gear instance outright -- see
+        engine/equipment.py's discard_instance. Priced off the base type's
+        shop value alone, same as an unidentified instance's display name
+        never leaks its hidden enchant -- the enchant doesn't move the
+        price either, identified or not."""
+        instance = self.player.equipment_instances.get(instance_id)
+        if instance is None:
+            return
+        price = self._sell_price(self.equipment_defs[instance["base_type"]]["value"])
+        name = equip_display_name(self.equipment_defs, instance)
+        discard_instance(self.player, instance_id)
+        self.player.gold += price
+        self.message_log = [f"Sold {name} for {price} gold."]
         self.dirty = True
 
     # -- healer (session 15) ------------------------------------------------
@@ -927,7 +1078,7 @@ class Game:
         """Gold to fully restore HP+mana right now -- 0 if already full.
         A pure function of current state so the panel can preview the
         exact price it's about to charge before the player commits."""
-        missing = (self.player.max_hp - self.player.hp) + (self.player.max_mana - self.player.mana)
+        missing = (self.player.max_hp - self.player.hp) + (self.player.effective_max_mana() - self.player.mana)
         return math.ceil(missing * self.HEAL_COST_PER_POINT)
 
     def rest_at_healer(self):
@@ -949,8 +1100,112 @@ class Game:
             return
         self.player.gold -= cost
         self.player.hp = self.player.max_hp
-        self.player.mana = self.player.max_mana
+        self.player.mana = self.player.effective_max_mana()
         self.message_log = [f"You rest and recover fully for {cost} gold."]
+        self.dirty = True
+
+    # Session 24: Restore Drained Mana -- the Healer's second service,
+    # curing a Wraith's permanent mana_drain the same way the Merchant's
+    # Remove Curse (session 16) reverses a different kind of permanent
+    # affliction. Priced per drained point (steeper than resting's per-HP/
+    # mana-point rate -- this is a rarer, worse affliction than being merely
+    # low on HP/mana) rather than a flat fee, same "preview the exact price"
+    # pattern rest_cost already established.
+    DRAIN_CURE_COST_PER_POINT = 5
+
+    def drain_cure_cost(self):
+        return math.ceil(self.player.mana_drain * self.DRAIN_CURE_COST_PER_POINT)
+
+    def cure_mana_drain(self):
+        if self.player.mana_drain <= 0:
+            return
+        cost = self.drain_cure_cost()
+        if self.player.gold < cost:
+            self.message_log = ["Not enough gold to lift the drain."]
+            self.dirty = True
+            return
+        self.player.gold -= cost
+        self.player.mana_drain = 0
+        self.message_log = [f"The wraith-touch fades. Your mana ceiling is restored for {cost} gold."]
+        self.dirty = True
+
+    def _healer_rows(self):
+        """Rest is always present; Restore Drained Mana only appears once
+        there's actually a drain to cure -- same "append an extra action
+        only when it applies" pattern session 16 gave the Merchant panel's
+        Identify/Remove Curse rows."""
+        rows = ["rest"]
+        if self.player.mana_drain > 0:
+            rows.append("cure_drain")
+        return rows
+
+    def healer_move_cursor(self, delta):
+        rows = self._healer_rows()
+        self.healer_cursor = (self.healer_cursor + delta) % len(rows)
+        self.dirty = True
+
+    def activate_healer_row(self, index):
+        rows = self._healer_rows()
+        if index >= len(rows):
+            return
+        if rows[index] == "rest":
+            self.rest_at_healer()
+        else:
+            self.cure_mana_drain()
+        self.healer_cursor = min(self.healer_cursor, max(0, len(self._healer_rows()) - 1))
+
+    # -- bookshop (session 19) ----------------------------------------------
+    #
+    # Castle of the Winds' other half of its spell system (session 12 only
+    # built the auto-learn-by-level half): a spellbook lets a character
+    # learn a spell before their level would otherwise grant it, for gold.
+    # Deliberately doesn't touch engine/spells.py's newly_learned() at all --
+    # a bought spell is just added to known_spells directly, the exact same
+    # set a level-up already adds to, so casting/mana/targeting need zero
+    # changes to support a spell learned this way instead of by leveling.
+
+    def close_bookshop_panel(self):
+        self.bookshop_open = False
+        self.dirty = True
+
+    def _bookshop_rows(self):
+        """Every spell not yet known, in data/spells.json order (so the
+        list reads as a fixed catalog, not one that reshuffles as spells
+        are bought) -- once bought, a spell drops out of this list the same
+        way a maxed-out gear slot drops out of the shop's offer, no
+        separate "owned" bookkeeping needed."""
+        return [s for s in self.spell_defs if s["id"] not in self.known_spells]
+
+    def bookshop_move_cursor(self, delta):
+        rows = self._bookshop_rows()
+        if not rows:
+            return
+        self.bookshop_cursor = (self.bookshop_cursor + delta) % len(rows)
+        self.dirty = True
+
+    def activate_bookshop_row(self, index):
+        rows = self._bookshop_rows()
+        if index >= len(rows):
+            return
+        self.buy_spellbook(rows[index]["id"])
+        self.bookshop_cursor = min(self.bookshop_cursor, max(0, len(self._bookshop_rows()) - 1))
+
+    def buy_spellbook(self, spell_id):
+        """Same insufficient-gold-is-a-silent-no-op pattern every other gold
+        sink in this game uses. No mana/level check -- the whole point is
+        buying past the level gate; a level-1 character with enough gold can
+        walk out knowing Firebolt."""
+        if spell_id in self.known_spells:
+            return
+        spell = next(s for s in self.spell_defs if s["id"] == spell_id)
+        cost = spell["book_cost"]
+        if self.player.gold < cost:
+            self.message_log = ["Not enough gold."]
+            self.dirty = True
+            return
+        self.player.gold -= cost
+        self.known_spells.add(spell_id)
+        self.message_log = [f"Learned {spell['name']} for {cost} gold."]
         self.dirty = True
 
     # -- spells --------------------------------------------------------
@@ -1055,8 +1310,16 @@ class Game:
             if target is None:
                 message = f"You cast {spell['name']}, but it finds no target."
             else:
-                dmg = max(1, spell.get("value", 0) - target.defense)
-                spell_log = resolve_spell_hit(self.player, target, dmg, spell["name"])
+                damage_type = spell.get("damage_type", "physical")
+                # Session 22: an elemental bolt (Firebolt) bypasses defense
+                # the same way an elemental enemy attack bypasses the
+                # player's -- see combat.py's _enemy_damage_to_player and
+                # its module-level note on why armor doesn't stop flame.
+                if damage_type == "physical":
+                    dmg = max(1, spell.get("value", 0) - target.defense)
+                else:
+                    dmg = max(1, spell.get("value", 0))
+                spell_log = resolve_spell_hit(self.player, target, dmg, spell["name"], damage_type)
                 self._learn_new_spells(spell_log)
                 message = " ".join(spell_log)
                 if not target.alive:
@@ -1080,12 +1343,24 @@ class Game:
         elif effect == "detect_treasure":
             self.detect_treasure_turns = spell.get("duration", 1)
             message = f"You cast {spell['name']}. You sense the treasure hidden nearby."
+        elif effect == "cure_poison":
+            # Session 23: matches Castle of the Winds' actual Neutralize
+            # Poison spell -- purges the DoT outright rather than healing the
+            # damage already taken. Cast resolves before _advance_turn below
+            # ticks poison for this turn, so curing it here means that tick
+            # sees none left and does no further damage/wear-off message.
+            if self.player.poison_turns > 0:
+                self.player.poison_turns = 0
+                self.player.poison_damage = 0
+                message = f"You cast {spell['name']}. The poison in your veins is purged."
+            else:
+                message = f"You cast {spell['name']}, but you weren't poisoned."
 
         self.player.mana -= spell["mana_cost"]
-        self._advance_turn()
+        poison_msgs = self._advance_turn()
         self.spellbook_open = False
         self.dirty = True
-        self._take_turn([message] if message else [])
+        self._take_turn(poison_msgs + ([message] if message else []))
 
     # -- journal (quest log + dungeon automap) ------------------------------
 
@@ -1125,6 +1400,8 @@ class Game:
             self._draw_shop_panel()
         if self.healer_open:
             self._draw_healer_panel()
+        if self.bookshop_open:
+            self._draw_bookshop_panel()
         if self.spellbook_open:
             self._draw_spellbook_panel()
         if self.journal_open:
@@ -1169,7 +1446,12 @@ class Game:
     def _draw_hud(self):
         font = AssetManager.get_font(16, bold=True)
         hp_text = font.render(f"HP {self.player.hp}/{self.player.max_hp}", True, COLOR_TEXT)
-        mana_text = font.render(f"MP {self.player.mana}/{self.player.max_mana}", True, COLOR_TEXT)
+        # Session 24: shows the drained ceiling, not the raw stat, so a
+        # Wraith-touched player sees their actual current cap (e.g. "MP
+        # 5/17" rather than a misleading "MP 5/20") -- see
+        # Player.effective_max_mana().
+        eff_max_mana = self.player.effective_max_mana()
+        mana_text = font.render(f"MP {self.player.mana}/{eff_max_mana}", True, COLOR_TEXT)
         lvl_text = font.render(
             f"Lv {self.player.level}  XP {self.player.xp}/{self.player.level * 30}", True, COLOR_TEXT
         )
@@ -1183,7 +1465,7 @@ class Game:
 
         mana_bar_y = bar_y + bar_h + 4
         pygame.draw.rect(self.screen, COLOR_MP_BG, (bar_x, mana_bar_y, bar_w, bar_h))
-        mana_fill_w = int(bar_w * max(0, self.player.mana) / self.player.max_mana) if self.player.max_mana else 0
+        mana_fill_w = int(bar_w * max(0, self.player.mana) / eff_max_mana) if eff_max_mana else 0
         pygame.draw.rect(self.screen, COLOR_MP, (bar_x, mana_bar_y, mana_fill_w, bar_h))
 
         self.screen.blit(hp_text, (bar_x + bar_w + 10, bar_y - 2))
@@ -1191,6 +1473,23 @@ class Game:
         self.screen.blit(lvl_text, (bar_x + bar_w + 10, mana_bar_y + bar_h + 4))
         self.screen.blit(room_text, (WINDOW_W - room_text.get_width() - 10, 10))
         self.screen.blit(gold_text, (WINDOW_W - gold_text.get_width() - 10, 28))
+
+        # Shares the level/XP line rather than adding a fourth row -- a
+        # fourth row at this font size would run straight into the room
+        # viewport, which starts immediately at ROOM_ORIGIN's y. Poisoned
+        # and Drained can both be showing at once, so each advances the
+        # next one's x offset rather than assuming a fixed slot.
+        status_x = bar_x + bar_w + 10 + lvl_text.get_width() + 20
+        if self.player.poison_turns > 0:
+            poison_text = font.render(f"Poisoned ({self.player.poison_turns})", True, COLOR_POISON)
+            self.screen.blit(poison_text, (status_x, mana_bar_y + bar_h + 4))
+            status_x += poison_text.get_width() + 20
+        if self.player.mana_drain > 0:
+            # Session 24: no countdown (unlike Poisoned) -- drain doesn't
+            # wear off on its own, only paying the Healer clears it (see
+            # cure_mana_drain), so this shows the amount, not a timer.
+            drain_text = font.render(f"Drained (-{self.player.mana_drain} MP)", True, COLOR_DRAIN)
+            self.screen.blit(drain_text, (status_x, mana_bar_y + bar_h + 4))
 
     def _draw_message_log(self):
         font = AssetManager.get_font(14)
@@ -1249,10 +1548,19 @@ class Game:
         self.shop_cursor = index
         self.activate_shop_row(index)
 
+    def _click_healer_row(self, index):
+        self.healer_cursor = index
+        self.activate_healer_row(index)
+
+    def _click_buy_spellbook(self, index):
+        self.bookshop_cursor = index
+        self.activate_bookshop_row(index)
+
     def _any_panel_open(self):
         return (
             self.inventory_open or self.quest_open or self.shop_open
             or self.spellbook_open or self.journal_open or self.healer_open
+            or self.bookshop_open
         )
 
     def handle_room_click(self, pos):
@@ -1309,6 +1617,8 @@ class Game:
             self.close_shop_panel()
         elif self.healer_open:
             self.close_healer_panel()
+        elif self.bookshop_open:
+            self.close_bookshop_panel()
         elif self.spellbook_open:
             self.close_spellbook_panel()
         elif self.journal_open:
@@ -1354,13 +1664,13 @@ class Game:
             self.debug_overlay = not self.debug_overlay
             self.dirty = True
             return False
-        if key == pygame.K_i and not (self.quest_open or self.shop_open or self.journal_open or self.spellbook_open or self.healer_open):
+        if key == pygame.K_i and not (self.quest_open or self.shop_open or self.journal_open or self.spellbook_open or self.healer_open or self.bookshop_open):
             self.toggle_inventory()
             return False
-        if key == pygame.K_m and not (self.quest_open or self.shop_open or self.inventory_open or self.spellbook_open or self.healer_open):
+        if key == pygame.K_m and not (self.quest_open or self.shop_open or self.inventory_open or self.spellbook_open or self.healer_open or self.bookshop_open):
             self.toggle_journal()
             return False
-        if key == pygame.K_c and not (self.quest_open or self.shop_open or self.inventory_open or self.journal_open or self.healer_open):
+        if key == pygame.K_c and not (self.quest_open or self.shop_open or self.inventory_open or self.journal_open or self.healer_open or self.bookshop_open):
             self.toggle_spellbook()
             return False
 
@@ -1369,8 +1679,20 @@ class Game:
                 self.claim_quest_reward()
             return False
         if self.healer_open:
-            if key in (pygame.K_u, pygame.K_RETURN):
-                self.rest_at_healer()
+            if key in (pygame.K_UP, pygame.K_w):
+                self.healer_move_cursor(-1)
+            elif key in (pygame.K_DOWN, pygame.K_s):
+                self.healer_move_cursor(1)
+            elif key in (pygame.K_u, pygame.K_RETURN):
+                self.activate_healer_row(self.healer_cursor)
+            return False
+        if self.bookshop_open:
+            if key in (pygame.K_UP, pygame.K_w):
+                self.bookshop_move_cursor(-1)
+            elif key in (pygame.K_DOWN, pygame.K_s):
+                self.bookshop_move_cursor(1)
+            elif key in (pygame.K_u, pygame.K_RETURN):
+                self.activate_bookshop_row(self.bookshop_cursor)
             return False
         if self.shop_open:
             if key in (pygame.K_UP, pygame.K_w):
@@ -1478,8 +1800,12 @@ class Game:
         # 400 (pre-session-16 width) clips the "U/click use/equip" hint
         # line added below -- measured directly with font.size(), same
         # discipline session 13 used for this exact class of bug, not
-        # eyeballed.
-        panel_w = 450
+        # eyeballed. Session 24's dual "Elemental Resist NN%, Undead Ward
+        # NN%" title measures 480px at this bold font -- widened again
+        # (450 -> 500) rather than shortening the labels, same "widen the
+        # panel, don't shrink the text" call sessions 13/16/18 already made
+        # for this exact panel.
+        panel_w = 500
         title_font = AssetManager.get_font(16, bold=True)
         font = AssetManager.get_font(14)
 
@@ -1508,11 +1834,23 @@ class Game:
 
         # Equipped gear -- bought/upgraded at the Merchant or equipped from
         # Found Gear below (see _draw_shop_panel / _activate_inventory_row).
-        panel.blit(title_font.render("Equipped", True, COLOR_TEXT), (10, equip_y))
+        # Session 22: resist_elemental has no HP-bar/attack-power equivalent
+        # to make it visible through gameplay feel alone (unlike attack/
+        # defense/max_hp), so it gets an explicit number here, on the
+        # section title itself to avoid growing the panel's height math.
+        equip_title = "Equipped"
+        resist_bits = []
+        if self.player.resist_elemental > 0:
+            resist_bits.append(f"Elemental Resist {self.player.resist_elemental}%")
+        if self.player.resist_undead > 0:
+            resist_bits.append(f"Undead Ward {self.player.resist_undead}%")
+        if resist_bits:
+            equip_title += f" ({', '.join(resist_bits)})"
+        panel.blit(title_font.render(equip_title, True, COLOR_TEXT), (10, equip_y))
         for i, slot in enumerate(SLOTS):
             instance_id = self.player.equipment.get(slot)
             instance = self.player.equipment_instances.get(instance_id) if instance_id else None
-            line = f"{slot.title()}: {equip_display_name(self.equipment_defs, instance)}"
+            line = f"{slot_label(slot)}: {equip_display_name(self.equipment_defs, instance)}"
             panel.blit(font.render(line, True, COLOR_TEXT), (10, equip_y + 24 + i * 18))
 
         # Found Gear -- unequipped instances (session 16), whether bought as
@@ -1578,40 +1916,94 @@ class Game:
         self.screen.blit(panel, origin)
 
     def _draw_healer_panel(self):
+        """Session 24: gained a cursor and a second row (Restore Drained
+        Mana), same "list-with-cursor, dynamic height" shape the Shop/
+        Bookshop panels already use, replacing the original single fixed-
+        action layout (session 15) now that there's more than one thing to
+        do here."""
         overlay = pygame.Surface((WINDOW_W, WINDOW_H), pygame.SRCALPHA)
         overlay.fill((0, 0, 0, 140))
         self.screen.blit(overlay, (0, 0))
 
-        panel_w, panel_h = 340, 160
+        panel_w = 360
+        title_font = AssetManager.get_font(16, bold=True)
+        font = AssetManager.get_font(14)
+
+        rows = self._healer_rows()
+        panel_h = 40 + 20 + len(rows) * 20 + 34
+
         panel = pygame.Surface((panel_w, panel_h), pygame.SRCALPHA)
         panel.fill(COLOR_PANEL_BG)
         origin = self._begin_panel_hitboxes(panel_w, panel_h)
-
-        title_font = AssetManager.get_font(16, bold=True)
-        font = AssetManager.get_font(14)
 
         npc_name = self.active_npc.name if self.active_npc else "Healer"
         panel.blit(
             title_font.render(f"{npc_name} -- Gold: {self.player.gold}", True, COLOR_TEXT),
             (10, 8),
         )
+        status = f"HP {self.player.hp}/{self.player.max_hp}  Mana {self.player.mana}/{self.player.effective_max_mana()}"
+        panel.blit(font.render(status, True, COLOR_TEXT), (10, 36))
 
-        cost = self.rest_cost()
-        body = [f"HP {self.player.hp}/{self.player.max_hp}  Mana {self.player.mana}/{self.player.max_mana}"]
-        if cost == 0:
-            body.append("You are already at full strength.")
-        else:
-            body.append(f"Rest and recover fully for {cost} gold.")
-            body.append("Press U or click here to rest.")
-
-        for i, line in enumerate(body):
-            row_y = 40 + i * 20
+        rest_cost = self.rest_cost()
+        for i, kind in enumerate(rows):
+            prefix = "> " if i == self.healer_cursor else "  "
+            if kind == "rest":
+                line = f"{prefix}Rest (already at full strength)" if rest_cost == 0 \
+                    else f"{prefix}Rest and recover fully ({rest_cost}g)"
+            else:
+                line = f"{prefix}Restore Drained Mana (-{self.player.mana_drain} MP) ({self.drain_cure_cost()}g)"
+            row_y = 60 + i * 20
             panel.blit(font.render(line, True, COLOR_TEXT), (10, row_y))
-            if cost > 0 and i == len(body) - 1:
-                row_rect = pygame.Rect(origin[0], origin[1] + row_y, panel_w, 18)
-                self.panel_click_targets.append((row_rect, self.rest_at_healer))
+            row_rect = pygame.Rect(origin[0], origin[1] + row_y, panel_w, 18)
+            self.panel_click_targets.append((row_rect, lambda idx=i: self._click_healer_row(idx)))
 
-        hint = font.render("Esc to close", True, (160, 160, 160))
+        hint = font.render("Up/Down select, U/Enter/click act, Esc close", True, (160, 160, 160))
+        panel.blit(hint, (10, panel_h - 24))
+
+        self.screen.blit(panel, origin)
+
+    def _draw_bookshop_panel(self):
+        """Same list-with-cursor shape as the shop/spellbook panels: one row
+        per not-yet-known spell, dynamic height (session 15/16's pattern)
+        since the catalog only grows as more spells are added to
+        data/spells.json and a level-7+ character with an empty catalog
+        needs to render sensibly too (see the empty-list line below)."""
+        overlay = pygame.Surface((WINDOW_W, WINDOW_H), pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, 140))
+        self.screen.blit(overlay, (0, 0))
+
+        panel_w = 380
+        title_font = AssetManager.get_font(16, bold=True)
+        font = AssetManager.get_font(14)
+
+        rows = self._bookshop_rows()
+        body_rows = max(1, len(rows))
+        panel_h = 36 + body_rows * 20 + 34
+
+        panel = pygame.Surface((panel_w, panel_h), pygame.SRCALPHA)
+        panel.fill(COLOR_PANEL_BG)
+        origin = self._begin_panel_hitboxes(panel_w, panel_h)
+
+        npc_name = self.active_npc.name if self.active_npc else "Scholar"
+        panel.blit(
+            title_font.render(f"{npc_name} -- Gold: {self.player.gold}", True, COLOR_TEXT),
+            (10, 8),
+        )
+
+        if not rows:
+            panel.blit(
+                font.render("You already know every spell in stock.", True, COLOR_TEXT),
+                (10, 36),
+            )
+        for i, spell in enumerate(rows):
+            prefix = "> " if i == self.bookshop_cursor else "  "
+            line = f"{prefix}{spell['name']} ({spell['book_cost']}g)"
+            row_y = 36 + i * 20
+            panel.blit(font.render(line, True, COLOR_TEXT), (10, row_y))
+            row_rect = pygame.Rect(origin[0], origin[1] + row_y, panel_w, 18)
+            self.panel_click_targets.append((row_rect, lambda idx=i: self._click_buy_spellbook(idx)))
+
+        hint = font.render("Up/Down select, U/Enter/click buy, Esc close", True, (160, 160, 160))
         panel.blit(hint, (10, panel_h - 24))
 
         self.screen.blit(panel, origin)
@@ -1625,12 +2017,21 @@ class Game:
         character who's never touched cursed/unidentified gear sees exactly
         the same 5-row panel session 8 shipped. Height grows to fit
         whichever of those rows are present, same pattern as the Inventory
-        panel's Found Gear section above."""
+        panel's Found Gear section above. Session 20 appends Sell rows
+        (every sellable consumable stack, then every bag gear instance) the
+        same way -- absent entirely on an empty inventory/bag, so a fresh
+        character still sees the plain slot-row panel."""
         overlay = pygame.Surface((WINDOW_W, WINDOW_H), pygame.SRCALPHA)
         overlay.fill((0, 0, 0, 140))
         self.screen.blit(overlay, (0, 0))
 
-        panel_w = 460
+        # Session 18: 460 fit every pre-existing row, but "<current> -> <next
+        # tier>" for the new, longer ring/amulet names (e.g. "Amulet of
+        # Greater Vitality -3 [cursed] -> Amulet of Supreme Vitality (155g)")
+        # measures 680px at this font -- widened rather than shortening the
+        # names, same "widen the panel, don't shrink the text" call sessions
+        # 13/16 already made for this exact panel.
+        panel_w = 700
         title_font = AssetManager.get_font(16, bold=True)
         font = AssetManager.get_font(14)
 
@@ -1656,16 +2057,26 @@ class Game:
                 equipped_name = equip_display_name(self.equipment_defs, instance)
                 offer_type = next_offer(self.player, self.equipment_defs, slot)
                 if offer_type is None:
-                    line = f"{prefix}{slot.title()}: {equipped_name} (finest owned)"
+                    line = f"{prefix}{slot_label(slot)}: {equipped_name} (finest owned)"
                 else:
                     offer = self.equipment_defs[offer_type]
-                    line = f"{prefix}{slot.title()}: {equipped_name} -> {offer['name']} ({offer['value']}g)"
+                    line = f"{prefix}{slot_label(slot)}: {equipped_name} -> {offer['name']} ({offer['value']}g)"
             elif kind == "identify":
                 instance = self.player.equipment_instances[payload]
                 base_name = self.equipment_defs[instance["base_type"]]["name"]
                 line = f"{prefix}Identify {base_name} ({self.IDENTIFY_COST}g)"
+            elif kind == "remove_curse":
+                line = f"{prefix}Remove curse: {slot_label(payload)} ({self.REMOVE_CURSE_COST}g)"
+            elif kind == "sell_item":
+                item_def = self.item_defs.get(payload, {})
+                count = self.inventory.stacks.get(payload, 0)
+                price = self._sell_price(item_def.get("value", 0))
+                line = f"{prefix}Sell {item_def.get('name', payload)} x{count} ({price}g)"
             else:
-                line = f"{prefix}Remove curse: {payload.title()} ({self.REMOVE_CURSE_COST}g)"
+                instance = self.player.equipment_instances[payload]
+                name = equip_display_name(self.equipment_defs, instance)
+                price = self._sell_price(self.equipment_defs[instance["base_type"]]["value"])
+                line = f"{prefix}Sell {name} ({price}g)"
             row_y = 36 + i * 20
             panel.blit(font.render(line, True, COLOR_TEXT), (10, row_y))
             row_rect = pygame.Rect(origin[0], origin[1] + row_y, panel_w, 18)
@@ -1725,7 +2136,7 @@ class Game:
         origin = self._begin_panel_hitboxes(panel_w, panel_h)
 
         panel.blit(
-            title_font.render(f"Spellbook -- Mana {self.player.mana}/{self.player.max_mana}", True, COLOR_TEXT),
+            title_font.render(f"Spellbook -- Mana {self.player.mana}/{self.player.effective_max_mana()}", True, COLOR_TEXT),
             (10, 8),
         )
 

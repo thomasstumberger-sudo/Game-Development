@@ -91,23 +91,29 @@ VAULT_CHANCE_BY_TIER = [0.3, 0.5, 0.7]
 
 # (type, weight) tables keyed by depth tier -- see _tier()/_weighted_choice().
 ENEMY_WEIGHTS_BY_TIER = [
-    [("slime", 3), ("skeleton", 1)],
-    [("slime", 1), ("skeleton", 3), ("cultist", 1)],
-    [("slime", 1), ("skeleton", 2), ("cultist", 3)],
+    [("slime", 3), ("skeleton", 1), ("viper", 2)],
+    # Session 24: the Wraith is mid/deep-tier only, never shallow -- CotW's
+    # own undead-drain monsters (Wraiths, Wights) show up well past the
+    # earliest levels, and this engine has no cure for the drain except
+    # gold, so a brand-new character shouldn't be able to stumble into one.
+    [("slime", 1), ("skeleton", 3), ("cultist", 1), ("viper", 1), ("wraith", 2)],
+    # Session 22: Young Red Dragon is deep-tier only and deliberately rare
+    # (weight 1 against the other three's combined 6) -- a mini-boss-flavor
+    # threat, not a regular encounter, matching how cultist was already the
+    # strongest thing in this tier before it arrived.
+    [("slime", 1), ("skeleton", 2), ("cultist", 3), ("young_red_dragon", 1), ("wraith", 2)],
 ]
 ITEM_WEIGHTS_BY_TIER = [
     [("potion", 5), ("whetstone", 1), ("gold", 3), ("mana_potion", 2)],
     [("potion", 4), ("whetstone", 2), ("shield", 2), ("gold", 3), ("mana_potion", 3), ("equipment", 1)],
     [("potion", 3), ("whetstone", 3), ("shield", 3), ("gold", 3), ("mana_potion", 3), ("equipment", 2)],
 ]
-# Chests (vault loot) reuse ITEM_WEIGHTS_BY_TIER's families but never
-# "equipment" -- a chest's item_type field (see generate_room's vault
-# section) is a plain data/items.json key, and per-instance gear (session
-# 16) doesn't have one. Derived once here rather than hand-maintaining a
-# second table that could drift out of sync with the tier above it.
-CHEST_ITEM_WEIGHTS_BY_TIER = [
-    [(f, w) for f, w in tier if f != "equipment"] for tier in ITEM_WEIGHTS_BY_TIER
-]
+# Session 17: chests (vault loot) reuse ITEM_WEIGHTS_BY_TIER directly,
+# including "equipment" -- a chest can now hold a per-instance gear drop the
+# same way floor loot can (see the "equipment" branch in the vault section
+# of generate_room()). Tier 0 still never rolls equipment since
+# ITEM_WEIGHTS_BY_TIER's own tier-0 entry has no "equipment" weight at all,
+# same as floor loot.
 # Session 16: dungeon-found equipment -- rarer than consumables (see the
 # "equipment" weight above, tier 0 never rolls it at all) and the only
 # source of cursed/enchanted gear; shop purchases are always a plain +0
@@ -123,6 +129,11 @@ EQUIPMENT_BASE_TYPES_BY_SLOT = {
     "helmet": ["leather_cap", "iron_helm", "great_helm"],
     "armor": ["leather_armor", "chainmail", "plate_armor"],
     "boots": ["worn_boots", "leather_boots", "steel_greaves"],
+    # Session 18: ring/amulet slots -- same "equipment" loot family, zero
+    # new procgen mechanism, just three more slot -> tier-ladder entries.
+    "ring1": ["ring_might_basic", "ring_might_fine", "ring_might_masterwork"],
+    "ring2": ["ring_warding_basic", "ring_warding_fine", "ring_warding_masterwork"],
+    "amulet": ["amulet_resist_basic", "amulet_resist_fine", "amulet_resist_masterwork"],
 }
 EQUIPMENT_SLOTS = list(EQUIPMENT_BASE_TYPES_BY_SLOT.keys())
 _MAGNITUDE_TO_GEAR_TIER = {"minor": 0, "normal": 1, "greater": 2}
@@ -176,6 +187,17 @@ def scale_stats_for_level(stats, level):
     scaled["gold_reward"] = [
         max(0, round(v * mult)) for v in stats.get("gold_reward", [0, 0])
     ]
+    # Session 21: a Viper's bite should sting harder deeper in, same as its
+    # direct attack already does above -- a no-op for every enemy type with
+    # no poison_damage key (dict(stats) above already carried a bare 0/absent
+    # value through unscaled otherwise).
+    if stats.get("poison_damage"):
+        scaled["poison_damage"] = max(1, round(stats["poison_damage"] * mult))
+    # Session 24: a Wraith's drain should also bite harder deeper in, same
+    # depth-scaling reasoning as poison_damage above -- a no-op for every
+    # enemy type with no drain_amount key.
+    if stats.get("drain_amount"):
+        scaled["drain_amount"] = max(1, round(stats["drain_amount"] * mult))
     return scaled
 
 
@@ -557,13 +579,26 @@ def generate_room(seed, level, gx, gy, epoch=0):
                     gates.pop()
 
             chest_x, chest_y = _rect_center(vault_rect)
-            family = _weighted_choice(layout_rng, CHEST_ITEM_WEIGHTS_BY_TIER[tier])
+            family = _weighted_choice(layout_rng, ITEM_WEIGHTS_BY_TIER[tier])
             magnitude = _weighted_choice(layout_rng, MAGNITUDE_WEIGHTS_BY_TIER[2])
-            chests.append({
+            chest = {
                 "id": f"proc_{seed}_{level}_{gx}_{gy}_chest0",
                 "x": chest_x, "y": chest_y,
-                "item_type": family if magnitude == "normal" else f"{family}_{magnitude}",
-            })
+            }
+            if family == "equipment":
+                # Same "equipment" branch as floor loot above, but rolled
+                # off layout_rng (not pop_rng) -- a chest's contents are
+                # structural/permanent, same as its lock, and must never
+                # change across a room's epoch-scoped respawn cycle.
+                gear_slot = layout_rng.choice(EQUIPMENT_SLOTS)
+                gear_tier = _MAGNITUDE_TO_GEAR_TIER[magnitude]
+                chest["equipment"] = {
+                    "base_type": EQUIPMENT_BASE_TYPES_BY_SLOT[gear_slot][gear_tier],
+                    "enchant": roll_enchant(layout_rng),
+                }
+            else:
+                chest["item_type"] = family if magnitude == "normal" else f"{family}_{magnitude}"
+            chests.append(chest)
             break  # one vault attempt is enough once it succeeds
 
     return {

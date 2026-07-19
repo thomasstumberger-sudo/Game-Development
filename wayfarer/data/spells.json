@@ -5,8 +5,10 @@
     "description": "A crackling bolt of arcane energy strikes the nearest foe ahead of you.",
     "category": "attack",
     "unlock_level": 1,
+    "book_cost": 35,
     "mana_cost": 3,
     "effect": "bolt",
+    "damage_type": "physical",
     "value": 5,
     "range": 5
   },
@@ -16,6 +18,7 @@
     "description": "Mend your wounds with a whispered word.",
     "category": "healing",
     "unlock_level": 2,
+    "book_cost": 55,
     "mana_cost": 4,
     "effect": "heal",
     "value": 12
@@ -26,6 +29,7 @@
     "description": "Your skin hardens like granite for a short while. +4 Defense for 12 turns.",
     "category": "defense",
     "unlock_level": 3,
+    "book_cost": 75,
     "mana_cost": 5,
     "effect": "buff_defense",
     "value": 4,
@@ -37,8 +41,10 @@
     "description": "A roaring gout of flame lances out ahead of you.",
     "category": "attack",
     "unlock_level": 4,
+    "book_cost": 95,
     "mana_cost": 7,
     "effect": "bolt",
+    "damage_type": "fire",
     "value": 12,
     "range": 6
   },
@@ -48,6 +54,7 @@
     "description": "Fold space and step through the wind itself.",
     "category": "movement",
     "unlock_level": 5,
+    "book_cost": 115,
     "mana_cost": 6,
     "effect": "blink",
     "range": 4
@@ -58,6 +65,7 @@
     "description": "Sense every living foe in this chamber, even those hidden in shadow.",
     "category": "divination",
     "unlock_level": 6,
+    "book_cost": 135,
     "mana_cost": 5,
     "effect": "detect_monsters",
     "duration": 40
@@ -68,8 +76,19 @@
     "description": "Sense loose valuables and sealed chests hidden in shadow.",
     "category": "divination",
     "unlock_level": 7,
+    "book_cost": 155,
     "mana_cost": 5,
     "effect": "detect_treasure",
     "duration": 40
+  },
+  {
+    "id": "neutralize_poison",
+    "name": "Neutralize Poison",
+    "description": "Purge every trace of venom from your blood, ending its damage before it runs its course.",
+    "category": "healing",
+    "unlock_level": 8,
+    "book_cost": 175,
+    "mana_cost": 5,
+    "effect": "cure_poison"
   }
 ]

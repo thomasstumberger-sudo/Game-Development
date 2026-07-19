@@ -46,7 +46,9 @@ class Inventory:
             player.defense += bonus
             message = f"Used {name}. Defense +{bonus} permanently."
         elif effect == "restore_mana":
-            restored = min(item_def.get("value", 0), player.max_mana - player.mana)
+            # Session 24: capped against the drained ceiling, not the raw
+            # stat -- see Player.effective_max_mana().
+            restored = min(item_def.get("value", 0), player.effective_max_mana() - player.mana)
             player.mana += restored
             message = f"Used {name}. Restored {restored} mana."
         else:

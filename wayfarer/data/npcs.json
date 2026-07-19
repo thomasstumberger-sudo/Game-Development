@@ -13,5 +13,10 @@
     "name": "Healer",
     "sprite": "npc_healer",
     "greeting": "You look worn thin. Rest here a while, for a little coin."
+  },
+  "scholar": {
+    "name": "Scholar",
+    "sprite": "npc_scholar",
+    "greeting": "I deal in knowledge, not steel. A spellbook, perhaps -- if your purse allows it."
   }
 }

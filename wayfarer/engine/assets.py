@@ -41,6 +41,23 @@ class AssetManager:
                 pygame.draw.circle(surf, outline, (size // 2, size // 2), size // 2 - pad, outline_w)
                 # facing notch so the player has a sense of "front"
                 pygame.draw.circle(surf, outline, (size // 2, pad + 1), max(1, size // 8))
+            elif shape == "diamond":
+                # Session 21: the Viper -- no snake/reptile sprite anywhere
+                # in the character sheet (session 9 already confirmed it's
+                # exclusively bipedal humanoids), so a placeholder distinct
+                # in silhouette from the slime's circle and cultist's square.
+                mid = size // 2
+                points = [(mid, pad), (size - pad, mid), (mid, size - pad), (pad, mid)]
+                pygame.draw.polygon(surf, color, points)
+                pygame.draw.polygon(surf, outline, points, outline_w)
+            elif shape == "triangle":
+                # Session 22: the Young Red Dragon -- same "no matching
+                # sprite in the (bipedal-only) character sheet" situation as
+                # the slime/viper, a spiked/angular silhouette reading as
+                # more aggressive than the viper's diamond at a glance.
+                points = [(size // 2, pad), (size - pad, size - pad), (pad, size - pad)]
+                pygame.draw.polygon(surf, color, points)
+                pygame.draw.polygon(surf, outline, points, outline_w)
             else:
                 rect = pygame.Rect(pad, pad, size - pad * 2, size - pad * 2)
                 pygame.draw.rect(surf, color, rect, border_radius=max(1, size // 10))

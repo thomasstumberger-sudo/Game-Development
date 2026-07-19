@@ -133,15 +133,22 @@ class Room:
         border = self._border_regions.get((x, y))
         return bool(border) and not border.isdisjoint(revealed_regions)
 
-    def is_walkable(self, x, y, blocked=None):
+    def is_walkable(self, x, y, blocked=None, ignore_walls=False):
         """`blocked` is an optional set of (x, y) currently-closed locked
         doors/gates -- Room itself has no notion of "solved," the caller
-        (Game) computes that set from save-backed flags each visit."""
+        (Game) computes that set from save-backed flags each visit.
+        `ignore_walls` (session 24: the Wraith's wall-phasing) still enforces
+        room bounds and `blocked` -- it only lets the WALL tile check itself
+        pass. Castle of the Winds' wraiths pass through closed doors too;
+        this engine's locked doors/gates are enforced by the caller's
+        `occupied_positions` set instead (see Enemy.take_turn), not this
+        method, so a Wraith still can't path through a still-closed one --
+        a deliberate scope cut, see PROGRESS.MD session 24."""
         if not (0 <= x < self.width and 0 <= y < self.height):
             return False
         if blocked and (x, y) in blocked:
             return False
-        return self.grid[y][x] == FLOOR
+        return ignore_walls or self.grid[y][x] == FLOOR
 
     def exit_at(self, x, y):
         for exit_data in self.exits:

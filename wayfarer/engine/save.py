@@ -56,6 +56,21 @@ class SaveManager:
             "max_mana INTEGER DEFAULT 20",
             "buff_defense_bonus INTEGER DEFAULT 0",
             "buff_defense_turns INTEGER DEFAULT 0",
+            # Session 21: poison status (Viper bite) -- persisted so a
+            # save/quit mid-poison doesn't let a player dodge the DoT for
+            # free, same reasoning as the buff pair above.
+            "poison_turns INTEGER DEFAULT 0",
+            "poison_damage INTEGER DEFAULT 0",
+            # Session 22: baked-in permanent bonus from an equipped amulet,
+            # same persistence reasoning as attack/defense (see
+            # engine/equipment.py's equip()/unequip()).
+            "resist_elemental INTEGER DEFAULT 0",
+            # Session 24: a Wraith's drain and the Amulet-of-Resistance-line
+            # stat that mitigates it -- same persistence reasoning as
+            # resist_elemental (mana_drain survives a save/quit on purpose,
+            # same as poison, since it's only cured by paying the Healer).
+            "mana_drain INTEGER DEFAULT 0",
+            "resist_undead INTEGER DEFAULT 0",
             *(f"equip_{slot} TEXT" for slot in SLOTS),
         ):
             try:
@@ -130,6 +145,8 @@ class SaveManager:
                        attack, defense, current_room, pos_x, pos_y, dungeon_seed,
                        turn_count, depths_kills, quest_index, gold,
                        mana, max_mana, buff_defense_bonus, buff_defense_turns,
+                       poison_turns, poison_damage, resist_elemental,
+                       mana_drain, resist_undead,
                        {equip_cols}
                 FROM player WHERE id = 1"""
         )
@@ -145,6 +162,11 @@ class SaveManager:
             "mana": row[14], "max_mana": row[15],
             "buff_defense_bonus": row[16] or 0,
             "buff_defense_turns": row[17] or 0,
+            "poison_turns": row[18] or 0,
+            "poison_damage": row[19] or 0,
+            "resist_elemental": row[20] or 0,
+            "mana_drain": row[21] or 0,
+            "resist_undead": row[22] or 0,
         }
         current_room = _migrate_room_id(row[6])
         pos = (row[7], row[8])
@@ -152,7 +174,7 @@ class SaveManager:
         turn_count = row[10] or 0
         depths_kills = row[11] or 0
         quest_index = row[12] or 0
-        equipment = dict(zip(SLOTS, row[18:18 + len(SLOTS)]))
+        equipment = dict(zip(SLOTS, row[23:23 + len(SLOTS)]))
 
         inv_rows = self.conn.execute("SELECT item_type, count FROM inventory")
         inventory = {item_type: count for item_type, count in inv_rows}
@@ -214,8 +236,10 @@ class SaveManager:
                                      pos_x, pos_y, dungeon_seed, turn_count,
                                      depths_kills, quest_index, gold,
                                      mana, max_mana, buff_defense_bonus,
-                                     buff_defense_turns, {equip_cols})
-                VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, {equip_placeholders})
+                                     buff_defense_turns, poison_turns,
+                                     poison_damage, resist_elemental,
+                                     mana_drain, resist_undead, {equip_cols})
+                VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, {equip_placeholders})
                 ON CONFLICT(id) DO UPDATE SET
                   hp=excluded.hp, max_hp=excluded.max_hp,
                   xp=excluded.xp, level=excluded.level,
@@ -230,6 +254,11 @@ class SaveManager:
                   mana=excluded.mana, max_mana=excluded.max_mana,
                   buff_defense_bonus=excluded.buff_defense_bonus,
                   buff_defense_turns=excluded.buff_defense_turns,
+                  poison_turns=excluded.poison_turns,
+                  poison_damage=excluded.poison_damage,
+                  resist_elemental=excluded.resist_elemental,
+                  mana_drain=excluded.mana_drain,
+                  resist_undead=excluded.resist_undead,
                   {equip_updates}""",
             (
                 player.hp, player.max_hp, player.xp, player.level,
@@ -238,6 +267,9 @@ class SaveManager:
                 depths_kills, quest_index, player.gold,
                 player.mana, player.max_mana,
                 player.buff_defense_bonus, player.buff_defense_turns,
+                player.poison_turns, player.poison_damage,
+                player.resist_elemental,
+                player.mana_drain, player.resist_undead,
                 *(player.equipment.get(slot) for slot in SLOTS),
             ),
         )

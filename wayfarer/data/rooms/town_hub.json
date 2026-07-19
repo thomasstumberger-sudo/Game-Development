@@ -59,6 +59,12 @@
       "type": "healer",
       "x": 12,
       "y": 18
+    },
+    {
+      "id": "scholar",
+      "type": "scholar",
+      "x": 20,
+      "y": 18
     }
   ]
 }

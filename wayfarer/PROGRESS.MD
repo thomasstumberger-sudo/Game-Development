@@ -1570,6 +1570,892 @@ below) to keep the lift contained to one session.
   Real `save.db` was never touched by any of the above -- all runs used a
   scratch DB path.
 
+### Session 17 — vault chests can hold enchanted gear
+
+User-driven request: "look up the game Castle of the Winds and continue
+development." Rather than opening a new CotW mechanic, this closes out the
+single most concrete next step session 16 itself flagged: vault chests
+could only ever hold a plain consumable `item_type`, since the chest data
+shape had nowhere to put an enchant. This session grows that shape and
+wires the reward through the exact per-instance equipment path session 16
+already built for floor loot — no new subsystem, no new UI.
+
+- **`engine/procgen.py`**: the vault section's chest-building code now rolls
+  a family the same way floor loot does (`_weighted_choice` against
+  `ITEM_WEIGHTS_BY_TIER[tier]` — previously a separately-derived
+  `CHEST_ITEM_WEIGHTS_BY_TIER` that filtered `"equipment"` out entirely;
+  removed, since the branch below now handles it and tier 0's own weight
+  table already has no `"equipment"` entry to roll, so shallow vaults still
+  never produce one, for free). When the roll lands on `"equipment"`, a
+  slot/magnitude/enchant are rolled (mirrors the floor-loot `"equipment"`
+  branch immediately above it exactly — same `EQUIPMENT_BASE_TYPES_BY_SLOT`/
+  `_MAGNITUDE_TO_GEAR_TIER`/`roll_enchant` calls) and stored as
+  `chest["equipment"] = {"base_type": ..., "enchant": ...}` instead of
+  `chest["item_type"]` — the two keys are mutually exclusive, a chest dict
+  never has both. **Deliberately rolled off `layout_rng`, not `pop_rng`**,
+  same as the rest of a vault's contents (its lock, its position) — a
+  chest's reward is structural and permanent, so it must never change
+  across the room's epoch-scoped respawn cycle the way floor loot does;
+  using `pop_rng` here would have been the actual bug, since a respawned
+  room would re-roll what a solved vault contains, but the chest was
+  already flagged opened. `magnitude` still rolls off
+  `MAGNITUDE_WEIGHTS_BY_TIER[2]` regardless of the room's actual tier,
+  unchanged from session 10's original chest behavior (a vault's reward
+  skews toward the best tier available as a reward for solving it, not
+  scaled down to match a shallow room).
+- **`main.py`'s chest-opening branch** (`handle_move`'s `kind == "chest"`
+  case) gained an `"equipment" in chest` check ahead of the existing
+  `item_type` path: routes to `create_instance(player, base_type, enchant,
+  identified=False)` — the *exact* call the floor-loot pickup branch two
+  cases above it already makes — landing the drop unidentified in the
+  "Found Gear" bag, never slot-limited by the 8-slot consumable inventory
+  (same precedent as floor equipment drops and gold). Message mirrors the
+  floor-pickup phrasing ("The chest holds Leather Cap (unidentified)!").
+  **Zero new UI** — the Inventory panel's session-16 "Found Gear" section
+  and the Merchant's Identify/Remove Curse rows already handle any owned
+  instance regardless of where it came from, so a chest-found item is
+  immediately equippable/identifiable through the exact same flow a
+  floor-found one already used.
+- **`engine/equipment.py`'s docstring updated** to drop this from its
+  "future work" list (the only remaining item there is ring/amulet slots).
+- Verified headless (SDL dummy driver, scratch DB): chest generation is
+  deterministic per `(seed, level, gx, gy, epoch)` and unaffected by epoch
+  (structural, matching the rest of the vault); sampling ~900 generated
+  rooms across many seeds/levels/coordinates found both equipment and
+  plain-consumable chests, every equipment chest's `base_type` resolves in
+  `data/equipment.json`, every enchant falls in `-3..3`, and tier-0
+  (shallow) rooms never produce one; still at most one chest per room
+  (the pre-existing single-vault-attempt invariant is untouched); a real
+  `Game` instance located a live generated room with an equipment chest,
+  walked onto it through the actual `handle_move` path, and confirmed
+  exactly one new `equipment_instances` entry appears with the chest's
+  exact `base_type`/`enchant`, `identified=False`, and `cursed` matching
+  `enchant < 0`; re-walking onto an already-opened equipment chest is a
+  no-op (no duplicate instance); the new instance shows up in
+  `bag_instances`; a regression pass confirmed a plain (non-equipment)
+  chest still grants gold or a consumable exactly as before, unaffected by
+  the new branch; a full `main()` boot through the real title menu (Enter
+  posted on a real short timer, not pre-queued — the session 7/8-established
+  gotcha) to a `QUIT` (also posted on a real short timer) exits cleanly
+  (exit code 0). **Also visually inspected** via rendered screenshots: the
+  message log shows "The chest holds Leather Cap (unidentified)!" with no
+  clipping, and the Inventory panel's Found Gear section lists it correctly
+  below the (empty, for a level-10 test character with no consumables)
+  Inventory and Equipped sections — confirming session 16's dynamic-height
+  panel machinery needed no changes to accommodate a chest-sourced entry.
+  Real `save.db` confirmed untouched (mtime unchanged across the whole
+  session); all runs used a scratch DB path.
+
+### Session 18 — ring/amulet slots (Castle of the Winds' actual jewelry loadout)
+
+User-driven request: "look up the game Castle of the Winds and continue
+development." Research (StrategyWiki's items page, see citation in the
+session's own notes) confirmed CotW's exact loadout: one amulet and *two*
+ring slots worn simultaneously, rings raising "one attribute or armor
+class," amulets raising "resistance to an element or undead stat draining."
+This closes the equipment module's own docstring, which has named
+ring/amulet slots as its last open item since session 16. Scoped tightly
+to the slots themselves, reusing session 8/16's per-instance equipment
+machinery exactly rather than inventing anything new for them.
+
+- **Three new slots**: `ring1`, `ring2`, `amulet` appended to
+  `engine/equipment.py`'s `SLOTS` tuple (5 -> 8 entries). This was the
+  whole trick of the session -- `save.py`'s `equip_<slot>` column
+  generation, `Player.equipment`'s dict comprehension, every panel that
+  iterates `SLOTS` generically (Shop's per-slot rows, Inventory's Equipped
+  section, `cursed_equipped_slots()`), and even the dynamic panel-height
+  math (`len(SLOTS) * 18`) all already derived themselves from `SLOTS`
+  rather than hardcoding five -- extending the tuple was the only change
+  needed in every one of those places. Verified directly: zero lines
+  touched in `engine/save.py` or `engine/entity.py`'s `Player.__init__`.
+- **Rings are a plain attack or defense bonus**, no new stat concept --
+  `ring1` carries the "Ring of Might" line (attack, mirrors a weapon's
+  bonus), `ring2` carries "Ring of Warding" (defense, mirrors armor).
+  Deliberately two *separate*, fixed slot keys rather than one shared
+  "ring" item type either finger could hold -- teaching `next_offer`/
+  `save.py`/every SLOTS-iterating panel a second concept (an item pool
+  spanning two slots) would have been real new mechanism; two independent
+  tier ladders is zero.
+- **Amulets are the one real design call this session**: CotW's amulets
+  raise elemental resistance or undead-drain resistance, and this engine
+  has neither elemental damage types nor undead-specific mechanics to hang
+  that on (still true, see Known Limitations). Rather than bolt on a
+  resistance system just to give amulets something to do, "Amulet of
+  Vitality" grants a flat `max_hp` bonus instead -- the closest existing
+  survivability resource, same spirit as session 15 scoping the divination
+  spells to "the room you're standing in" rather than a full level reveal
+  when the honest translation of a CotW mechanic didn't fit this engine's
+  actual scope.
+- **`engine/equipment.py`'s `_bonus()`/`equip()`/`unequip()` extended for a
+  third stat kind.** `_bonus()` now also returns an hp delta (enchant
+  applies to it exactly like attack/defense: `+2 sword hits harder` / `+2
+  amulet is hardier`). Equipping adds the delta to *both* `max_hp` and
+  `hp` (an immediate boost, not something that only matters next time
+  you're hurt); unequipping subtracts the delta from *both*, floored at 1
+  hp. That symmetry matters: an earlier draft instead clamped `hp` down to
+  the new (lower) `max_hp` on unequip rather than subtracting the delta,
+  which silently healed the player for free any time they were above the
+  new max but below the old one (e.g. take 5 damage under a +8 amulet, then
+  swap it for a different one -- clamping would round the deficit down to
+  whatever the intermediate max happened to be instead of preserving the
+  actual 5 points missing). Caught by this session's own verification, not
+  inspection -- see below -- and fixed to plain symmetric +=/-= before
+  shipping.
+- **`engine/procgen.py`**: `EQUIPMENT_BASE_TYPES_BY_SLOT` gained `ring1`/
+  `ring2`/`amulet` entries (each a 3-tier base_type list, same shape as the
+  original five); `EQUIPMENT_SLOTS` is derived from that dict's keys, so
+  both the floor-loot roll (`pop_rng.choice(EQUIPMENT_SLOTS)`) and the
+  vault-chest roll (`layout_rng.choice(EQUIPMENT_SLOTS)`) picked up the
+  three new slots automatically, no logic changes in either branch.
+- **Sprites**: found by rendering `eval/_sheet.png` (the items/equipment
+  source sheet) to a scratch PNG, cropping and column-labeling candidate
+  rows, and visually inspecting before picking coordinates -- same
+  discipline session 9 established, not assumed from a naming convention.
+  Rings live in the sheet's dedicated jewelry block (rows 64/65/68 of 112);
+  amulets in its pendant row (row 0, alongside collars and belt icons the
+  sheet groups nearby). Three tiers per line, picked for a visible
+  simple-to-ornate progression the same way session 9's weapon/armor tiers
+  were: Ring of Might basic/fine/masterwork = plain-red-gem -> silver-gold
+  band -> ornate gold cluster; Ring of Warding = plain-blue-gem -> emerald
+  silver band -> ornate gold band; Amulet of Vitality = plain silver heart
+  pendant -> gold-trimmed -> gem-set gold.
+- **Shop panel widened 460 -> 700px.** The new "`<equipped>` -> `<next
+  tier>`" rows measure up to 680px at the panel's font (e.g. "Amulet of
+  Greater Vitality -3 [cursed] -> Amulet of Supreme Vitality (155g)") --
+  the multi-word CotW-style names ("Ring of Supreme Warding") are simply
+  longer than the original five slots' mostly single/double-word gear
+  names ("Buckler", "Greatsword"). Same "widen the panel, don't shrink the
+  text" call sessions 13 and 16 already made for this exact panel, just a
+  bigger jump this time; measured directly with `font.size()` against
+  every real slot/tier/enchant/curse combination the game can actually
+  produce (not eyeballed) before picking 700. The Inventory panel's
+  Equipped section needed no width change (its lines have no "-> next
+  tier" suffix, so even the worst case measures well under its existing
+  450px).
+- **New `main.py` `slot_label()` helper** (`SLOT_LABELS = {"ring1": "Ring
+  1", "ring2": "Ring 2"}`, falls back to the existing `slot.title()` for
+  every other slot) -- the one spot the generic-SLOTS-iteration story
+  above didn't hold for free, since `"ring1".title()` reads as "Ring1" with
+  no space. Replaces every `slot.title()` call site (Inventory's Equipped
+  section, both Shop panel row formats, the Remove Curse confirmation
+  message).
+- Verified headless (SDL dummy driver, scratch DB): `SLOTS` has exactly the
+  8 expected entries and every new `data/equipment.json` entry resolves
+  with a valid slot; all 9 new sprites load as real images (checked
+  against the fallback-magenta pixel, not just dict presence); a fresh
+  character's `equipment` dict has all 8 keys empty; equipping a ring1
+  raises attack, a ring2 raises defense independently, and an amulet
+  raises both `max_hp` and current `hp` together; unequipping reverses
+  each exactly; the free-heal clamp bug above is directly regression-
+  tested (damage the player under a basic amulet, swap to a fine one,
+  confirm the pre-swap deficit survives the swap rather than getting
+  rounded away); a cursed amulet (negative enchant) still grants its
+  (reduced) bonus, refuses to unequip, and `remove_curse` lifts it and
+  restores normal unequip behavor with the max_hp bonus reversing
+  correctly; `next_offer` walks the tier ladder correctly for all three
+  new slots independently of each other and of the original five;
+  sampling 3000 generated deep-tier rooms confirms floor drops *and* vault
+  chests actually roll all three new slots and every rolled `base_type`
+  resolves in `data/equipment.json`, while 1500 shallow-tier rooms never
+  roll any equipment slot at all (unchanged pre-existing rule); a live
+  `Game` instance located a real generated room with a ring/amulet floor
+  drop, walked onto it through the actual `handle_move` path, and
+  confirmed exactly one new unidentified `equipment_instances` entry with
+  the right `base_type` lands in the bag (not auto-equipped), and that
+  re-visiting the now-empty tile is a no-op; a full save/reload round trip
+  preserves all three new `equip_<slot>` columns and their
+  `equipment_instances` rows, with the reloaded player's baked-in
+  attack/defense/max_hp matching exactly (no double-application); the
+  widened Shop panel and unwidened Inventory panel were checked against
+  every real worst-case row string with `font.size()` before and after the
+  width fix; a full `main()` boot through the real title menu to a `QUIT`
+  (both posted on real short timers, not pre-queued -- the session
+  7/8-established gotcha) exits cleanly. **Also visually inspected** via
+  rendered screenshots: the Shop panel's widened layout shows all 8 slot
+  rows plus Identify/Remove-curse rows with zero clipping, including the
+  Amulet upgrade row that motivated the width change; the Inventory
+  panel's Equipped section reads "Ring 1: Ring of Supreme Might", "Ring 2:
+  Ring of Supreme Warding -3 [cursed]", "Amulet: Amulet of Greater
+  Vitality" cleanly with the new `slot_label()` formatting; a cropped/
+  zoomed screenshot of a live Depths room floor confirms the ring and
+  amulet sprites read clearly as jewelry (a banded gem ring, a gold-
+  trimmed pendant) and are visually distinct from every other pickup type
+  already on the floor (gold, potions, other equipment). Real `save.db`
+  confirmed untouched (mtime unchanged across the whole session); all runs
+  used a scratch DB path via a monkeypatched `main.SAVE_PATH`.
+
+### Session 19 — purchasable spellbooks (Castle of the Winds' other half of its spell system)
+
+User-driven request: "look up the game Castle of the Winds and continue
+development." Session 12 built only the auto-learn-by-level half of CotW's
+spell system and explicitly flagged the other half -- buying a spellbook in
+town to learn a spell out of level order -- as future work every session
+since. This closes that out. Scoped tightly to the purchase mechanism itself,
+reusing session 12's `known_spells` set and casting pipeline completely
+unchanged, rather than opening any new spell mechanic.
+
+- **New Scholar NPC** (`data/npcs.json`, `town_hub.json` at `(20, 18)` --
+  mirrors the Healer's placement at `(12, 18)` on the opposite side of the
+  Quartermaster at `(16, 14)`, keeping the hub's NPC layout roughly
+  symmetric). Sprite picked the same way session 9/15/18 picked every prior
+  NPC portrait: rendered a labeled contact sheet of the character sheet's
+  row 12 (the row every other town NPC's portrait already comes from) and
+  visually compared candidates rather than guessing from a naming
+  convention. Landed on `tile_12_21.png` -- the one portrait in that row
+  with no bow, helmet, or armor (every other column in the row is a
+  recolored archer), which reads as the row's only plausible non-fighter
+  and is visually distinct at a glance from the Healer's warm blonde/white,
+  the Quartermaster's silver helm, and the Merchant's tan headwrap (see the
+  cropped/zoomed comparison screenshot from this session's verification).
+- **Bumping the Scholar opens a new `bookshop_open` panel**
+  (`_draw_bookshop_panel`), built on the exact same list-with-cursor
+  shape the Shop/Spellbook panels already established: `Game._bookshop_rows()`
+  returns every `data/spells.json` entry not yet in `known_spells`, in
+  file order (a fixed catalog that only ever shrinks as spells are bought,
+  never reshuffles), `bookshop_move_cursor`/`activate_bookshop_row` mirror
+  `shop_move_cursor`/`activate_shop_row` exactly, and `handle_key_down`
+  gained a `bookshop_open` branch (Up/Down/U/Enter) plus a slot in the
+  I/M/C guard conditions, `_any_panel_open`, and `close_active_panel` --
+  the same three or four places every one of sessions 12/15/16's new panels
+  already had to extend, no new pattern. Row clicks reuse `_begin_panel_hitboxes`
+  and a `_click_buy_spellbook` callback, same as every other panel since
+  session 13. Panel height is measured from the live catalog size (empty
+  catalog still renders a one-line "already know every spell in stock"
+  message rather than a zero-height panel).
+- **`buy_spellbook(spell_id)`** is the entire mechanism: insufficient gold
+  is a silent no-op message (same pattern `buy_or_upgrade`/`rest_at_healer`/
+  `identify_instance` already use), otherwise it deducts `book_cost` and
+  adds the id straight to `self.known_spells` -- the *exact* set
+  `_learn_new_spells` already adds to on level-up, so casting, mana cost,
+  targeting, the Spellbook panel, and save/load all handle a bought spell
+  with **zero changes**, verified directly (a bought Firebolt shows up in
+  `_known_spell_list()` immediately and survives a save/reload). No
+  level or mana check on the purchase itself -- the entire point is
+  skipping the level gate, matching CotW's own out-of-order learning.
+- **`data/spells.json` gained a `book_cost` field per spell**: `15 +
+  unlock_level * 20` (35/55/75/95/115/135/155 for Spark through Detect
+  Treasure), landing in the same gold range session 8/18's tier-3 equipment
+  already established (70-155g) rather than inventing a separate economy
+  scale. Spark's cost is defined for completeness even though a fresh
+  character already knows it at level 1 (it simply never appears in
+  `_bookshop_rows()` for a new character) -- consistent should a future
+  session ever add a spell with no unlock level or a respec mechanic that
+  un-learns one.
+- Verified headless (SDL dummy driver, scratch DB): `npc_scholar` resolves
+  to a real 16x16 sprite (not the load-failure fallback); the Scholar NPC
+  loads into `town_hub` at the exact configured position; a fresh level-1
+  character knows only `spark` and the bookshop catalog is exactly the
+  other 6 spells in `spells.json` order; bumping the Scholar sets
+  `bookshop_open` and *only* that flag (not shop/quest/healer), and the
+  player does not step onto the NPC's tile (same non-committal-bump
+  contract every NPC/locked-door/gate bump already has); I/M/C are all
+  correctly swallowed while the panel is open (regression check against
+  session 12/15/19's shared guard-condition pattern); insufficient gold
+  blocks a purchase with no state change; buying Firebolt at character
+  level 1 deducts exactly 95 gold, adds it to `known_spells`, and the
+  purchase message matches; re-buying an already-known spell is a no-op;
+  the purchased spell immediately appears in the Spellbook panel's own
+  list (proving the shared-set design actually holds, not just that the
+  purchase function sets a flag); the cursor clamps correctly as the
+  catalog shrinks after a purchase; `activate_bookshop_row` (the
+  keyboard/click action path, as opposed to calling `buy_spellbook`
+  directly) correctly buys whatever row the cursor is on; a full
+  save/reload round trip preserves both the post-purchase gold total and
+  the bought spell; a full `main()` boot through the real title menu to a
+  `QUIT` (both posted on real short timers from background threads, not
+  pre-queued -- the session 7/8-established gotcha) exits cleanly. **Also
+  visually inspected** via rendered screenshots: the Town Square shows all
+  four NPCs at a glance with the Scholar reading clearly distinct from the
+  Healer/Quartermaster/Merchant (cropped/zoomed comparison, see above); the
+  bookshop panel itself renders its full 6-spell catalog with no clipping;
+  buying Firebolt mid-panel correctly drops it from the list, updates the
+  gold total in the title bar, and shows the purchase message below; the
+  insufficient-gold path shows its own message with the catalog unchanged.
+  Real `save.db` confirmed untouched (mtime check) throughout; all runs
+  used a scratch DB path.
+
+### Session 20 — sell items and gear back to the Merchant (Castle of the Winds' buy-high-sell-low shop economy)
+
+User-driven request: "look up the game Castle of the Winds and continue
+development." CotW's shops always buy back unwanted loot, not just sell it --
+this codebase had no sell path anywhere (`grep -ri sell` across `engine/`
+and `main.py` came back empty before this session), so it was pure gold
+sink with no way to convert unwanted potions or Found Gear into currency.
+Scoped to the Merchant only (the existing gold-economy NPC, session 8) and
+reuses every piece of machinery sessions 8/16 already built -- no new
+subsystem, just two more row kinds on a panel that already knows how to grow
+to fit whatever's on offer.
+
+- **`engine/equipment.py` gained `discard_instance(player, instance_id)`** --
+  pops an owned instance out of `equipment_instances` entirely, the
+  complement to `create_instance`. Deliberately simpler than `unequip()`:
+  it's only ever called on a *bag* (unequipped) instance (see `_shop_rows`
+  below), so there's no stat bonus or curse-lock to reverse the way
+  `unequip` has to.
+- **`Game._shop_rows()` gained two more sections**, same "append after the
+  existing list, one shared cursor" pattern sessions 16/16 already used
+  twice for Identify and Remove Curse: one `("sell_item", item_type)` row
+  per consumable stack whose `data/items.json` entry has `value > 0`
+  (excludes the quest `key`, which is `value: 0` for exactly this reason --
+  no special-casing by item id needed), then one `("sell_gear",
+  instance_id)` row per **bag-only** gear instance from `bag_instances()`.
+  **An equipped item is never reachable through this list at all** -- the
+  filter is the same one the Inventory panel's Found Gear section already
+  uses, so there's no risk of a stray U-press selling off a worn weapon
+  (equipped gear would need to be unequipped -- i.e. replaced by something
+  else in the same slot -- before it could ever appear here, and even then
+  a cursed one still refuses to come off, same as always).
+- **`Game.sell_item`/`sell_gear`, `SELL_RATE = 0.4`.** A flat 40%-of-value
+  sell-back rate, not per-item haggling -- same "one number, not a system"
+  scope call session 16 made for enchant. `sell_item` sells exactly one
+  unit of a stack per activation (consistent with every other shop row
+  being a single discrete action) via `Inventory.remove_item` (already
+  existed, session 10 built it for key-consumption); `sell_gear` prices
+  off the base type's `data/equipment.json` value alone, deliberately
+  **ignoring the instance's enchant** -- the same simplification that
+  already applies to display: an unidentified item's true enchant is never
+  leaked by its sell price either, since the price is identical whether or
+  not the player has paid to identify it. `_sell_price` rounds and floors
+  at 1 gold so even a `value: 1` item (e.g. minor whetstone) is never worth
+  literally nothing to sell.
+- **`_draw_shop_panel`** grew a `kind ==` branch for each new row
+  ("Sell Health Potion x3 (6g)" / "Sell Longsword +2 (22g)"), no width
+  change needed (these lines measure shorter than the existing "-> next
+  tier" rows that already sized the panel to 700px in session 18) and no
+  new hitbox mechanism (rides the same per-row `panel_click_targets`
+  pattern via the existing `_click_shop_slot`).
+- Verified headless (SDL dummy driver, scratch DB): sell rows are entirely
+  absent with an empty inventory and bag (a character who's never touched
+  loot still sees the plain 8-slot panel); a `potion` (value 15) sells for
+  exactly 6 gold via both the direct method and the `activate_shop_row`
+  dispatch path (the keyboard/click entry point, not just the underlying
+  call); selling one of a stack of 2 leaves exactly 1, selling the last
+  unit removes the row entirely; the `key` item never appears as a
+  sell_item row and `sell_item("key")` is a confirmed no-op; a bag gear
+  instance appears in `sell_gear` rows while a same-type *equipped*
+  instance does not, and selling the bag one leaves the equipped one
+  completely untouched (still equipped, stats unaffected); an
+  unidentified/cursed bag instance sells without crashing and at the same
+  base-value price as an identified one (no identity leak via price);
+  selling an already-gone instance id is a safe no-op; emptying the bag via
+  repeated sells removes the sell_gear section entirely; a full shop panel
+  render with 17 rows (8 slots + 4 consumable stacks + 5 bag gear
+  instances) drew without exception and stayed comfortably within the
+  800x600 window with the hint line clear of the last row; `persist()`
+  after a sell spree doesn't raise; a full `main()` boot through the real
+  title menu to a `QUIT` (both posted on real short timers, not
+  pre-queued -- the session 7/8-established gotcha) exits cleanly. **Also
+  visually inspected** via a rendered screenshot (see above): every new row
+  reads clearly with correct name/count/price, and the message log
+  confirms an actual sale ("Sold Whetstone for 1 gold."). Real `save.db`
+  confirmed untouched (mtime unchanged) throughout, including across the
+  full `main()` boot; all runs used a scratch DB path via a monkeypatched
+  `main.SAVE_PATH`.
+- **Not addressed, same unbounded-growth characteristic the Inventory and
+  Spellbook panels already have** (sessions 15/16): the shop panel's height
+  still isn't capped or scrollable, so a bag hoarded well past what a
+  player would realistically carry between visits (dozens of unsold
+  instances) would eventually push the panel taller than the window. Not
+  new to this session and not fixed here -- consistent with how every other
+  dynamic-height panel in this codebase already behaves, and selling is
+  precisely the tool that keeps a bag from growing that large in practice.
+
+### Session 21 — poison status effect (Castle of the Winds' Viper)
+
+User-driven request: "look up the game Castle of the Winds and continue
+development." Researched CotW's monster roster specifically for status-
+effect mechanics (elemental damage/resistance, paralysis, stat drain,
+poison — see citations in this session's own work) rather than picking
+blind. Elemental damage types/resistance was the obvious next amulet-related
+item (session 18 explicitly flagged this as what a real resistance system
+would need), but scoped that out as too big a lift for one session — it
+would mean growing `combat.py` a whole damage-type axis. Poison is CotW's
+other status mechanic, sourced to two actual low-level monsters (Viper,
+Giant Scorpion — RPGClassics' monster list), and fits the codebase's
+existing "separate persisted countdown field" pattern (Stone Skin, session
+12) almost exactly, so it was the right-sized next step.
+
+- **New `Player.poison_turns`/`poison_damage` fields** (`engine/entity.py`),
+  same reasoning as `buff_defense_bonus`/`buff_defense_turns`: a *separate*
+  additive-over-time field, not a mutate-then-reverse stat, because it has
+  to expire on its own schedule and a save/quit mid-poison has to resume
+  correctly. Ticked in `Game._advance_turn` (`main.py`) alongside the
+  existing buff/detect countdowns — poison damage is applied there (clamped
+  at 0, never negative), and the field now *returns* any messages the tick
+  generated ("The poison saps N HP from you.", "The poison wears off.")
+  instead of silently mutating state, since (unlike the buff countdown,
+  which has no user-facing text at all) a DoT that can kill the player
+  needs to actually say so. Persisted via two new `poison_turns`/
+  `poison_damage` columns on `player` (`engine/save.py`, same
+  `ALTER TABLE ... ADD COLUMN` migration pattern as every prior session's
+  additions) — poison deliberately *does* survive a save/reload, unlike
+  session 15's divination timers, because CotW's own poison persists
+  through saves/rest too (it's what makes it dangerous) rather than being
+  a purely cosmetic effect.
+- **New `Enemy.poison_chance`/`poison_damage`/`poison_duration` fields**,
+  defaulted to 0 so every pre-existing enemy type is unaffected without any
+  `data/enemies.json` changes. `combat._maybe_poison(enemy, player, log)`
+  (new, shared) rolls the chance and, on a hit, sets the player's poison
+  fields to `max(current, new)` rather than stacking additively — a second
+  bite while already poisoned refreshes duration/potency instead of
+  compounding into an ever-growing per-tick number. Wired into both places
+  an enemy can land a hit on the player: `resolve_bump_attack` (the
+  counter-hit after a player's melee swing) and `enemy_attack` (an
+  enemy-initiated hit from `Game._run_enemy_turns`) — a spell-killed enemy
+  (`resolve_spell_hit`) never gets to poison the player at all, correctly,
+  since the enemy is never adjacent there in the first place.
+- **New `viper` enemy type** (`data/enemies.json`) — CotW's actual weakest
+  poison monster (5 XP, matching the source material) rather than an
+  invented one: 6 hp/1 attack (weaker in a straight fight than even the
+  slime) but a 50% bite chance to inflict 2 damage/turn for 6 turns, so
+  ignoring it is the actual danger, same spirit as the real game. Added to
+  `procgen.ENEMY_WEIGHTS_BY_TIER`'s shallow and mid tiers only (omitted at
+  the deepest tier, mirroring how the slime already tapers off there) —
+  `scale_stats_for_level` now also scales `poison_damage` by the same
+  depth multiplier as hp/xp (a no-op for every enemy without the field, via
+  the same `dict(stats)`-copy-then-overwrite shape every other scaled stat
+  already uses). **No matching sprite exists** — session 9 already
+  confirmed the character sheet is exclusively bipedal humanoids, re-checked
+  directly this session (rendered a labeled contact sheet of rows 18-35, no
+  snake/reptile anywhere) rather than assumed. `AssetManager.make_placeholder`
+  gained a `shape="diamond"` option (a simple rhombus polygon) so the Viper
+  reads as a distinct silhouette from the slime's circle and the switch
+  fixtures' squares, olive-yellow to read as "creature," not "gear."
+- **HUD gained a "Poisoned (N)" indicator** sharing the level/XP line rather
+  than adding a fourth HUD row — a first-pass fourth row collided visually
+  with the room viewport (`ROOM_ORIGIN` starts at y=56, right where a naive
+  fourth line would land), caught by rendering and inspecting a real
+  screenshot before shipping, not assumed to fit. Checked against a level-12
+  XP string (the widest realistic case) to confirm no overlap with the
+  room-name/gold column on the right.
+- **`_handle_death` clears poison on revive** — otherwise a player who dies
+  while poisoned would respawn at full HP only to take another poison tick
+  on their very next action with no fight having caused it. **A death
+  caused by the poison tick itself** (rather than a melee/spell hit) is a
+  new path: `Game._advance_turn` can now bring `player.hp` to 0 on its own,
+  so `handle_move` checks for it immediately after calling `_advance_turn`
+  and routes straight to `_handle_death` *before* resolving the attempted
+  move at all (mirroring the existing top-of-function "a dead player takes
+  no action" guard) — without this, a poison-killed player could still
+  complete an attack, start a conversation, or take a flight of stairs on
+  the same input that killed them. `quick_use_item`/`cast_selected_spell`
+  needed no equivalent guard: both already funnel into `_take_turn`
+  unconditionally, and `_take_turn` already re-checks `hp <= 0` before
+  running enemy turns and correctly calls `_handle_death` regardless of
+  *why* hp hit zero.
+- **Poison tick messages had to be threaded through three different
+  "turn just happened" call sites** (`handle_move`, `quick_use_item`,
+  `cast_selected_spell`), each of which builds its own message list
+  differently. `_advance_turn` now returns whatever it generated instead of
+  applying it silently, and each caller folds it in. The `"exit"` branch of
+  `handle_move` needed a real fix here, caught by this session's own
+  verification, not inspection: `load_room()` already resets
+  `self.message_log` to `["Entered <room>."]`, and a first-pass edit
+  *replaced* that with just the poison message when poisoned (silently
+  discarding "Entered X." on a poisoned player's every room transition) —
+  fixed by prepending poison/stairs messages onto the post-`load_room`
+  `self.message_log` instead of assigning over it, and re-verified against
+  both a plain exit and a stairs exit, poisoned and not.
+- Verified headless (SDL dummy driver, scratch DB, no pytest suite yet):
+  `_maybe_poison` applies at the enemy's configured rate across 200 trials
+  (~101/200 at a 50% chance) and never fires for an enemy with
+  `poison_chance` absent/0 (regression-checked against a skeleton kill);
+  `enemy_attack` and `resolve_bump_attack`'s counter-hit both correctly
+  invoke it; `_advance_turn` ticks damage down to exactly 0 floor, expires
+  on schedule with a "wears off" message, and a lethal tick brings hp to
+  exactly 0; a poisoned player's `handle_move` routes to `_handle_death`
+  before the attempted move resolves (no attack/npc-talk/exit happens on
+  the killing turn) and revival clears both poison fields; a save/reload
+  round trip preserves `poison_turns`/`poison_damage` exactly; sampling 300
+  seeds at tier 0/1/2 coordinates confirms Viper spawns at the first two
+  tiers and never the third, and `scale_stats_for_level` scales its
+  `poison_damage` upward with dungeon level while leaving every non-poison
+  enemy's scaled stats untouched; regression-checked Stone Skin's buff
+  countdown, a skeleton kill, `quick_use_item`, and `cast_selected_spell`
+  all still behave identically post-refactor; a full `main()` boot through
+  the real title menu to a `QUIT` (both posted on real short timers from a
+  background thread, not pre-queued — the session 7/8-established gotcha)
+  exits cleanly. **Also visually inspected** via rendered screenshots: the
+  Viper's diamond placeholder reads as a distinct creature silhouette next
+  to the player and an NPC portrait in the same shot, and the HUD's new
+  "Poisoned (N)" text sits cleanly on the level/XP line with no clipping
+  at both a fresh level-1 and a synthetic level-12 XP string. Real
+  `save.db` confirmed untouched (mtime unchanged, verified both before and
+  after this session's work) throughout; all runs used a scratch DB path.
+
+### Session 22 — elemental damage/resistance (Castle of the Winds' fire/cold/lightning)
+
+User-driven request: "look up the game Castle of the Winds and continue
+development." This is the gap sessions 18 and 21 both explicitly flagged
+and deferred: session 18 gave amulets a flat max_hp bonus as a stand-in for
+CotW's real "resistance to an element," and session 21 picked poison over
+elemental damage specifically because typing a whole damage axis into
+combat.py was too big a lift for that session. Researched CotW's actual
+resistance model (RPGClassics/StrategyWiki: "resistant" halves damage,
+"immune" ~ zero, monsters commonly resist or are immune to their own breath
+element) before scoping this, and sourced the new enemy from CotW's real
+early-dragon roster (Young Red Dragon, 20 XP, "immune to fire, breathes
+fire") rather than inventing one.
+
+- **`damage_type` on enemies and spells** (`data/enemies.json`,
+  `data/spells.json`; new fields on `Enemy`/read at cast time in main.py).
+  `"physical"` is the default and every pre-existing enemy/Spark are
+  unaffected. A non-physical attack **bypasses defense entirely** rather
+  than being mitigated by it — armor stops blows, not flame, matching how
+  CotW itself never lets AC reduce elemental damage. This is symmetric:
+  it's true both when a monster hits the player (`combat.
+  _enemy_damage_to_player`, shared by `resolve_bump_attack`'s counter and
+  `enemy_attack`, replacing the duplicated defense-subtraction formula both
+  used to inline separately) and when the player's Firebolt hits a monster
+  (`main.py`'s `cast_selected_spell`, the bolt branch).
+- **`player.resist_elemental`** (a flat percentage, capped at 90 in combat
+  so no single item can reach true immunity) mitigates incoming elemental
+  damage the way defense mitigates physical. Sourced entirely from an
+  equipped amulet, baked in and reversed the same permanent way weapon
+  attack/shield defense bonuses already are (`engine/equipment.py`'s
+  `equip()`/`unequip()`), and persisted the same way (`engine/save.py`, new
+  `resist_elemental` column, same `ALTER TABLE ADD COLUMN` pattern every
+  prior session's additions used).
+- **Amulets were fully re-scoped, not extended**: `data/equipment.json`'s
+  `amulet_vitality_*` ladder (flat +8/+16/+28 max_hp) is replaced by
+  `amulet_resist_*` (Amulet of Resistance / Greater / Supreme Resistance,
+  15%/30%/45% elemental resist) — the real mechanic amulets were always
+  meant to grant per sessions 18/21's own notes, not a stand-in bolted on
+  next to it. Since no equipment def anywhere still sets `"max_hp"` after
+  this change, the now-fully-dead hp-bonus branch in `equipment.py`'s
+  `_bonus`/`equip`/`unequip` was deleted outright (confirmed via grep
+  before removing) rather than left unreferenced — `_bonus` returns a
+  3-tuple again instead of 4. `engine/procgen.py`'s
+  `EQUIPMENT_BASE_TYPES_BY_SLOT["amulet"]` updated to the new key names;
+  same sprites (`eq_amulet_basic/fine/masterwork`) reused since only the
+  mechanic changed, not the art.
+- **Enemy-side resistance, the reverse case**: `Enemy.resist_elements`
+  (a `{damage_type: fraction}` dict, empty for everything that doesn't
+  define it) lets a monster resist or be immune to a *matching* elemental
+  spell — `combat.resolve_spell_hit` gained a `damage_type` param, looks
+  the caster's element up against the target's `resist_elements`, and
+  either halves damage (a fraction between 0 and 1, not used by any enemy
+  yet but the same zero-by-default-field convention session 21's
+  poison_chance already established), fully negates it and logs "is immune
+  to it" (fraction >= 1), or is a no-op passthrough for every existing
+  enemy and for Spark (which stayed `"physical"` — CotW's base attack spell
+  is non-elemental and always hits full regardless of resistance, which is
+  exactly what leaving it untyped already does here for free).
+- **New `young_red_dragon` enemy** (`data/enemies.json`) exercises both
+  sides of the mechanic in one placement: `damage_type: "fire"` (its bite
+  bypasses the player's defense, mitigated only by resist_elemental) and
+  `resist_elements: {"fire": 1.0}` (immune to the player's own Firebolt,
+  so a player who only prepared fire damage has to fall back to melee or
+  Spark — real emergent tactical texture, not just a stat bump). Deep-tier
+  only and rare (`procgen.ENEMY_WEIGHTS_BY_TIER[2]`, weight 1 against the
+  other three's combined 6) — a mini-boss-flavor threat, not a regular
+  encounter. hp45/atk9/def3/xp40/gold15-25, tougher than the previous
+  strongest enemy (cultist) across the board, consistent with being the
+  rarest thing in the tier. No matching sprite exists (session 9's
+  bipedal-only character sheet, re-confirmed for session 21's Viper and
+  true again here) — `AssetManager.make_placeholder` gained a `"triangle"`
+  shape (a simple spiked silhouette, red-orange) alongside the existing
+  circle/diamond/square, visually distinct from every other enemy at a
+  glance.
+- **New "Elemental Resist N%" line** on the Inventory panel's "Equipped"
+  section title (only shown when > 0) — unlike attack/defense/(the old)
+  max_hp, resist_elemental has no other visible gameplay tell (no bar, no
+  power difference the player would notice in melee), so it needed an
+  explicit number the same way session 21 added a "Poisoned (N)" HUD
+  indicator for poison. Folded into the existing title line rather than a
+  new row, so the panel's height math (already computed from item/gear
+  counts) didn't need touching.
+- **Found and deliberately did not fix, out of scope for this session**: a
+  pre-existing (not new) turn-economy quirk, confirmed by reading (not
+  guessed) `handle_move`/`_run_enemy_turns` — when the player bump-attacks
+  an adjacent enemy that survives, that enemy both counters immediately
+  (`resolve_bump_attack`) *and* gets an independent attack action from
+  `_run_enemy_turns` the same turn (it's still adjacent when its AI turn
+  runs), landing two hits per one player attack. This was caught by this
+  session's own combat-formula verification (a synthetic single-hit
+  assertion failed until the math was checked against the actual double
+  hit) and confirmed present for every enemy type, not something session
+  22 introduced — noted below rather than silently patched, since it
+  wasn't what this session was asked to do and changes base melee balance
+  for every existing enemy.
+- Verified headless (SDL dummy driver, scratch DB, no pytest suite yet):
+  `Enemy`/`Player` pick up the new fields with correct defaults for every
+  pre-existing enemy type (`damage_type` "physical", `resist_elements`
+  `{}`, `resist_elemental` 0); `_enemy_damage_to_player` ignores a
+  synthetic 50-defense player entirely for the Dragon's fire attack but
+  respects it normally for a Skeleton's physical one; resist_elemental at
+  50% and at a saturating 1000% both compute against the 90%-cap formula
+  correctly; `resolve_spell_hit` against the Dragon does zero damage and
+  logs "immune," against a Skeleton with the same fire type does full
+  damage, and Spark (`"physical"`) is unaffected by any enemy's
+  `resist_elements`; equipping each amulet tier grants exactly its listed
+  resist_elemental, unequipping reverses it exactly, an enchanted (+3)
+  masterwork amulet grants 45 + 3*3 = 54, and swapping amulets leaves no
+  stale bonus behind; confirmed no equipment def anywhere still sets
+  `max_hp` post-change; `young_red_dragon` only ever rolls at tier 2 across
+  500 samples and never at tiers 0/1; `scale_stats_for_level` carries
+  `damage_type`/`resist_elements` through a depth scale unchanged while
+  still scaling `attack`/`hp` normally; every `EQUIPMENT_BASE_TYPES_BY_SLOT`
+  amulet key resolves against the real equipment defs; a save/load round
+  trip preserves `resist_elemental` exactly; a full in-game bump-attack
+  sequence against a live Young Red Dragon (huge player defense, zero then
+  45% resist) matches the formula-derived expected damage exactly,
+  accounting for the double-hit quirk noted above; a full `main()` boot
+  through the real title menu to a `QUIT` (posted on real short timers from
+  a background thread, not pre-queued) exits cleanly with zero
+  `[ASSET WARNING]` output. **Also visually inspected** via rendered
+  screenshots: the Inventory panel's new "Equipped (Elemental Resist 45%)"
+  title and the "Amulet: Amulet of Supreme Resistance" row both render
+  without clipping at the existing 450px panel width; the shop panel's
+  amulet row ("Amulet: -- -> Amulet of Resistance (22g)") fits the existing
+  700px width; the Young Red Dragon's red triangle placeholder is visually
+  distinct from the player, a skeleton, and an NPC portrait in the same
+  shot. Real `save.db` confirmed untouched (mtime unchanged, checked before
+  and after) throughout; all runs used a scratch DB path via a
+  monkeypatched `main.SAVE_PATH`.
+
+### Session 23 — Neutralize Poison spell (Castle of the Winds' actual poison cure)
+
+User-driven request: "look up the game Castle of the Winds and continue
+development." Session 21 built poison as a pure wears-off-on-its-own-timer
+DoT and flagged "no cure-poison item/spell" as a plausible follow-on,
+guessing it'd land as a consumable effect. Researched CotW's actual
+mechanism first (StrategyWiki's Magic page) rather than building the
+guessed version blind: the real cure is the **Neutralize Poison spell**
+("purges all the poisons from the body... doesn't cure the damage caused by
+the poisons, it does prevent further damage") — potions/scrolls in CotW only
+ever cover Healing/Detect Objects/Detect Monsters/Detect Traps/Levitation,
+never poison cure. Scoped to exactly that: one new spell, reusing session
+12/19's casting pipeline and session 19's bookshop purchase path completely
+unchanged — no new mechanism anywhere.
+
+- **`data/spells.json` gained `neutralize_poison`** — `unlock_level: 8`
+  (the ladder's first tier past session 15's `detect_treasure` at 7;
+  leveling has no cap, see `combat.py`'s XP formula, so an 8th auto-learn
+  tier is a natural continuation, not a special case), `book_cost: 175`
+  (continues session 19's own `15 + unlock_level * 20` formula exactly),
+  `mana_cost: 5`, `effect: "cure_poison"`.
+- **`main.py`'s `cast_selected_spell` gained a `cure_poison` branch**: if
+  `player.poison_turns > 0`, zeroes both `poison_turns` and `poison_damage`
+  and logs a purge message; otherwise a no-op message, same "insufficient
+  target, spend the mana/turn anyway" contract `bolt`'s no-target case
+  already has (a wasted cast while healthy is a player mistake, not
+  something to refund). Matches the researched CotW behavior exactly: the
+  DoT is purged outright, not the HP already lost restored. Ordering
+  matters and needed no special-casing — `cast_selected_spell` resolves the
+  effect *before* calling `_advance_turn()` (session 21's poison-tick
+  step), so curing it here means that same turn's tick sees no poison left
+  and produces no extra damage/"wears off" message; verified directly
+  (casting while poisoned yields exactly the purge message, never also a
+  "saps N HP" or "wears off" line).
+- **Zero changes to `engine/spells.py`, `Inventory`, or the Spellbook/
+  Bookshop panels.** `newly_learned()` already scans purely on
+  `unlock_level`/`known_ids`, the Scholar's `_bookshop_rows()` already
+  returns every not-yet-known catalog entry generically, and both panels'
+  height/wrapping math already derives itself from the live spell list —
+  this is the same "extend the data, the generic machinery picks it up"
+  win sessions 18/19 already banked for their own additions.
+- Verified headless (SDL dummy driver, scratch DB via monkeypatched
+  `main.SAVE_PATH`): the spell def resolves with the right unlock
+  level/cost/effect; a fresh level-1 character doesn't know it and it
+  appears in the bookshop catalog (7 entries, up from 6); buying it with
+  insufficient gold (a fresh character's starting 15g vs. 175g cost) is a
+  silent no-op that changes neither gold nor `known_spells`; buying it with
+  enough gold deducts exactly 175 and adds it to `known_spells`; re-buying
+  an already-known spell is a no-op; casting it while not poisoned spends
+  the mana and logs the "weren't poisoned" message without touching
+  `poison_turns`; casting it while poisoned (synthetic `poison_turns=5`,
+  `poison_damage=3`) zeroes both fields, leaves `hp` completely unchanged
+  (confirming it purges the DoT rather than healing past damage), and
+  produces *only* the purge message — regression-checked that neither the
+  "saps N HP" nor "wears off" tick messages also fire the same turn;
+  insufficient mana blocks the cast entirely and leaves `poison_turns`
+  untouched (regression check against every other spell's existing
+  contract); a save/reload round trip preserves the learned spell;
+  `newly_learned()` gates it correctly at level 8 vs. 7; a full `main()`
+  boot through the real title menu to a `QUIT` (both posted on real short
+  timers from a background thread, not pre-queued — the session 7/8-
+  established gotcha) exits cleanly. **Also visually inspected** via
+  rendered screenshots: the Spellbook panel shows "Neutralize Poison (5
+  MP)" with its wrapped description and no clipping alongside Spark, and
+  the Bookshop panel's catalog correctly drops it after purchase, both at
+  their existing (unchanged) panel widths.
+- **Process note, not a game bug**: an early main()-boot smoke run
+  accidentally omitted the `main.SAVE_PATH` monkeypatch and briefly loaded/
+  resaved the real `save.db` (Continue → immediate quit, no player action
+  taken). Caught immediately via the mtime check this project's
+  verification discipline always runs; inspected the file directly
+  afterward and confirmed the real character's state (level 5, gear,
+  `turn_count` 1928, room) was written back unchanged, not reset or
+  corrupted — an idempotent resave, not data loss — then re-ran the same
+  check correctly against a scratch path. Noted here as a reminder to
+  future sessions, not because anything was actually lost.
+
+### Session 24 — Wraith mana drain + Restore Drained Mana (Castle of the Winds' undead stat-drain)
+
+User-driven request: "look up the game Castle of the Winds and continue
+development." Researched CotW's undead roster specifically (StrategyWiki's
+Monsters page): Wraiths "do not deal physical damage. Instead, they drain
+mana and intelligence... pass through walls and doors"; Wights drain
+Strength/Dexterity/Constitution permanently, "restored... at the Temple of
+Odin or using potions." This closes the other half of the amulet gap
+sessions 18/21/22 kept flagging ("Castle of the Winds' amulets raise
+*elemental or undead-drain* resistance... undead-drain resistance
+specifically is still unbuilt") -- session 22 closed the elemental half,
+this closes the undead half. Scoped to mana (this engine's only drainable
+resource with no existing attribute system to hang STR/DEX/INT drain on,
+same translation call session 18 made scoping amulets to max_hp before
+elemental existed) and to one representative Wraith, not CotW's three
+variants (Pale/Dark/Abyss) or the separate Wight -- same "one representative
+monster, not the whole family" scope call session 21 made for Viper over
+Giant Scorpion.
+
+- **`Enemy` gained `drain_chance`/`drain_amount`/`phases_walls`**
+  (`engine/entity.py`), zero for every enemy that doesn't define them (same
+  zero-by-default convention as session 21's `poison_chance`). `phases_walls`
+  is the Wraith's "passes through walls" trait: `Enemy.take_turn`'s two
+  `room.is_walkable` calls (chase-step and wander-step) now pass
+  `ignore_walls=self.phases_walls`. `Room.is_walkable` (`engine/room.py`)
+  gained that parameter -- still enforces room bounds and any `blocked` set
+  passed in, only the WALL-tile check itself is skippable. **Deliberately
+  does not phase through closed locked doors/gates** -- those are enforced
+  via the caller's `occupied_positions` set (session 15's fix), not this
+  method, so extending phasing to them would have meant a second mechanism;
+  flagged as a scope cut, not attempted this session (see Known Limitations).
+  Verified directly: a synthetic room with a Wraith on one side of a solid
+  wall segment and the player on the other, driven through the real
+  `Game._run_enemy_turns` path (not just `Enemy.take_turn` in isolation),
+  shows the Wraith's tracked position crossing the wall tile turn over turn
+  while a Skeleton in the identical layout stays stuck idle against it.
+- **Player gained `mana_drain`/`resist_undead`** and a new
+  `effective_max_mana()` method (`max(0, max_mana - mana_drain)`). Unlike
+  Viper poison (session 21), a Wraith's drain **does not wear off on a
+  turn-count timer** -- it's permanent until paid off, mirroring how a
+  cursed item (session 16) stays cursed until a paid Remove Curse, not a
+  countdown. Every place that used to cap `mana` against the raw `max_mana`
+  stat now caps against `effective_max_mana()` instead: `combat.grant_xp`'s
+  level-up refill, `Inventory.use_item`'s `restore_mana` branch, the
+  Healer's `rest_cost`/`rest_at_healer`, the HUD's MP text/bar, and the
+  Spellbook panel's mana line -- `max_mana` itself is untouched and keeps
+  growing on level-up exactly as before, only the *usable* ceiling shrinks
+  under drain. `Player.__init__` clamps `mana` to the effective ceiling on
+  load as a safety net. Missing any one of these call sites would have let a
+  potion/rest/level-up silently erase the drain for free -- each is
+  regression-tested individually (see below).
+- **`combat._maybe_drain`** (mirrors `_maybe_poison`'s shape exactly): rolls
+  `drain_chance`, and on a hit, adds `drain_amount` (mitigated by
+  `resist_undead`, capped at the same `RESIST_CAP` 90 session 22's elemental
+  resistance already enforces) to `mana_drain` -- refreshable-magnitude
+  poison keeps the larger of old/new; drain has no duration to refresh, it
+  just accumulates, so repeated bites really do compound, same as real CotW
+  wraiths being a war of attrition if you don't flee or kill them fast.
+  Wired into both `resolve_bump_attack`'s counter-hit and `enemy_attack`'s
+  initiated hit, same two call sites `_maybe_poison` already uses.
+- **The Healer gained a second service: Restore Drained Mana**
+  (`DRAIN_CURE_COST_PER_POINT = 5`, steeper than resting's 0.5g/point --
+  this is a rarer, worse affliction). The Healer panel was rewritten from
+  session 15's single fixed action into a cursor-based list (`healer_cursor`,
+  `_healer_rows()`, `healer_move_cursor`, `activate_healer_row`), the same
+  shape the Shop/Bookshop panels already use -- Rest is always row 0,
+  "Restore Drained Mana" only appears once `mana_drain > 0` (same
+  append-only-when-applicable pattern session 16 gave the Merchant's
+  Identify/Remove Curse rows). An undrained character sees exactly the
+  original one-row panel, confirmed both by a direct `_healer_rows()` check
+  and a rendered screenshot regression comparison against session 15's
+  original layout.
+- **New Amulet-line stat, not a new amulet line**: CotW keeps elemental and
+  undead-drain resistance as separate amulet types; this engine's existing
+  Amulet of Resistance ladder (session 22) now grants `resist_undead`
+  alongside `resist_elemental` at the same 15/30/45% per tier, rather than
+  adding a second amulet item line -- `next_offer`/the Shop panel/`SLOTS`
+  all assume exactly one tier ladder per slot key (see session 18's
+  ring1/ring2 note on why two lines sharing one slot was avoided there too),
+  and splitting the amulet slot's offers into two competing lines would
+  have been real new mechanism for a one-session feature. `equipment.py`'s
+  `_bonus()` now returns a 4-tuple (atk, dfn, resist_elemental,
+  resist_undead); enchant scales `resist_undead` the same x3-per-point rule
+  `resist_elemental` already uses. No equipment.json key was renamed --
+  purely additive, so a save with an existing `amulet_resist_*` instance is
+  unaffected.
+- **New `wraith` enemy** (`data/enemies.json`) -- 14 hp/1 attack/1 defense
+  (deliberately weak in a straight fight, matching "Wraiths do not deal
+  physical damage" -- the 1-damage floor every attacker in this engine has
+  is the only chip damage it does), `drain_chance` 0.35, `drain_amount` 3,
+  `phases_walls: true`. Mid/deep tier only, never shallow
+  (`procgen.ENEMY_WEIGHTS_BY_TIER`) -- a brand-new character with no gold to
+  pay the Healer shouldn't be able to stumble into an uncounterable
+  affliction on floor 1. `scale_stats_for_level` scales `drain_amount` with
+  dungeon level the same way it already scales `poison_damage`, a no-op for
+  every enemy without the field. **No incorporeal/ghost sprite exists** in
+  the character sheet (session 9 already confirmed it's exclusively bipedal
+  humanoids, true again here) -- tinted the Skeleton's own art a cold
+  blue-violet (`make_tint_variant`, same trick as stairs_up/gate/
+  locked_door/mana potions) rather than add a new placeholder shape; an
+  undead reusing an undead's silhouette, just ghostlier, reads correctly
+  next to the plain white Skeleton (confirmed via a side-by-side sprite
+  lineup screenshot against every other enemy type).
+- **HUD gained a "Drained (-N MP)" indicator** sharing the level/XP line
+  with session 21's "Poisoned (N)" -- unlike Poisoned, it shows no
+  countdown (there isn't one) and both can be visible simultaneously,
+  verified by rendering a character with both active at once and confirming
+  neither clips the other or the room-name/gold column. The Inventory
+  panel's "Equipped" title (session 22's `resist_elemental` display) now
+  lists both resistances when present, comma-joined -- the first render
+  caught a real clipping bug (the combined "Elemental Resist 45%, Undead
+  Ward 45%)" title measures 480px, past the panel's existing 450px),
+  measured directly with `font.size()` and fixed by widening to 500, same
+  "widen the panel, don't shrink the text" call sessions 13/16/18 already
+  made for this exact class of bug, re-rendered to confirm.
+- Verified headless (SDL dummy driver, scratch DB via monkeypatched
+  `main.SAVE_PATH`), 53 checks: every pre-existing enemy type defaults to
+  `drain_chance` 0/`phases_walls` False; the Wraith's own fields resolve
+  correctly; `effective_max_mana()` math including the drain-then-clear
+  case; `_maybe_drain` at a forced 100% chance applies and *accumulates*
+  across repeated hits (not refreshed, confirmed distinct from poison's
+  refresh behavior), a 50% `resist_undead` correctly halves the applied
+  amount (rounded), and a zero-`drain_chance` enemy (regression: Skeleton)
+  never drains across 50 trials; `Player.__init__` clamps `mana` to the
+  effective ceiling on construction; `grant_xp`'s level-up refill and
+  `Inventory.use_item`'s mana potion are both capped at the effective
+  ceiling, not raw `max_mana`; the Healer's `rest_cost` is 0 at drained-full
+  HP/mana, `_healer_rows()` includes the cure row only when drained,
+  `drain_cure_cost()` matches the expected per-point formula, curing clears
+  `mana_drain` and deducts gold, insufficient gold is a no-op that touches
+  neither, and resting *doesn't* clear an active drain (only the cure does)
+  -- confirmed via both the keyboard/click dispatch path
+  (`activate_healer_row`) and direct method calls; equipping the Amulet of
+  Resistance line grants both resistances, upgrading replaces rather than
+  stacks either, unequipping reverses both exactly, and a +3 enchanted
+  masterwork amulet grants 45+9=54% on both stats identically;
+  `Room.is_walkable`'s `ignore_walls` still enforces bounds and any
+  `blocked` set, only the WALL check itself is bypassed; a direct
+  `Enemy.take_turn` unit check confirms a phasing Wraith steps through a
+  wall tile toward the player while a non-phasing Skeleton in the identical
+  layout stays idle against it; `ENEMY_WEIGHTS_BY_TIER` never includes
+  `wraith` at tier 0, and sampling 300 generated rooms each at a shallow and
+  a deep coordinate confirms it actually never spawns shallow and does spawn
+  deep; `scale_stats_for_level` scales `drain_amount` upward with level
+  (identity at level 1) and leaves non-draining enemies' scaled stats
+  untouched; a full save/reload round trip preserves `mana_drain` and
+  `resist_undead` exactly; a live `Game` instance (not just unit-level
+  checks) drove a synthetic room through the real `_run_enemy_turns` path
+  and confirmed the Wraith's tracked position actually crosses a wall
+  tile turn over turn; a full `main()` boot through the real title menu to a
+  `QUIT` (both posted on real short timers from a background thread, not
+  pre-queued -- the session 7/8-established gotcha) exits cleanly. **Also
+  visually inspected** via rendered screenshots: the HUD's simultaneous
+  "Poisoned (4)"/"Drained (-9 MP)" indicators, the Healer panel with both
+  the Rest and Restore Drained Mana rows (and, as a regression check, the
+  original plain one-row panel when undrained, matching session 15's
+  layout), the Inventory panel's dual-resistance title (both before the
+  480px clipping bug was caught and after the 500px fix), a Wraith standing
+  in a live generated-style test room having just phased through a wall
+  segment to close on the player, and a side-by-side sprite lineup
+  confirming the Wraith's blue-tinted Skeleton reads as visually distinct
+  from every other enemy type in one shot. Real `save.db` confirmed
+  untouched (mtime unchanged, checked before and after the full session);
+  all runs used a scratch DB path via a monkeypatched `main.SAVE_PATH`.
+
 ## Known Limitations / Future Work
 
 Roughly in likely-priority order — not committed to, just tracked:
@@ -1594,21 +2480,50 @@ Roughly in likely-priority order — not committed to, just tracked:
   service. Shop purchases are still always a plain `+0` instance by
   design (see session 16) — that half of session 8's original note is
   intentional, not a residual gap.
-- **Vault chests still only ever hold plain consumables (session 16)** —
-  the per-instance equipment path floor loot uses doesn't extend to
-  `generate_room()`'s chest-loot roll yet (`CHEST_ITEM_WEIGHTS_BY_TIER`
-  deliberately excludes the `"equipment"` family — see session 16). A
-  guarded chest holding a guaranteed piece of (possibly enchanted) gear
-  would be a natural next step; the chest data shape (a single
-  `item_type` key) would need to grow an equipment-instance variant
-  first.
-- **Only 5 gear slots** (weapon/shield/helmet/armor/boots) — no rings or
-  amulet slots. Tier-based basic/fine/masterwork gear now also carries a
-  continuous `-3..+3` enchant when found in the Depths (session 16, closer
-  to CotW's prefix/suffix affixes than session 8's fixed tiers alone), but
-  there's still no *named* affix system (no "of the Bear," no multiple
-  stacked properties on one item) — enchant is a single number, not a
-  set of independent modifiers.
+- ~~**Vault chests still only ever hold plain consumables (session 16)**~~
+  — closed out session 17: a vault chest can now roll a per-instance
+  equipment drop (enchant/curse/identified, same as floor loot) alongside
+  its existing plain-consumable loot.
+- ~~**Only 5 gear slots (weapon/shield/helmet/armor/boots) — no rings or
+  amulet slots (session 8/16)**~~ — closed out session 18: `ring1`/
+  `ring2`/`amulet` slots added, same per-instance enchant/curse machinery
+  as the original five. Tier-based basic/fine/masterwork gear (every slot,
+  including the three new ones) carries a continuous `-3..+3` enchant when
+  found in the Depths (session 16, closer to CotW's prefix/suffix affixes
+  than session 8's fixed tiers alone), but there's still no *named* affix
+  system (no "of the Bear," no multiple stacked properties on one item) —
+  enchant is a single number, not a set of independent modifiers. Also
+  still true: CotW's amulets raise *elemental or undead-drain* resistance;
+  ~~this engine has no elemental damage types~~ closed out session 22 for
+  the elemental half (amulets now grant real `resist_elemental`, see
+  below) — ~~undead-drain resistance specifically is still unbuilt~~ closed
+  out session 24: the same Amulet of Resistance line also grants
+  `resist_undead`, mitigating a new Wraith enemy's permanent mana-drain
+  touch (see below), rather than a second amulet item line.
+- ~~**No elemental damage types or resistance system** (session 21)~~ —
+  closed out session 22: `damage_type` (fire/cold/lightning-capable, only
+  `"fire"` used so far via the new Young Red Dragon and Firebolt)
+  bypasses defense and is mitigated by a new `resist_elemental` stat
+  sourced from a reworked Amulet line; enemies can independently
+  resist/be immune to a matching elemental spell via `resist_elements`.
+  `"acid"` is still just a name nothing uses yet — easy to add a matching
+  enemy/spell/amulet-adjacent item the same way fire was, no new
+  mechanism needed.
+- ~~**Still no cure-poison item/spell** (session 22)~~ — closed out session
+  23: a new Neutralize Poison spell purges poison outright. This session's
+  own research confirmed CotW's actual mechanism is the spell, not a
+  potion (session 22's own note guessed at an item-based `effect:
+  "cure_poison"` branch in `Inventory.use_item` — the real game's
+  Neutralize Poison is spell-only, so that's what shipped; no consumable
+  changed).
+- **A player bump-attack against a surviving adjacent enemy lands two hits,
+  not one** (pre-existing, found and documented but deliberately not fixed
+  in session 22 — see that session's notes for how it was confirmed and
+  why it was left alone): `resolve_bump_attack`'s counter-hit and the same
+  enemy's own `_run_enemy_turns` attack action both fire off one player
+  input. Fixing it would rebalance every enemy's effective damage output,
+  not just this session's new elemental one, so it's flagged rather than
+  silently changed.
 - **No Remove Curse or Identify for consumables** — session 16's
   identify/curse system is equipment-only; consumables (potions,
   whetstones, etc.) stay session-5's plain tiered `item_type` strings,
@@ -1626,20 +2541,35 @@ Roughly in likely-priority order — not committed to, just tracked:
   obstacles/varied shapes yet (kept simple originally to guarantee
   reachability without a maze-solver). Difficulty now scales with depth
   *and* dungeon level (sessions 3-4), but room geometry itself doesn't.
-- **Content breadth is better but still thin**: three enemy types, four
-  item families (potion/whetstone/shield/gold, each with minor/normal/
-  greater tiers, sessions 5 and 8) plus five equipment slots (session 8).
-  Easy to extend further — just add entries to the relevant `data/*.json`
-  and a sprite registration in `Game._load_assets`.
+- **Content breadth is better but still thin**: six enemy types (session
+  21 added the Viper, session 22 the Young Red Dragon, session 24 the
+  Wraith), four item families (potion/whetstone/shield/gold, each with
+  minor/normal/greater tiers, sessions 5 and 8) plus eight equipment slots
+  (session 8/18). Easy to extend further — just add entries to the relevant
+  `data/*.json` and a sprite registration in `Game._load_assets`.
+- **The Wraith (session 24) phases through walls but not closed locked
+  doors/gates** — `Room.is_walkable`'s new `ignore_walls` param only skips
+  the WALL-tile check; a still-closed lock/gate is enforced by the caller's
+  `occupied_positions` set instead (session 15's fix), a separate mechanism
+  `phases_walls` doesn't touch. CotW's own wraiths pass through doors too;
+  extending phasing there would need occupied_positions itself to know
+  about a per-enemy phasing flag, not attempted this session. Also still
+  true: only one Wraith variant exists (CotW has Pale/Dark/Abyss tiers plus
+  the separate stat-draining Wight) and the drain only ever targets mana —
+  this engine has no STR/DEX/INT/CON attributes to drain the way Wights do.
 - **No drop mechanics for consumables** — items are consumed permanently
   on use, no way to drop one back onto the floor once picked up.
 - **Spells only have one casting path** (session 12) — the Spellbook panel
   (`C`), which always costs a turn on a successful cast. There's no field
   quick-cast hotkey the way items have 1-8, a deliberate scope cut (see
   session 12) to avoid a second key namespace, not a technical limitation.
-- **No purchasable/found spellbooks** — every spell is learned automatically
-  by reaching its `unlock_level` (session 12); CotW's other half of the
-  system (buy a spellbook to learn one out of level order) isn't built.
+- ~~**No purchasable/found spellbooks (session 12)**~~ — closed out session
+  19: a new Scholar NPC in the town hub sells every not-yet-known spell for
+  gold (`book_cost` in `data/spells.json`), learned immediately regardless
+  of level. Still true: spellbooks are bought, never found as dungeon loot
+  the way CotW's sometimes are — not attempted, would ride the same
+  per-instance-drop machinery equipment already uses (session 16/17) if
+  ever wanted.
 - **7 spells**, one per unlock tier (levels 1-5) plus two divination spells
   at 6/7 (session 15: Detect Monsters/Detect Treasure) — CotW's more
   freeform "misc" category still isn't represented. Easy to extend further:

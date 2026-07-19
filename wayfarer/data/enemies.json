@@ -31,5 +31,46 @@
     "gold_reward": [8, 15],
     "aggro_range": 20,
     "wander_chance": 0.1
+  },
+  "viper": {
+    "name": "Viper",
+    "sprite": "enemy_viper",
+    "hp": 6,
+    "attack": 1,
+    "defense": 0,
+    "xp_reward": 5,
+    "gold_reward": [0, 2],
+    "aggro_range": 10,
+    "wander_chance": 0.2,
+    "poison_chance": 0.5,
+    "poison_damage": 2,
+    "poison_duration": 6
+  },
+  "young_red_dragon": {
+    "name": "Young Red Dragon",
+    "sprite": "enemy_dragon",
+    "hp": 45,
+    "attack": 9,
+    "defense": 3,
+    "xp_reward": 40,
+    "gold_reward": [15, 25],
+    "aggro_range": 20,
+    "wander_chance": 0.1,
+    "damage_type": "fire",
+    "resist_elements": { "fire": 1.0 }
+  },
+  "wraith": {
+    "name": "Wraith",
+    "sprite": "enemy_wraith",
+    "hp": 14,
+    "attack": 1,
+    "defense": 1,
+    "xp_reward": 10,
+    "gold_reward": [4, 9],
+    "aggro_range": 10,
+    "wander_chance": 0.2,
+    "drain_chance": 0.35,
+    "drain_amount": 3,
+    "phases_walls": true
   }
 }
