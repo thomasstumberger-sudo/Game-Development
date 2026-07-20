@@ -90,5 +90,83 @@
     "book_cost": 175,
     "mana_cost": 5,
     "effect": "cure_poison"
+  },
+  {
+    "id": "word_of_recall",
+    "name": "Word of Recall",
+    "description": "Speak the word that binds you to town. Cast away from town, it marks your spot and pulls you home; cast again in town, it pulls you right back.",
+    "category": "utility",
+    "unlock_level": 9,
+    "book_cost": 195,
+    "mana_cost": 8,
+    "effect": "recall"
+  },
+  {
+    "id": "identify",
+    "name": "Identify",
+    "description": "A moment of insight lays bare an unproven find's true nature -- enchantment, curse, or lack of either.",
+    "category": "utility",
+    "unlock_level": 10,
+    "book_cost": 215,
+    "mana_cost": 4,
+    "effect": "identify"
+  },
+  {
+    "id": "remove_curse",
+    "name": "Remove Curse",
+    "description": "A cleansing word breaks a curse's grip, freeing whatever it binds to be worn or set aside at will.",
+    "category": "utility",
+    "unlock_level": 11,
+    "book_cost": 235,
+    "mana_cost": 6,
+    "effect": "remove_curse"
+  },
+  {
+    "id": "detect_traps",
+    "name": "Detect Traps",
+    "description": "Sense the hidden mechanisms of dart, pit, and gas traps lurking in this chamber.",
+    "category": "divination",
+    "unlock_level": 12,
+    "book_cost": 255,
+    "mana_cost": 5,
+    "effect": "detect_traps",
+    "duration": 40
+  },
+  {
+    "id": "levitation",
+    "name": "Levitation",
+    "description": "Rise a hand's breadth off the floor, drifting harmlessly over dart, pit, and gas traps for a time.",
+    "category": "defense",
+    "unlock_level": 13,
+    "book_cost": 275,
+    "mana_cost": 6,
+    "effect": "levitation",
+    "duration": 40
+  },
+  {
+    "id": "cold_bolt",
+    "name": "Cold Bolt",
+    "description": "A lance of biting frost streaks out ahead of you, chilling flesh to the bone.",
+    "category": "attack",
+    "unlock_level": 14,
+    "book_cost": 295,
+    "mana_cost": 5,
+    "effect": "bolt",
+    "damage_type": "cold",
+    "value": 9,
+    "range": 6
+  },
+  {
+    "id": "lightning_bolt",
+    "name": "Lightning Bolt",
+    "description": "An electrical discharge arcs out ahead of you, crackling toward your foe.",
+    "category": "attack",
+    "unlock_level": 15,
+    "book_cost": 315,
+    "mana_cost": 6,
+    "effect": "bolt",
+    "damage_type": "lightning",
+    "value": 11,
+    "range": 6
   }
 ]

@@ -72,5 +72,31 @@
     "drain_chance": 0.35,
     "drain_amount": 3,
     "phases_walls": true
+  },
+  "young_white_dragon": {
+    "name": "Young White Dragon",
+    "sprite": "enemy_white_dragon",
+    "hp": 40,
+    "attack": 8,
+    "defense": 4,
+    "xp_reward": 40,
+    "gold_reward": [15, 25],
+    "aggro_range": 20,
+    "wander_chance": 0.1,
+    "damage_type": "cold",
+    "resist_elements": { "cold": 1.0 }
+  },
+  "young_blue_dragon": {
+    "name": "Young Blue Dragon",
+    "sprite": "enemy_blue_dragon",
+    "hp": 42,
+    "attack": 8,
+    "defense": 3,
+    "xp_reward": 40,
+    "gold_reward": [15, 25],
+    "aggro_range": 20,
+    "wander_chance": 0.1,
+    "damage_type": "lightning",
+    "resist_elements": { "lightning": 1.0 }
   }
 }

@@ -187,6 +187,12 @@ class Player(Entity):
         # expire/tick on its own schedule, see main.py's Game._advance_turn).
         self.poison_turns = stats.get("poison_turns", 0)
         self.poison_damage = stats.get("poison_damage", 0)
+        # Session 29: Levitation (Castle of the Winds' "impervious to
+        # non-magical traps" buff) -- same countdown-buff shape as
+        # buff_defense_turns above, persisted for the same reason (a
+        # save/quit mid-flight shouldn't let a player dodge the eventual
+        # trap check for free). See engine/combat.py's resolve_trap.
+        self.levitation_turns = stats.get("levitation_turns", 0)
         # Session 22: elemental resistance (a percentage, 0-100), sourced
         # entirely from an equipped amulet -- see engine/equipment.py, which
         # replaces amulets' old flat max_hp bonus with this. Baked in and
@@ -212,6 +218,16 @@ class Player(Entity):
         # raw stat.
         self.mana_drain = stats.get("mana_drain", 0)
         self.mana = min(self.mana, self.effective_max_mana())
+        # Session 26: Word of Recall's anchor point -- set the moment the
+        # spell is cast away from town, read back the moment it's cast
+        # *in* town. Persisted (unlike the detect-spell timers) for the
+        # same reason mana_drain/poison are: it should survive a save/quit,
+        # matching Castle of the Winds' own recall (a scroll effect you can
+        # act on much later). None until the player has cast it at least
+        # once away from town.
+        self.recall_room = stats.get("recall_room")
+        self.recall_x = stats.get("recall_x")
+        self.recall_y = stats.get("recall_y")
         # Equipment bonuses are already baked into attack/defense above (see
         # engine/equipment.py) -- this dict only records what's worn (an
         # instance_id since session 16, a bare item_type before it), for the
@@ -240,16 +256,21 @@ class Player(Entity):
         return max(0, self.max_mana - self.mana_drain)
 
     def try_move(self, dx, dy, room, enemies, items, npcs=(),
-                 locked_doors=(), gates=(), chests=(), switches=(), blocked=None):
+                 locked_doors=(), gates=(), chests=(), switches=(), traps=(), blocked=None):
         """Resolve a single grid step: attack > npc > locked_door/gate
         (closed only -- caller filters) > blocked > exit > pickup > chest/
-        switch > move. Does not mutate enemies/items/chests/switches --
-        caller applies combat/pickup/unlock/trigger effects.
+        switch/trap > move. Does not mutate enemies/items/chests/switches/
+        traps -- caller applies combat/pickup/unlock/trigger effects.
 
         Session 10: locked doors and gates are non-committal bumps (like
         attacking or talking -- the player doesn't step onto them), while
         chests and switches are walk-onto (like item pickup -- the player
-        does step onto them, same as walking over a coin pile)."""
+        does step onto them, same as walking over a coin pile). Session 28:
+        traps are walk-onto the same way -- stepping on one doesn't block
+        the move, the hazard just happens to you mid-step, same as a real
+        dungeon trap. `traps` always holds every trap in the room (sprung or
+        not, mirroring chests/switches) -- the caller decides whether one
+        has already been sprung."""
         self.facing = (dx, dy)
         new_x, new_y = self.x + dx, self.y + dy
 
@@ -291,6 +312,11 @@ class Player(Entity):
             if switch["x"] == new_x and switch["y"] == new_y:
                 self.x, self.y = new_x, new_y
                 return {"type": "switch", "switch": switch}
+
+        for trap in traps:
+            if trap["x"] == new_x and trap["y"] == new_y:
+                self.x, self.y = new_x, new_y
+                return {"type": "trap", "trap": trap}
 
         self.x, self.y = new_x, new_y
         return {"type": "moved"}

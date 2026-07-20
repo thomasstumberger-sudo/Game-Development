@@ -66,6 +66,11 @@ class Room:
         self.gate_templates = data.get("gates", [])
         self.switch_templates = data.get("switches", [])
         self.chest_templates = data.get("chests", [])
+        # Session 28: hidden dungeon traps (Castle of the Winds' dart/pit/
+        # gas traps) -- structural template only, same "always in the list,
+        # state lives in room_flags" convention chests/switches already use
+        # (see main.py's Game.traps/sprung_trap_ids).
+        self.trap_templates = data.get("traps", [])
         self._region_grid = self._build_region_grid()
         self._border_regions = self._build_border_regions()
 

@@ -2456,10 +2456,798 @@ Giant Scorpion.
   untouched (mtime unchanged, checked before and after the full session);
   all runs used a scratch DB path via a monkeypatched `main.SAVE_PATH`.
 
+### Session 25 — UI pass: window/HUD/log rework, room-size letterboxing, panel chrome
+
+User-driven request, explicitly scoped to UI/graphics rather than content:
+"focus on the UI and graphics... the inventory screen, spell book, etc. as
+well as the overall UI, the fact that the play area does not occupy the
+whole window, the log at the bottom runs off the page and can't be read."
+Also flagged several sprites as poor choices needing rework, but explicitly
+said not to worry about that this pass (see Known Limitations) -- this
+session touched zero sprite art, only `main.py`'s rendering/layout code.
+
+- **Root cause of both headline complaints was the same thing**: the
+  window (`WINDOW_W, WINDOW_H = 800, 600`) was sized independently of its
+  content. The 640x512 room viewport (fixed since session 9's 16px tile
+  switch) floated in the middle with 80px of never-drawn black margin on
+  each side, and the message log had no box of its own -- it blitted
+  directly onto that same background at a y-offset (`ROOM_ORIGIN[1] +
+  ROOM_PIXEL_H + 6`) that left only ~26px of the 600px window below it,
+  so its second line rendered past the bottom edge, and long lines were
+  never wrapped so they could also run past the *right* edge. Rebuilt the
+  window outward from its content instead: `TOP_BAR_H` (84) and `LOG_H`
+  (110) are sized to their own worst-case HUD/log content (measured with
+  `font.size()`, not guessed), and `WINDOW_W`/`WINDOW_H` are now derived
+  (`ROOM_PIXEL_W + HUD_GAP*2`, `TOP_BAR_H + HUD_GAP + ROOM_PIXEL_H +
+  HUD_GAP + LOG_H`) rather than hardcoded -- new window is 648x714, about
+  the same total area as the old 800x600, just reshaped so almost none of
+  it is dead space.
+- **HUD rebuilt as a full-width boxed bar** (`_draw_hud`): four stacked
+  rows (HP, MP, Lvl/XP, Status) instead of the old design's HP/MP rows
+  plus a third row that crammed Lvl/XP *and* both status effects
+  (Poisoned/Drained) onto one line -- measured that worst case
+  (`"Lv 99  XP 9999/9999"` + both statuses) at 662px, within 20px of the
+  *old* 800px-wide window's edge with zero margin for anything else ever
+  sharing that row. Giving Status its own row removes that fragility
+  entirely rather than shrinking text to fit a narrower window. Room
+  name/gold stay top-right, one per row aligned with HP/MP. Solid
+  background bar + bottom border line, replacing text floating directly
+  on the black game background.
+- **Message log rebuilt as a boxed, wrapped, multi-line panel**
+  (`_draw_message_log`): background + border matching the other overlay
+  panels, word-wraps every retained message to the box's actual width
+  (reusing the new shared `_wrap_text`, see below) before laying anything
+  out, and shows up to `LOG_MAX_LINES` (5) wrapped lines. The two
+  call sites that used to hard-cap retained messages at `[-3:]`
+  (`_take_turn`, `_handle_death`) now cap at `[-LOG_MAX_LINES:]` to match
+  -- previously that cap silently discarded a 4th+ message from a busy
+  turn (e.g. a hit + a kill + a poison tick) even though nothing about the
+  render path could've shown it anyway.
+- **Room viewport now letterboxes rooms smaller than the full 640x512
+  grid, instead of leaving a dead block in the bottom-right.** This was a
+  second, previously-unreported instance of the exact same "play area
+  doesn't fill its space" complaint, one level down: `room_surface` was
+  one subsurface carved out once at `__init__` and never resized, so
+  every hand-authored room (Town Square 32x24, Armory 14x10, Crypt 30x20
+  -- all deliberately smaller than the Depths' full 40x32 footprint, see
+  session 10) only ever drew into its own corner of the fixed viewport,
+  leaving the rest solid black (`draw()`'s per-frame
+  `room_surface.fill((0, 0, 0))`). New `Game._resize_room_surface()`
+  recreates the subsurface on every room transition (never per-frame --
+  same discipline as everything else that only recomputes on a room
+  change) sized to `min(room.width/height * TILE_SIZE, ROOM_PIXEL_W/H)`
+  and centered within the fixed viewport frame; `self.room_draw_origin`
+  tracks the resulting screen offset. A full-size Depths room's computed
+  origin is provably identical to the old fixed `ROOM_ORIGIN` (verified
+  directly: `(4, 88) == (4, 88)`), so this is a pure no-op for the
+  Depths and only changes hand-authored rooms. `handle_room_click` (mouse
+  movement) had to switch from the fixed `ROOM_ORIGIN`/`ROOM_PIXEL_W/H` to
+  `self.room_draw_origin` and `self.room_surface.get_size()` so a click in
+  a letterboxed room still resolves to the right tile -- verified by
+  walking to and clicking tiles in the Armory (smallest room, most
+  offset) with no interaction misfires.
+- **Room viewport border**: a thin 2px frame drawn around the *fixed*
+  viewport rect (not the per-room resized one) in `draw()`, so the
+  letterboxing around a small room reads as an intentional inset within a
+  stable window frame rather than an unexplained black gap.
+- **Shared `_wrap_text(font, text, max_width)`** (module-level, top of
+  file) replaces a word-wrap closure that used to live only inside
+  `_draw_spellbook_panel` -- now also used by the message log and the
+  reworked Shop panel below.
+- **Shop panel rewritten to wrap instead of just being wide** (`panel_w`
+  700 -> 480): the old panel was widened to 700px in session 18
+  specifically to fit one worst-case row (a cursed ring/amulet upgrade
+  line, e.g. "Amulet: Amulet of Greater Vitality -3 [cursed] -> Amulet of
+  Supreme Vitality (155g)", 680px at this font) without touching the
+  text. That doesn't fit a window now sized around the 640px room
+  viewport rather than around this one panel's one long row. Every row's
+  line is now wrapped (via `_wrap_text`) to the new narrower width, with
+  row heights computed per-row (same measure-then-build pattern the
+  Spellbook/Inventory panels already used for their own variable-length
+  content) rather than the old fixed 20px-per-row -- a row that doesn't
+  need to wrap still renders as one line, so this is a pure width
+  reduction for every row except the rare long ones. Verified directly:
+  a synthetic cursed-amulet-upgrade row (the exact worst case that forced
+  the original 700px width) renders on two lines with no clipping at the
+  new 480px width.
+- **Every overlay panel gained a visible border**: new
+  `Game._panel_surface(w, h)` centralizes what all 7 panel draw methods
+  used to duplicate (`pygame.Surface(...); panel.fill(COLOR_PANEL_BG)`)
+  and adds a 2px `COLOR_PANEL_BORDER` outline, so a panel's edge is
+  visually defined instead of only implied by where its text stops.
+  Applying it uniformly caught a real, independent pre-existing bug: the
+  Healer panel's hint line ("Up/Down select, U/Enter/click act, Esc
+  close", shared verbatim with the Shop/Bookshop panels) measures 352px
+  and was already running to within 2px of the panel's own 360px edge
+  before this session -- invisible with no border drawn, but exactly the
+  class of clipping bug this file has a running precedent of catching via
+  direct `font.size()` measurement (sessions 13/16/18/24). Fixed the same
+  way those were: widened the panel (360 -> 390), didn't touch the text.
+  Checked every other panel's hint/title line against its actual panel
+  width the same way and confirmed none of the others are similarly
+  tight (18-314px of margin each).
+- **Title menu recentered**: `_draw_menu`'s title/option/confirmation
+  positions were fixed pixel offsets tuned for the old 600px-tall window
+  and left stranded in the top third of the new 714px-tall one. Now
+  anchored off `WINDOW_H // 2` so they stay in the same relative position
+  regardless of window height.
+- Verified headless (SDL dummy driver, scratch DB via monkeypatched
+  `main.SAVE_PATH`): every new/changed layout constant computed and
+  printed directly (`WINDOW_W/H`, `ROOM_ORIGIN`, `LOG_ORIGIN`,
+  `TOP_BAR_H`, `LOG_H`); a fresh-game boot and draws of the base room
+  view, a HUD stress case (level 12, 12345 gold, both Poisoned and
+  Drained active simultaneously, a long procedural room name) and a
+  3-message combat turn (one line long enough to force wrapping) all
+  render with zero exceptions and zero `[ASSET WARNING]` output; every
+  one of the 7 overlay panels (Inventory, Spellbook, Shop -- including a
+  forced worst-case cursed-amulet row, Journal, Quest, Healer, Bookshop)
+  plus the F3 debug overlay and the title menu were individually opened
+  and screenshotted; Town Square/Armory/Crypt (the three hand-authored,
+  under-full-size rooms) and a full-size Depths room were all entered
+  directly and their `room_surface` size/origin printed and screenshotted,
+  confirming the three smaller rooms center correctly and the Depths room
+  is byte-identical to the old fixed origin. **Also visually inspected**
+  every one of the above screenshots directly (not just asserted
+  programmatically): confirmed the HUD's four rows never overlap or clip
+  even at the stress-case values, the log box shows all three wrapped
+  lines of the long-message test fully inside its border, the shop's
+  wrapped cursed-amulet row reads cleanly on two lines, every panel's
+  border and text sit comfortably inside their own bounds, and the three
+  under-full-size rooms are visibly centered/letterboxed rather than
+  pinned to a corner. A full `main()` boot through the real title menu
+  (Enter to start a New Game, both posted on real short timers from a
+  background thread, not pre-queued -- the session 7/8-established
+  gotcha) to a `QUIT` exits cleanly with no exceptions. Real `save.db`
+  confirmed untouched (mtime unchanged, checked before and after every
+  run in this session) throughout; all runs used a scratch DB path via a
+  monkeypatched `main.SAVE_PATH`.
+
+### Session 26 — Word of Recall spell (Castle of the Winds' town/dungeon shortcut)
+
+User-driven request: "look up the game Castle of the Winds and continue
+development." Researched CotW's actual Word of Recall (StrategyWiki's Magic
+page / general CotW item knowledge): a scroll/spell that "recalls the
+character to the town level," and reading it again while in town "brings the
+character back to the level they were on when it was last used" -- a single
+effect whose direction depends on where you are, not two separate spells.
+Session 12 explicitly deferred "spells only have one casting path" and the
+game had no fast-travel mechanic at all before this; every previous trip
+back to town after a deep Depths run meant retracing the entire stairs
+path. Scoped to exactly the researched mechanic, reusing session 12's
+casting pipeline and the exact room-transition sequence `handle_move`'s
+`"exit"` branch already established -- no new subsystem.
+
+- **`data/spells.json` gained `word_of_recall`** -- `unlock_level: 9` (the
+  ladder's next tier past session 23's `neutralize_poison` at 8), `book_cost:
+  195` (continues session 19's `15 + unlock_level * 20` formula exactly),
+  `mana_cost: 8` (the highest of any spell so far, deliberately -- a
+  cross-room teleport is a stronger effect than any single-room spell),
+  `effect: "recall"`, `category: "utility"` (new category value; `category`
+  is descriptive metadata only, not read anywhere in code, so adding one
+  needed no changes elsewhere).
+- **`Player` gained `recall_room`/`recall_x`/`recall_y`** (`engine/entity.py`),
+  `None` until the spell is cast at least once away from town. Persisted
+  (new `recall_room TEXT`/`recall_x INTEGER`/`recall_y INTEGER` columns,
+  `engine/save.py`, same `ALTER TABLE ADD COLUMN` pattern every prior
+  session's additions used) -- deliberately *not* a countdown like the
+  divination spells' visual-only timers, but a durable anchor like
+  `mana_drain`/a cursed item, since the real scroll's effect is meant to
+  still be there much later, including after a save/reload.
+- **`main.py`'s `cast_selected_spell` gained a `"recall"` branch** that
+  reads `self.current_room_id == DEFAULT_ROOM` (imported from
+  `engine.save`, main.py's first reference to the town-hub constant) to
+  pick a direction: away from town, it stamps the current room/position
+  into `recall_room`/`recall_x`/`recall_y` and targets `(DEFAULT_ROOM,
+  *DEFAULT_SPAWN)`; in town with an anchor set, it targets the anchor
+  directly; in town with no anchor, it's a no-op message (mana/turn still
+  spent, same "a wasted cast is a player mistake" contract session 23's
+  `cure_poison` no-target case already established). **The anchor is
+  deliberately never cleared by a return trip** -- like the real item,
+  only casting it again from the dungeon moves the anchor; reading it from
+  town is a pure read, not a consume-on-use.
+- **The room-transition itself reuses `handle_move`'s `"exit"` branch
+  sequence exactly** (flush the room being left via `set_room_flags`/
+  `set_room_meta`, `load_room()` the destination, autosave via `persist()`)
+  rather than falling through to the spellcasting tail's normal
+  `_take_turn()` call -- and, like that branch, deliberately skips running
+  enemy turns on the arrival room ("entering a room is its own turn;
+  enemies there haven't seen us yet" is already a documented invariant, not
+  new to this session). This only applies when the cast actually resolves
+  to a destination *and* the player is still alive after `_advance_turn()`'s
+  poison tick -- a lethal tick during the cast (rare, but the same edge
+  case session 21 built `handle_move`'s pre-move death check for) falls
+  through to the ordinary `_take_turn()` path instead, which already knows
+  to call `_handle_death()` before anything else resolves, so a
+  recall-while-fatally-poisoned correctly dies rather than teleporting a
+  corpse. Verified directly (see below), not just reasoned about.
+- **Zero changes to the Spellbook or Bookshop panels, or to
+  `engine/spells.py`.** Both panels' row lists, height/wrap math, and
+  cursor handling are already fully generic over whatever's in
+  `data/spells.json` -- the same "extend the data, the generic machinery
+  picks it up" win sessions 18/19/23 already banked, confirmed again by
+  screenshot below with zero layout changes needed.
+- Verified headless (SDL dummy driver, scratch DB via monkeypatched
+  `main.SAVE_PATH`): spell def resolves with the right unlock level/cost/
+  mana/effect; a fresh character has no anchor and starts in the town hub;
+  casting in town with no anchor spends mana and a turn but doesn't move the
+  room; casting from the Armory sets the anchor to the Armory's exact tile
+  and lands the player in the town hub at `DEFAULT_SPAWN`; casting again in
+  town returns to that exact Armory tile, and the anchor survives being
+  used (not cleared); a save/reload round trip preserves `recall_room`/
+  `recall_x`/`recall_y` exactly; insufficient mana is a full no-op (no room
+  change, no turn consumed, anchor untouched), matching every other spell's
+  contract; a synthetic lethal poison tick during a from-dungeon cast
+  triggers death (the "You have fallen" message, a full-HP revive) instead
+  of completing the teleport; a fresh character's bookshop catalog includes
+  Word of Recall and buying it deducts exactly 195 gold and adds it to
+  `known_spells`; the Spellbook panel renders with it known with no
+  exception; a full `main()` boot through the real title menu (Enter and
+  `QUIT` both posted on real short timers from a background thread, not
+  pre-queued -- the session 7/8-established gotcha) exits cleanly (exit
+  code 0/`None`). A same-session regression check confirmed Minor Heal
+  still resolves correctly and `turn_count` still advances normally through
+  the shared spellcasting tail. **Also visually inspected** via rendered
+  screenshots: the Spellbook panel's Word of Recall entry reads cleanly at
+  the existing 420px width with no clipping, and the Bookshop panel's
+  8-row catalog (up from 7) still fits with the new "Word of Recall (195g)"
+  row reading correctly at the bottom. Real `save.db` confirmed untouched
+  (mtime unchanged, checked before and after the full `main()` boot);
+  all runs used a scratch DB path via a monkeypatched `main.SAVE_PATH`.
+
+### Session 27 — Identify and Remove Curse spells (mana alternative to the Merchant's paid services)
+
+User-driven request: "look up the game Castle of the Winds and continue
+development." Researched CotW's actual spell list (Wikibooks' Magic page
+and RPGClassics' spell reference): Identify "reveals enchantments/curses or
+lack thereof on an object" and Remove Curse "makes a cursed object
+uncursed... its negative effects are not removed, and it is still
+worthless" -- both real CotW spells, distinct from (and in the real game,
+cheaper/faster than) finding a scroll or paying for the service. This
+engine already had gold-cost Merchant versions of exactly these two actions
+(session 16's Identify/Remove Curse shop rows) but no spell path -- closing
+that gap reuses the existing target-selection and mutation logic outright,
+new session in the same vein as 23/26 (research one still-missing CotW
+spell, wire it into the existing generic casting pipeline, zero UI-layer
+changes needed).
+
+- **`data/spells.json` gained `identify` (unlock_level 10, book_cost 215,
+  mana_cost 4) and `remove_curse` (unlock_level 11, book_cost 235, mana_cost
+  6)** -- both `category: "utility"`, continuing the ladder past session
+  26's Word of Recall at 9. `book_cost` continues the existing `15 +
+  unlock_level * 20` formula unchanged (established session 19, reused by
+  every spell added since).
+- **`main.py`'s `cast_selected_spell` gained two branches**, both calling
+  the exact same functions the Merchant shop rows already call
+  (`self.unidentified_bag_instances()` / `self.cursed_equipped_slots()` for
+  target selection, `equipment.remove_curse` for the mutation, straight
+  instance mutation for identify) -- **zero new mechanism**, just a second,
+  mana-priced caller of session 16's existing logic. Target selection has
+  no picker UI: casting always resolves the *first* entry of the relevant
+  list (oldest unidentified Found Gear instance / first cursed equipped
+  slot in `SLOTS` order) -- deliberately simple, matching Neutralize
+  Poison's "resolves automatically against current player state" pattern
+  (session 23) rather than adding a new in-panel target-selection flow for
+  what's otherwise a rare, low-stakes action. Both follow the established
+  no-target contract (session 23/26): a cast with nothing to act on still
+  spends mana and a turn and prints a distinct message, exactly like
+  Neutralize Poison casting on a non-poisoned player or Word of Recall
+  casting anchor-less in town -- a wasted cast is a player mistake, not a
+  free no-op.
+- **Zero changes to `engine/equipment.py`, the Spellbook panel, or the
+  Bookshop panel.** Both panels' row lists and layout math are already
+  fully generic over `data/spells.json` (sessions 18/19/23/26's repeated
+  win) -- confirmed again by screenshot below, no clipping at 11 known
+  spells or a 9-row bookshop catalog.
+- Verified headless (SDL dummy driver, scratch DB via monkeypatched
+  `main.SAVE_PATH`), 31 checks: both spell defs resolve with the expected
+  unlock level and the exact `15 + unlock_level*20` book cost; casting
+  Identify with no unidentified Found Gear is a no-op-except-message that
+  still spends mana and a turn; casting it with one unidentified instance
+  present flips `identified` to `True` on exactly that instance and reports
+  its revealed name; casting Remove Curse with nothing cursed equipped
+  behaves the same way; casting it with a cursed weapon equipped clears
+  `cursed` on exactly that instance, and the item can then actually be
+  unequipped afterward (previously blocked by `equipment.unequip`'s cursed
+  check -- confirmed the spell's effect isn't just a flag flip but actually
+  unblocks the real mechanic); insufficient mana on either spell is a full
+  no-op (no mana spent, no turn advanced, target state unchanged, matching
+  every other spell's contract); the Spellbook (11 known spells, cursor
+  parked on Identify) and Bookshop (9-row catalog including the two new
+  entries) panels both render without exception; `buy_spellbook` learns
+  both new ids for gold and a save/reload round trip preserves
+  `known_spells` containing both; a full `main()` boot through the real
+  title menu (Enter and `QUIT` both posted on real short timers from a
+  background thread, not pre-queued -- the session 7/8-established gotcha)
+  exits cleanly. **Also visually inspected** via rendered screenshots: the
+  Spellbook panel with all 11 entries (including Identify's and Remove
+  Curse's full description text) reading cleanly with no clipping at the
+  existing panel width, and the Bookshop's 9-row catalog showing "Identify
+  (215g)" and "Remove Curse (235g)" as the last two purchasable rows,
+  correctly priced. Real `save.db` confirmed untouched (mtime unchanged,
+  checked before and after the full `main()` boot); all runs used a scratch
+  DB path via a monkeypatched `main.SAVE_PATH`.
+
+### Session 28 — hidden dungeon traps + Detect Traps spell (Castle of the Winds' trap mechanic)
+
+User-driven request: "look up the game Castle of the Winds and continue
+development." Researched CotW's actual trap system (StrategyWiki's Strategy
+page and its Monsters/general-notes pages) before scoping: traps are hidden
+until triggered or revealed by a **Detect Traps** spell ("reveals all traps
+within 10 tiles"), stepping on an undetected one springs it, and **Levitation**
+makes the player "impervious to non-magical traps" while providing a window to
+safely disarm a detected one for XP. Real trap types named in the source
+material include Dart Trap, Pit, and Poison/Sleep/Slow Gas Traps. Scoped this
+session to the core hidden-trap-plus-detection loop (three representative trap
+types, structural placement in the Depths, a new divination spell) and
+deliberately left disarm-for-XP and Levitation-as-trap-immunity as unbuilt
+follow-ons rather than trying to land the whole researched system in one pass
+— see Known Limitations.
+
+- **`data/traps.json`** (new) defines three trap types, translating CotW's
+  named roster rather than inventing one: `dart_trap` (3-7 dmg, most common,
+  shallow-skewed), `pit_trap` (6-12 dmg, mid-tier), `poison_gas_trap` (2-4 dmg
+  plus a poison DoT, deep-tier — reuses `Player.poison_turns`/`poison_damage`
+  outright rather than a parallel trap-specific poison field, same fields a
+  Viper's bite already sets, see session 21). Each has a `trigger_message`
+  matching its real-world name/flavor.
+- **`engine/procgen.py`**: trap placement is **structural** (rolled off
+  `layout_rng`, not the epoch-scoped `pop_rng`) — same "a room's hazards are
+  part of its shape, not its loot" reasoning session 10 already applied to
+  locks/chests/regions, so a trap's position and type survive a room's
+  150-turn repopulation cycle exactly like a vault does, and its id has no
+  `_ep{epoch}` suffix. One roll per core room (`TRAP_CHANCE_BY_TIER`
+  0.12/0.18/0.24, rolled and placed *before* that room's `pop_rng` enemy/item
+  rolls in the same loop iteration, so their placement naturally avoids the
+  trap's occupied cell too) using a small `TRAP_WEIGHTS_BY_TIER` table —
+  shallow rooms skew dart traps, deep rooms skew the nastier pit/gas types,
+  mirroring the existing enemy/item tier-weighting convention exactly.
+  `generate_room()`'s returned dict gained a `"traps"` list; verified
+  deterministic per `(seed, level, gx, gy)` and provably unaffected by epoch
+  (300-seed sample, byte-identical trap lists across epoch 0 vs. 5), and
+  zero position collisions between a room's traps/enemies/items across 200
+  sampled rooms.
+- **`engine/entity.py`**: `Player.try_move` gained a `traps=()` param and a
+  walk-onto check (same shape as chests/switches — the player steps onto the
+  tile, the hazard is a side effect of the step, not a block). Like chests,
+  `traps` always holds every trap in a room (sprung or not) — whether one's
+  already been sprung is checked by the caller, not filtered out beforehand,
+  so re-walking a solved hazard is a recognized-but-silent no-op rather than
+  falling through as an anonymous "moved."
+- **`engine/combat.py`** gained `resolve_trap(player, trap_def, log)` —
+  rolls damage in `[damage_min, damage_max]`, **bypasses defense entirely**
+  (it's an environmental mechanism, not a parried blow — same "armor doesn't
+  stop this" reasoning session 22 already used for elemental damage, for a
+  different underlying reason), and folds in the poison DoT for
+  `poison_gas_trap` using the same refresh-larger-not-stack convention
+  `_maybe_poison` already established.
+- **`main.py`**: `Game.traps`/`Game.sprung_trap_ids` follow the exact
+  chest/opened_chest_ids pattern (`_current_room_flags()`'s new
+  `"trap_sprung"` key rides save.py's already-fully-generic room_flags
+  table — zero schema change, session 10's own win banked again). `handle_move`
+  gained a `"trap"` branch: springs it (once) via `resolve_trap`, otherwise a
+  silent pass-through; trap damage can bring the player to exactly 0 hp and
+  correctly routes through the same `_take_turn` → `_handle_death` tail every
+  other damage source already does, with zero special-casing needed (unlike
+  poison's pre-move death check, a trap's damage happens *during* move
+  resolution, before `_take_turn`'s own hp<=0 check runs).
+- **Traps are hidden by a stricter rule than ordinary fog.** Every other
+  fixture (chests, switches, gates) renders as soon as its region is
+  fog-revealed; a trap must stay invisible even in an already-explored region
+  until it's either been sprung (permanently visible afterward, like an
+  opened chest) or **Detect Traps** is actively cast — `_draw_fixtures`'s new
+  trap loop checks `sprung OR detect_traps_turns > 0` *in addition to* the
+  normal `_is_visible` fog gate, an extra condition no other fixture needed.
+  Sprite: no matching trap art in either source sheet (traps are floor-level
+  hazards, not items or monsters) — `AssetManager.make_placeholder` gained a
+  `"spike"` shape (a caltrop-style "X"), one placeholder per trap type tinted
+  by nature (grey dart, brown pit, sickly green gas), visually distinct from
+  every enemy/switch/chest shape already in use.
+- **New `detect_traps` spell** (`data/spells.json`, unlock_level 12 — the
+  ladder's next tier past session 27's Remove Curse at 11 — book_cost 255,
+  continuing the `15 + unlock_level*20` formula, mana_cost 5, duration 40),
+  `category: "divination"`, completing CotW's actual three-spell divination
+  school this engine now has (Detect Monsters/Treasure from session 15, this
+  session's Detect Traps) — session 15's own text claimed to "close out"
+  the school with just the first two; this session's research turned up the
+  third. Wired into `cast_selected_spell` exactly like Detect Monsters/
+  Treasure: sets `detect_traps_turns`, ticked down in `_advance_turn`
+  alongside the other two, never persisted (purely visual, same low-stakes
+  reasoning as its siblings).
+- Verified headless (SDL dummy driver, scratch DB via monkeypatched
+  `main.SAVE_PATH`), 24 checks across two scripts: procgen-level determinism/
+  epoch-independence/tier-weighting/collision checks (above); a live `Game`
+  instance confirms an unsprung trap is invisible by default, `try_move`
+  returns `kind="trap"` and still lets the player step onto the tile, a full
+  `handle_move` pass through the real branch applies damage, logs the
+  trigger message, and marks it sprung, re-walking the same tile a second
+  time deals no further damage, the sprung trap becomes visible afterward,
+  and `trap_sprung` round-trips through `save.get_room_flags`/
+  `set_room_flags`; a synthetic `poison_gas_trap` hit confirms both the
+  direct damage and the poison DoT fields, and a second hit while a weaker
+  synthetic poison is already active confirms refresh-not-stack; casting
+  Detect Traps spends the right mana, sets the counter, makes a still-unsprung
+  trap in a fresh room visible while active, and the counter correctly
+  expires after 40 ticks; a full asset-load pass produces zero
+  `[ASSET WARNING]` output for the three new trap sprites; `draw()` against a
+  room holding an unsprung trap raises no exception; a full `main()` boot
+  through the real title menu to a `QUIT` (posted on real short timers from a
+  background thread, not pre-queued — the session 7/8-established gotcha)
+  exits cleanly. **Also visually inspected** via rendered screenshots: a
+  sprung pit trap's brown "X" caltrop sprite renders cleanly on the player's
+  tile alongside the HUD's updated HP bar and the trigger message in the log
+  box, and a 4x zoomed close-up crop confirms the sprite itself reads as a
+  distinct hazard marker rather than a rendering artifact. Real `save.db`
+  confirmed untouched (mtime unchanged, checked before and after both
+  scripts) throughout; all runs used a scratch DB path via a monkeypatched
+  `main.SAVE_PATH`.
+
+### Session 29 — Disarm Trap command + Levitation spell (closing out session 28's own follow-on note)
+
+User-driven request: "look up the game Castle of the Winds and continue
+development." Researched CotW's own trap-safety pairing (Wikibooks' Magic
+page, StrategyWiki, and general CotW source-material summaries): **Levitation**
+"makes the player impervious to non-magical traps... everything except glyphs
+of warding and teleporter traps," and combining it with **Detect Traps**
+lets a player "usually disarm the traps with minimal danger, and gain
+experience for disarming them" via a dedicated Disarm command (the real
+game binds it to 'd', select the trap, Enter). Session 28 shipped the
+detect-and-avoid half and explicitly flagged the disarm-plus-Levitation half
+as an unbuilt follow-on -- this session closes exactly that gap, scoped to
+the two researched mechanics and nothing further (no named glyph/teleporter
+trap types exist here to carve out an exception for, so Levitation's
+immunity is unconditional against every trap type this engine has).
+
+- **New `levitation` spell** (`data/spells.json`, unlock_level 13 -- the
+  ladder's next tier past session 28's Detect Traps at 12 -- book_cost 275,
+  continuing the `15 + unlock_level*20` formula, mana_cost 6, duration 40,
+  matching Detect Traps' own duration so the two are naturally cast together
+  for a full trip through a trap-heavy room, per the real game's own
+  strategy). `Player.levitation_turns` (`engine/entity.py`) is a persisted
+  countdown, same shape as Stone Skin's `buff_defense_turns` (not a
+  purely-visual, unpersisted timer like the divination spells) -- a
+  save/quit mid-flight shouldn't let a player dodge the eventual trap check
+  for free. `engine/save.py` gained the matching `levitation_turns` column
+  (same `ALTER TABLE ADD COLUMN` pattern every prior session's additions
+  used) and is threaded through `load_game`/`save_game` exactly like every
+  other player-stat column. `main.py`'s `_advance_turn` ticks it down
+  alongside `buff_defense_turns`; `cast_selected_spell` gained a
+  `"levitation"` branch that's a near-verbatim copy of the `"buff_defense"`
+  branch's shape, just setting a duration with no separate bonus value.
+- **`engine/combat.py`'s `resolve_trap` is now Levitation-aware**: an active
+  `levitation_turns` skips both the damage roll and the poison-gas DoT
+  outright and logs a distinct "you drift over it, untouched" message,
+  rather than reducing them -- matches CotW's "impervious," not "resistant."
+  This one change covers *every* way a trap can fire (blind walk-onto, a
+  failed disarm attempt below) since they all route through this same
+  function, so Levitation didn't need to be checked at each call site
+  separately.
+- **New Disarm Trap command**, bound to **`T`** rather than the real game's
+  `d` -- `d` is already WASD-right movement in this engine (`MOVE_KEYS`), so
+  the literal keybind couldn't be reused; picked for the "disarm Trap"
+  mnemonic instead. `Game.attempt_disarm()` (`main.py`) targets whatever's
+  directly in `Player.facing` (the same "ahead of you" adjacent-tile
+  targeting a bolt spell already uses -- no new aim/targeting UI needed) and
+  only ever resolves against an **already-detected** trap (`detect_traps_turns
+  > 0`): an undetected trap in front of the player has to look *identical* to
+  no trap at all (same generic "There's nothing to disarm there." message
+  either way, and no turn consumed), or the command itself would leak
+  "something's there" information the fog/detection system exists to hide.
+  A detected-and-targeted attempt always consumes a turn (enemies act), win
+  or lose, mirroring every other deliberate player action.
+- **`engine/combat.py`'s new `resolve_disarm(player, trap_def, log)`**
+  resolves the attempt itself: chance is `trap_def["disarm_chance"]` (new
+  per-trap-type field in `data/traps.json` -- 0.65/0.5/0.4 for dart/pit/gas,
+  easier traps are easier to disarm) plus a small `0.02 * player.level` bonus,
+  capped at 0.95 so a trap is never a guaranteed disarm. Success marks the
+  trap permanently inert (`sprung_trap_ids`, the same "solved forever" state
+  a walk-onto spring already leaves) and grants a new `trap_def["disarm_xp"]`
+  (4/8/12 by type -- the nastier the trap, the more XP for neutralizing it)
+  via the existing `grant_xp`. Failure calls `resolve_trap` itself --
+  springing the trap exactly like blundering onto it blind, including
+  Levitation's damage immunity, so "cast both spells together to disarm with
+  minimal danger" falls out of composing two already-correct mechanisms
+  rather than needing a third special case.
+- **Incidental bugfix found while screenshotting this session's work**:
+  Levitation becoming the Spellbook panel's 13th entry pushed the panel's
+  *actual* total content height (title + 13 wrapped descriptions + hint)
+  past the window's own height for the first time -- `_draw_spellbook_panel`
+  had never had a height ceiling (its own docstring, since session 15,
+  explicitly assumed "the spell list is small and only grows by one entry
+  per future session" and would therefore never need one). The panel's top
+  and bottom both rendered clipped off-window. Fixed by capping `panel_h` at
+  `WINDOW_H - 40` and adding a scroll-to-cursor viewport (a `panel.set_clip`
+  region plus a `scroll` offset recomputed each frame from the cursor's row
+  position -- no persisted scroll state needed since Up/Down only ever moves
+  the cursor one row at a time) -- rows fully outside the visible window are
+  skipped for both drawing and click-hitboxing. This is a general fix, not
+  Levitation-specific: it'll keep the panel usable as the spell ladder keeps
+  growing session over session, the exact growth this method's own comment
+  had bet against. The Bookshop panel (single-line rows, no wrapped
+  descriptions) was checked and still fits comfortably at 13 entries -- not
+  touched, since it isn't broken yet.
+- Verified headless (SDL dummy driver, scratch DB via monkeypatched
+  `main.SAVE_PATH`), 35 checks: the spell def resolves with the right
+  unlock level/book cost/effect; both new `traps.json` fields exist on all
+  three trap types; `resolve_trap` deals zero damage and logs the
+  drift-over message while `levitation_turns > 0`, and deals damage normally
+  once it's back to 0; `resolve_disarm` forced (via a monkeypatched
+  `random.random`) to succeed returns `True` and grants XP, forced to fail
+  returns `False` and damages the player; `attempt_disarm` against an
+  *undetected* trap consumes no turn, leaves it unsprung, and shows the
+  generic message; against a *detected* trap it consumes exactly one turn,
+  marks it sprung, deals no damage and grants XP on a forced success;
+  re-attempting an already-sprung trap is a no-op; a real `handle_move`
+  walk-onto while levitating takes no damage and still marks the trap sprung
+  (informational/visible from then on); casting Levitation sets the
+  countdown and spends the right mana; a save/reload round trip preserves
+  `levitation_turns` exactly; the Spellbook panel renders without exception
+  at every one of its 13 cursor positions (the scroll-fix regression guard);
+  a full `main()` boot through the real title menu (Enter and `QUIT` both
+  posted on real short timers from a background thread, not pre-queued --
+  the session 7/8-established gotcha) exits cleanly. **Also visually
+  inspected** via rendered screenshots: the HUD's new "Levitating (N)" status
+  text (cyan, alongside the existing Poisoned/Drained row) reads cleanly
+  next to a disarm-success message in the log box; the Spellbook panel with
+  the cursor on Levitation (the last entry) shows its full description with
+  no clipping top or bottom, and with the cursor back on Spark (the first
+  entry) the top of the list is equally clean -- both confirm the scroll fix
+  actually works at both ends of the list, not just in the middle. Real
+  `save.db` confirmed untouched (mtime unchanged, checked before and after
+  the full `main()` boot); all runs used a scratch DB path via a
+  monkeypatched `main.SAVE_PATH`.
+
+### Session 30 — free field-Rest command (Castle of the Winds' turn-costing HP/mana recovery)
+
+User-driven request: "look up the game Castle of the Winds and continue
+development." Researched CotW's own rest mechanic: pressing Rest lets the
+character recover HP and mana gradually, turn by turn, for free -- distinct
+from (and the far more commonly used counterpart to) any gold-based
+full-heal service, and blocked/interrupted by nearby danger rather than
+usable anywhere. Wayfarer already had a *paid* instant-full-heal via the
+Healer (`rest_at_healer`, session 15) but nothing free -- without gold on
+hand, or below spell level 2 for Minor Heal, a damaged player's only option
+was to keep fighting hurt or trek back to town. This session adds the other
+half: a genuinely CotW-flavored, engine-only mechanic (no new art, no new
+save columns -- it only ever moves existing `hp`/`mana` toward existing
+ceilings) that was a clear gap once actually looked for.
+
+- **New `Game.field_rest()` (`main.py`), bound to `R`** (unclaimed --
+  confirmed no existing keybind used it; distinct from `T`'s Disarm Trap and
+  every panel key). Blocked outright with a message if any living enemy is
+  in the current room (`self.enemies` is already exactly that set -- session
+  6's NPC-bump precedent and every enemy-tracking call site already keep it
+  filtered to alive-and-present) or if the player is already at full HP and
+  mana (`effective_max_mana()`, session 24's drain-aware ceiling). Otherwise
+  loops calling the existing `_advance_turn()` (so buffs/poison/detection
+  timers and `turn_count` all tick down exactly as they would for any other
+  action -- resting spends real game time, including toward Depths
+  repopulation, same trade-off CotW's own rest has) and adds
+  `REST_HEAL_PER_TURN`/`REST_MANA_PER_TURN` (2 HP / 1 mana per turn, new
+  constants near `RESPAWN_THRESHOLD`) each tick, stopping the moment both are
+  full. **`REST_MAX_TURNS` (200) is a safety cap**, not a gameplay limit --
+  it exists purely so a pathological state (poison damage outpacing the
+  fixed heal-per-turn) can't spin the loop forever; ordinary poison still
+  wears off and heals fine within the cap, and if poison actually kills the
+  player mid-rest, `field_rest()` routes through the exact same
+  `_handle_death()` path `handle_move`/`attempt_disarm` already use, no new
+  death handling needed. Since the room can't gain an enemy mid-rest (no
+  timer-based spawns, single room, checked once up front), `_take_turn`'s
+  `_run_enemy_turns()` tail call is a guaranteed no-op here -- kept anyway
+  for the same "every non-room-changing action ends the same way" consistency
+  every other handler already follows, not a wasted special case.
+- **Zero interaction with `resolve_disarm`/traps**: resting doesn't move the
+  player, so a trap underfoot (already sprung, since you can't stand on an
+  undetected one without having walked there) is simply inert during rest,
+  same as it is for any other stationary moment.
+- Verified headless (SDL dummy driver, scratch DB), 14 checks: resting from
+  partial HP/mana with no enemies present restores both and advances
+  `turn_count`; resting at full HP/mana is a free no-op (no turn spent,
+  distinct message); resting with a living enemy in `self.enemies` is
+  blocked (no turn spent, no HP change, distinct message); a pathological
+  heavy-poison state terminates within `REST_MAX_TURNS` rather than hanging;
+  a lethal-poison-during-rest death correctly revives at full HP with poison
+  cleared, matching every other death path; a full `main()` boot through the
+  real title menu to a real-timer `QUIT` (session 8's established
+  pre-queued-events-get-dropped-by-the-menu gotcha, avoided the same way
+  every session since has) exits cleanly. **Also visually inspected** via
+  rendered screenshots: a damaged/mana-drained player's HP/MP bars read full
+  after resting with the exact "You rest for N turns and recover some
+  strength." log line, and a second screenshot with an enemy placed nearby
+  shows the HP bar unchanged and the "You can't rest with enemies nearby."
+  block message instead. Real `save.db` confirmed untouched (mtime
+  unchanged, checked before and after); all runs used a scratch DB path.
+
+### Session 31 — Cold Bolt spell + Young White Dragon (CotW's cold-elemental mirror of Firebolt/the Red Dragon)
+
+User-driven request: "look up the game Castle of the Winds and continue
+development." Researched CotW's actual elemental roster (StrategyWiki's
+Magic and Monsters pages, RPGClassics' Lifthransir's Bane spell/monster
+references): the real game has **Cold Bolt** and **Cold Ball** spells and a
+full **White Dragon** family ("Immune to Cold, Breathes Ice"), the direct
+cold-elemental counterpart to session 22's Firebolt/Young Red Dragon —
+Wikibooks also notes CotW's own relative elemental power ordering (fire >
+lightning > cold), which set this spell's mana/damage numbers below
+Firebolt's. Session 22's elemental system (`damage_type` string dispatch,
+`enemy.resist_elements` dict) was confirmed generic before writing anything
+(researched via a read-only pass first) — this session is a pure
+data/content addition, zero engine-code changes to `combat.py`/`entity.py`/
+`equipment.py`.
+
+- **`data/spells.json` gained `cold_bolt`** — unlock_level 14 (the ladder's
+  next tier past session 29's Levitation at 13), `book_cost: 295` (continues
+  the `15 + unlock_level*20` formula unchanged), `mana_cost: 5` and
+  `value: 9` (both below Firebolt's 7/12, reflecting CotW's own fire > cold
+  power ordering), `effect: "bolt"`, `damage_type: "cold"`. **Zero changes
+  needed to `cast_selected_spell`'s `"bolt"` branch** — it already dispatches
+  generically on whatever `damage_type` string a spell def carries (verified
+  by reading the branch before writing the entry), so Cold Bolt rides the
+  exact same code path Firebolt and Spark already use.
+- **`data/enemies.json` gained `young_white_dragon`** — hp 40/attack
+  8/defense 4/xp_reward 40/gold_reward [15,25] (comparable to the Young Red
+  Dragon's own stats, no power skew intended between the two mirror
+  enemies), `damage_type: "cold"`, `resist_elements: {"cold": 1.0}` (immune
+  to its own breath, matching the Red Dragon's fire-immunity and CotW's own
+  "immune to cold" White Dragon). **`scale_stats_for_level` needed no
+  changes** — confirmed by reading it first, it shallow-copies the whole
+  stats dict so `damage_type`/`resist_elements` pass through untouched while
+  hp/attack/defense/xp/gold scale with dungeon level exactly like every
+  other enemy.
+- **`engine/procgen.py`'s `ENEMY_WEIGHTS_BY_TIER`**: `young_white_dragon`
+  joins tier 2 (deepest) alongside `young_red_dragon` at the identical
+  weight (1, against the tier's now-9-strong combined weight) — same
+  deep-tier-only, deliberately-rare mini-boss treatment, no reason to make
+  one dragon rarer than the other. Absent from tiers 0/1, same as the red
+  dragon.
+- **Sprite: a real lesson in why `make_tint_variant` isn't universal.**
+  First attempt copied session 24's Wraith-from-Skeleton trick verbatim —
+  `make_tint_variant("enemy_white_dragon", "enemy_dragon", (215, 235, 255))`
+  — and it *passed* an initial pixel-equality assertion (rounding made the
+  tinted pixel technically different from the source). But `BLEND_RGB_MULT`
+  can only ever **darken** a channel (`dest = dest * src / 255`), never
+  brighten one past its own value — the Wraith tint worked because the
+  Skeleton's base sprite is already pale/white (high R/G/B to darken toward
+  blue-violet), while the Red Dragon triangle's green/blue channels (60, 30)
+  are too low for any multiplicative wash to lift them into a pale icy
+  color. Rendering and visually comparing the two sprites side by side
+  (not just diffing raw bytes) caught this immediately — the "tinted"
+  triangle still read as solid red. Fixed by using a second
+  `make_placeholder("enemy_white_dragon", (225, 240, 255), shape="triangle")`
+  call instead — same triangle silhouette as the Red Dragon (both are
+  dragons; shape parity is fine, CotW's own dragon sprites differ only by
+  color too), genuinely pale blue-white fill this time. This is now the
+  documented reason `make_tint_variant` is a good fit only when the *source*
+  sprite is already light enough to darken into the target hue, not a
+  general-purpose recolor tool.
+- Verified headless (SDL dummy driver, scratch DB via monkeypatched
+  `main.SAVE_PATH`), 36 checks: the spell def resolves with the right
+  unlock level, the exact `15 + unlock_level*20` book cost, and a
+  mana/value below Firebolt's; the enemy def resolves with the right
+  `damage_type`/immunity; a live `resolve_spell_hit` confirms the White
+  Dragon takes zero damage and gets the "immune to it" message from Cold
+  Bolt but takes normal damage from Firebolt (no fire resist entry), and a
+  same-shape regression check confirms the Red Dragon is still immune to
+  fire but now takes normal damage from Cold Bolt (no cold resist entry —
+  the two mirror enemies don't accidentally cross-resist); `young_white_dragon`
+  is present in tier 2 only (absent from tiers 0/1) at the same weight as
+  `young_red_dragon`; `scale_stats_for_level` scales hp/attack upward at
+  level 5 while leaving `damage_type`/`resist_elements` untouched; sampling
+  400 seeds at a fixed deep coordinate confirms it actually spawns
+  procedurally; a full game boot produces zero `[ASSET WARNING]` output and
+  the new sprite resolves at 16x16; casting Cold Bolt in a live `Game`
+  instance spends exactly its mana cost and damages a real target through
+  the actual `cast_selected_spell` path (not just the lower-level combat
+  function); the Spellbook panel renders at all 14 cursor positions
+  (session 29's scroll-viewport fix holding up again) and the Bookshop's
+  14-row catalog renders with Cold Bolt priced correctly at the bottom; a
+  full `main()` boot through the real title menu (Enter and `QUIT` both
+  posted on real short timers from a background thread, not pre-queued —
+  the session 7/8-established gotcha) exits cleanly. **Also visually
+  inspected** via rendered screenshots: the Spellbook panel with the cursor
+  parked on Cold Bolt (the new 14th/last entry) shows its full description
+  with no clipping top or bottom; the Bookshop's 14-row catalog shows
+  "Cold Bolt (295g)" as the correctly-priced last row; a direct 4x-scaled
+  side-by-side render of the Red Dragon and White Dragon sprites confirms
+  they're genuinely color-distinct (this is what caught the broken
+  first-attempt tint above — the pre-fix comparison screenshot still showed
+  two visually-identical red triangles despite the code technically running
+  without error); and a live in-room screenshot with a real
+  `young_white_dragon` `Enemy` instance placed near the player/town NPCs
+  confirms the pale triangle renders correctly at actual game scale, not
+  just in an isolated sprite-sheet crop. Real `save.db` confirmed untouched
+  (mtime unchanged, checked before and after the full `main()` boot); all
+  runs used a scratch DB path via a monkeypatched `main.SAVE_PATH`.
+
+### Session 32 — Lightning Bolt spell + Young Blue Dragon (the third leg of the fire/cold/lightning elemental set)
+
+User-driven request: "look up the game Castle of the Winds and continue
+development." Researched CotW's actual Lightning Bolt/Ball spells and its
+elemental dragon roster (StrategyWiki's Magic page, which spells out the
+game's own effectiveness ordering as fire > lightning > cold, and confirms
+Blue Dragons specifically "breathe lightning"). Sessions 22 and 31 already
+built fire (Firebolt/Young Red Dragon) and cold (Cold Bolt/Young White
+Dragon) as the first two legs of this set and left a documented gap:
+"'lightning' and 'acid' are still just names nothing uses yet." This
+session closes the lightning half of that gap the same way the first two
+were closed — confirmed the `damage_type`/`resist_elements` dispatch in
+`combat.py` is fully generic (re-read `resolve_spell_hit` and
+`scale_stats_for_level` before writing anything) and shipped a pure
+data/content addition, zero engine-code changes.
+
+- **`data/spells.json` gained `lightning_bolt`** — unlock_level 15 (next
+  tier past session 31's Cold Bolt at 14), `book_cost: 315` (continues the
+  `15 + unlock_level*20` formula unchanged), `mana_cost: 6` and `value: 11`
+  — deliberately placed between Firebolt's 7/12 and Cold Bolt's 5/9 so the
+  mana-cost/damage ordering matches CotW's own fire > lightning > cold
+  power ranking rather than being a new high or low outlier. **Zero changes
+  needed to `cast_selected_spell`'s `"bolt"` branch** — same generic
+  `damage_type`-string dispatch Firebolt/Cold Bolt already ride.
+- **`data/enemies.json` gained `young_blue_dragon`** — hp 42/attack
+  8/defense 3/xp_reward 40/gold_reward [15,25] (in line with the other two
+  mirror dragons, no power skew intended between the three), `damage_type:
+  "lightning"`, `resist_elements: {"lightning": 1.0}` (immune to its own
+  breath, matching the Red/White Dragons' fire/cold immunity).
+  `scale_stats_for_level` needed no changes (re-confirmed by reading it: it
+  shallow-copies the stats dict, so `damage_type`/`resist_elements` pass
+  through untouched).
+- **`engine/procgen.py`'s `ENEMY_WEIGHTS_BY_TIER`**: `young_blue_dragon`
+  joins tier 2 (deepest) at the same weight (1) as the other two dragons —
+  same rare mini-boss treatment, absent from tiers 0/1.
+- **Sprite**: `AssetManager.make_placeholder("enemy_blue_dragon", (40, 100,
+  230), shape="triangle")` — same triangle silhouette as the other two
+  dragons, a saturated electric blue chosen to read as distinct from the
+  White Dragon's pale near-white fill and from the Wraith's muted
+  blue-violet tint (a different, humanoid silhouette anyway, so the color
+  proximity there was never a real collision risk). No `make_tint_variant`
+  attempted this time — session 31 already established that trick only
+  works when the source sprite is light enough to darken into the target
+  hue, and neither existing dragon is a good source for a saturated blue.
+- Verified headless (SDL dummy driver, scratch DB via monkeypatched
+  `main.SAVE_PATH`), 21 checks: the spell def resolves with the right
+  unlock level, exact `15 + unlock_level*20` book cost, and mana/value
+  strictly between Cold Bolt's and Firebolt's; the enemy def resolves with
+  the right `damage_type`/immunity; a live `resolve_spell_hit` confirms the
+  Blue Dragon takes zero damage and gets the "immune to it" message from
+  Lightning Bolt but takes normal damage from Firebolt, and a same-shape
+  regression check confirms the Red and White Dragons both still take
+  normal damage from Lightning Bolt (no accidental cross-resist between any
+  of the three); `young_blue_dragon` is present in tier 2 only at the same
+  weight as its two siblings, and sampling 400 rolls at tier 2 confirms it
+  actually spawns; `scale_stats_for_level` scales hp upward at level 5 while
+  leaving `damage_type`/`resist_elements` untouched; a full game boot
+  produces zero `[ASSET WARNING]` output and the new sprite resolves at
+  16x16; casting Lightning Bolt in a live `Game` instance (spell added to
+  `known_spells`, cursor moved to it) spends exactly 6 mana and deals
+  exactly 11 damage to a real target through the actual
+  `cast_selected_spell` path; the Bookshop's now-14-row not-yet-known
+  catalog (a fresh level-1 character knows only Spark) shows Lightning Bolt
+  correctly priced at 315g as the last row; the Spellbook panel renders
+  cleanly with the cursor on Lightning Bolt and the post-cast mana readout
+  correct; a full `main()` boot through the real title menu (Enter and
+  `QUIT` posted from a background thread on real short timers, not
+  pre-queued — the session 7/8 gotcha) exits cleanly. **Also visually
+  inspected** via rendered screenshots: the Spellbook panel with Lightning
+  Bolt selected (44/50 mana after the live test cast, no clipping); the
+  Bookshop's 14-row catalog with "Lightning Bolt (315g)" as the correctly
+  priced last row; and a live in-room screenshot with a real
+  `young_blue_dragon` `Enemy` placed next to the player in the town square,
+  confirming the electric-blue triangle is visually distinct from the
+  player, the two NPCs, and (by construction) the other two dragon colors.
+  Real `save.db` confirmed byte-identical (md5 checked before and after the
+  full `main()` boot, not just mtime); all runs used a scratch DB path via
+  a monkeypatched `main.SAVE_PATH`.
+
 ## Known Limitations / Future Work
 
 Roughly in likely-priority order — not committed to, just tracked:
 
+- **Several sprite choices are poor and need to be re-done (flagged
+  session 25)** — the user explicitly called this out while scoping
+  session 25 to UI/layout only ("I am not worried about the sprites
+  themselves, although several are poor choices") -- no specific sprites
+  were named, and session 25 touched zero art, so this is a placeholder
+  for a future session to actually audit the current roster (session 9's
+  curation, plus every placeholder/tint-variant added since) against what
+  reads poorly in practice and swap or redraw the worst offenders.
 - ~~**Enemy AI doesn't check locked doors/gates (session 10)**~~ — fixed
   session 15: `Game._run_enemy_turns` now folds `_blocked_positions()` into
   the occupied set passed to `Enemy.take_turn`.
@@ -2501,14 +3289,22 @@ Roughly in likely-priority order — not committed to, just tracked:
   `resist_undead`, mitigating a new Wraith enemy's permanent mana-drain
   touch (see below), rather than a second amulet item line.
 - ~~**No elemental damage types or resistance system** (session 21)~~ —
-  closed out session 22: `damage_type` (fire/cold/lightning-capable, only
-  `"fire"` used so far via the new Young Red Dragon and Firebolt)
+  closed out session 22: `damage_type` (fire/cold/lightning-capable)
   bypasses defense and is mitigated by a new `resist_elemental` stat
   sourced from a reworked Amulet line; enemies can independently
   resist/be immune to a matching elemental spell via `resist_elements`.
-  `"acid"` is still just a name nothing uses yet — easy to add a matching
-  enemy/spell/amulet-adjacent item the same way fire was, no new
-  mechanism needed.
+  Session 31 added the second element: `"cold"` via Cold Bolt and the
+  Young White Dragon, mirroring session 22's fire pairing. Session 32 added
+  the third: `"lightning"` via Lightning Bolt and the Young Blue Dragon,
+  CotW's own third elemental-dragon breath type. `"acid"` is still just a
+  name nothing uses yet — easy to add a matching enemy/spell the same way
+  the other three were, no new mechanism needed. Also still true:
+  `resist_elemental` (the player-side Amulet stat)
+  is one flat percentage generic across every element, not per-element the
+  way CotW's own separate Resist Fire/Resist Cold/Resist Lightning items
+  are (confirmed via session 31's research) — splitting it would need real
+  engine work in `equipment.py`, not attempted since nothing has needed it
+  yet (a player mitigates cold exactly as well as fire today).
 - ~~**Still no cure-poison item/spell** (session 22)~~ — closed out session
   23: a new Neutralize Poison spell purges poison outright. This session's
   own research confirmed CotW's actual mechanism is the spell, not a
@@ -2541,12 +3337,14 @@ Roughly in likely-priority order — not committed to, just tracked:
   obstacles/varied shapes yet (kept simple originally to guarantee
   reachability without a maze-solver). Difficulty now scales with depth
   *and* dungeon level (sessions 3-4), but room geometry itself doesn't.
-- **Content breadth is better but still thin**: six enemy types (session
+- **Content breadth is better but still thin**: eight enemy types (session
   21 added the Viper, session 22 the Young Red Dragon, session 24 the
-  Wraith), four item families (potion/whetstone/shield/gold, each with
-  minor/normal/greater tiers, sessions 5 and 8) plus eight equipment slots
-  (session 8/18). Easy to extend further — just add entries to the relevant
-  `data/*.json` and a sprite registration in `Game._load_assets`.
+  Wraith, session 31 the Young White Dragon, session 32 the Young Blue
+  Dragon), four item families
+  (potion/whetstone/shield/gold, each with minor/normal/greater tiers,
+  sessions 5 and 8) plus eight equipment slots (session 8/18). Easy to
+  extend further — just add entries to the relevant `data/*.json` and a
+  sprite registration in `Game._load_assets`.
 - **The Wraith (session 24) phases through walls but not closed locked
   doors/gates** — `Room.is_walkable`'s new `ignore_walls` param only skips
   the WALL-tile check; a still-closed lock/gate is enforced by the caller's
@@ -2570,11 +3368,32 @@ Roughly in likely-priority order — not committed to, just tracked:
   the way CotW's sometimes are — not attempted, would ride the same
   per-instance-drop machinery equipment already uses (session 16/17) if
   ever wanted.
-- **7 spells**, one per unlock tier (levels 1-5) plus two divination spells
-  at 6/7 (session 15: Detect Monsters/Detect Treasure) — CotW's more
-  freeform "misc" category still isn't represented. Easy to extend further:
-  add an entry to `data/spells.json` and, if it's a new `effect` type, a
-  branch in `Game.cast_selected_spell` (session 12).
+- **15 spells**: one per unlock tier (levels 1-5), three divination spells at
+  6/7/12 (session 15: Detect Monsters/Detect Treasure; session 28: Detect
+  Traps), Neutralize Poison at 8 (session 23), Word of Recall at 9 (session
+  26, CotW's "misc"-category town/dungeon shortcut), Identify/Remove
+  Curse at 10/11 (session 27, mana-cost alternatives to the Merchant's paid
+  versions of the same two actions), Levitation at 13 (session 29,
+  trap-damage immunity paired with Detect Traps' own duration), Cold
+  Bolt at 14 (session 31, the second attack-spell element alongside
+  session 12's original Spark and session 22's Firebolt), and Lightning
+  Bolt at 15 (session 32, the third element). Easy to
+  extend further: add an entry to `data/spells.json` and, if it's a new
+  `effect` type, a branch in `Game.cast_selected_spell` (session 12) --
+  the Spellbook panel now scrolls to fit whatever the ladder grows to
+  (session 29), so a 15th entry won't reintroduce the clipping this
+  session found and fixed.
+~~**No trap disarm mechanic or Levitation spell (session 28)**~~ — closed
+  out session 29: a new Disarm Trap command (`T`, since `d` is already
+  WASD-right movement) targets a detected trap directly ahead of the player
+  for a chance at permanently neutralizing it for XP, and a new Levitation
+  spell makes every trap harmless (damage and poison DoT alike) whether
+  walked onto blind or sprung by a failed disarm. Still true: disarm only
+  targets the single tile directly ahead (`Player.facing`), not a
+  free-standing target picker the way the real game's "press d, select the
+  trap" implies for a trap that isn't adjacent — not attempted, since this
+  engine's grid-bump input model has no cursor-based targeting to reuse
+  (the same reasoning bolt spells already accepted for enemy targeting).
 - **No hover highlighting** of the tile/row under the cursor (session 13,
   still true) — deliberate, to avoid a MOUSEMOTION-driven redraw eating
   into the idle-cheap budget. Click-and-hold movement *was* added in

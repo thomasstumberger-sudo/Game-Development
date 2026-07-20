@@ -101,7 +101,16 @@ ENEMY_WEIGHTS_BY_TIER = [
     # (weight 1 against the other three's combined 6) -- a mini-boss-flavor
     # threat, not a regular encounter, matching how cultist was already the
     # strongest thing in this tier before it arrived.
-    [("slime", 1), ("skeleton", 2), ("cultist", 3), ("young_red_dragon", 1), ("wraith", 2)],
+    # Session 31: Young White Dragon (cold) joins it at the same rarity --
+    # CotW's own White Dragon line is the direct cold-elemental mirror of
+    # the Red Dragon line, so it gets the identical weight-1 mini-boss
+    # treatment rather than being tuned as more/less common than its
+    # fire-breathing counterpart.
+    # Session 32: Young Blue Dragon (lightning) joins at the same weight --
+    # CotW's Blue Dragons breathe lightning, the third leg of the
+    # fire/cold/lightning elemental set this engine now covers; no reason to
+    # make it rarer or commoner than its two mirror dragons.
+    [("slime", 1), ("skeleton", 2), ("cultist", 3), ("young_red_dragon", 1), ("young_white_dragon", 1), ("young_blue_dragon", 1), ("wraith", 2)],
 ]
 ITEM_WEIGHTS_BY_TIER = [
     [("potion", 5), ("whetstone", 1), ("gold", 3), ("mana_potion", 2)],
@@ -145,6 +154,20 @@ MAGNITUDE_WEIGHTS_BY_TIER = [
     [("minor", 5), ("normal", 3), ("greater", 0)],
     [("minor", 2), ("normal", 5), ("greater", 2)],
     [("minor", 1), ("normal", 3), ("greater", 4)],
+]
+
+# Session 28: hidden dungeon traps (Castle of the Winds' dart/pit/poison-gas
+# traps, see data/traps.json). One roll per core room, structural (rolled off
+# layout_rng, not pop_rng -- like locks/chests, a trap's placement and type
+# must never change across a room's epoch-scoped enemy/item respawn cycle;
+# only whether it's already been sprung is per-save state, tracked in
+# main.py via room_flags same as an opened chest). Deeper tiers place traps
+# more often and skew toward the nastier pit/gas types.
+TRAP_CHANCE_BY_TIER = [0.12, 0.18, 0.24]
+TRAP_WEIGHTS_BY_TIER = [
+    [("dart_trap", 3), ("pit_trap", 1)],
+    [("dart_trap", 2), ("pit_trap", 2), ("poison_gas_trap", 2)],
+    [("dart_trap", 1), ("pit_trap", 2), ("poison_gas_trap", 3)],
 ]
 
 DIRECTIONS = {
@@ -490,11 +513,24 @@ def generate_room(seed, level, gx, gy, epoch=0):
     # flat scatter across the whole interior) -----------------------------
     max_enemies_per_room = 3 if tier == 2 else 2
     item_chance = 0.6 if tier == 0 else 0.75
-    enemies, items, equipment_drops = [], [], []
-    e_i = i_i = eq_i = 0
+    enemies, items, equipment_drops, traps = [], [], [], []
+    e_i = i_i = eq_i = tr_i = 0
     room_occupied = {i: set() for i in range(len(core_rects))}
     for i, rect in enumerate(core_rects):
         occupied = room_occupied[i]
+        # Trap placement is structural (layout_rng), rolled before this
+        # room's enemies/items (pop_rng) so their placement avoids it too --
+        # see the module docstring and TRAP_CHANCE_BY_TIER above.
+        if layout_rng.random() < TRAP_CHANCE_BY_TIER[tier]:
+            pt = _random_free_point(layout_rng, rect, occupied)
+            if pt is not None:
+                occupied.add(pt)
+                traps.append({
+                    "id": f"proc_{seed}_{level}_{gx}_{gy}_trap{tr_i}",
+                    "type": _weighted_choice(layout_rng, TRAP_WEIGHTS_BY_TIER[tier]),
+                    "x": pt[0], "y": pt[1],
+                })
+                tr_i += 1
         for _ in range(pop_rng.randint(0, max_enemies_per_room)):
             pt = _random_free_point(pop_rng, rect, occupied)
             if pt is None:
@@ -613,4 +649,5 @@ def generate_room(seed, level, gx, gy, epoch=0):
         "gates": gates,
         "switches": switches,
         "chests": chests,
+        "traps": traps,
     }

@@ -24,9 +24,9 @@ sys.path.append(os.path.abspath(os.path.dirname(__file__)))
 from engine.assets import AssetManager, BASE_DIR
 from engine.room import Room
 from engine.entity import Player, Enemy, ItemPickup, EquipmentDrop, NPC
-from engine.combat import resolve_bump_attack, resolve_spell_hit, enemy_attack, grant_xp
+from engine.combat import resolve_bump_attack, resolve_spell_hit, enemy_attack, grant_xp, resolve_trap, resolve_disarm
 from engine.inventory import Inventory
-from engine.save import SaveManager
+from engine.save import SaveManager, DEFAULT_ROOM, DEFAULT_SPAWN
 from engine.procgen import generate_room, scale_stats_for_level, room_doors
 from engine.equipment import (
     SLOTS, equip as equip_item, next_offer, create_instance,
@@ -43,11 +43,30 @@ from engine.spells import newly_learned
 # each dimension) so the *pixel* footprint of a room is unchanged
 # (40*16=640, 32*16=512, identical to 10*64/8*64) -- more tiles visible on
 # screen at the same window size and CPU/render cost, not a bigger window.
-WINDOW_W, WINDOW_H = 800, 600
 TILE_SIZE = 16
 ROOM_TILES_W, ROOM_TILES_H = 40, 32
 ROOM_PIXEL_W, ROOM_PIXEL_H = ROOM_TILES_W * TILE_SIZE, ROOM_TILES_H * TILE_SIZE
-ROOM_ORIGIN = ((WINDOW_W - ROOM_PIXEL_W) // 2, 56)
+
+# Session 25 (UI pass): the window used to be a flat 800x600 with the
+# 640x512 room viewport floating in the middle of it -- 80px of dead black
+# margin on each side (nothing ever drawn there) and a message log jammed
+# into the leftover 32px at the bottom, which clipped its own second line
+# past the window edge. Sized from the room viewport outward instead of the
+# other way around: a boxed top HUD bar and boxed bottom log bar, each full
+# window width, sized to their own worst-case content (see TOP_BAR_H/LOG_H
+# below) rather than an arbitrary guess, plus a thin fixed side margin
+# (HUD_GAP) around the room itself so it isn't flush against the window
+# edge. Total window area is within a few percent of the old 800x600 --
+# this reshapes the waste into functional chrome, it doesn't grow the
+# footprint.
+HUD_GAP = 4
+TOP_BAR_H = 84
+LOG_H = 110
+WINDOW_W = ROOM_PIXEL_W + HUD_GAP * 2
+WINDOW_H = TOP_BAR_H + HUD_GAP + ROOM_PIXEL_H + HUD_GAP + LOG_H
+ROOM_ORIGIN = (HUD_GAP, TOP_BAR_H + HUD_GAP)
+LOG_ORIGIN = (HUD_GAP, ROOM_ORIGIN[1] + ROOM_PIXEL_H + HUD_GAP)
+LOG_MAX_LINES = 5
 
 ACTIVE_FPS = 30
 IDLE_FPS = 5
@@ -83,6 +102,15 @@ MOVE_REPEAT_INTERVAL_MS = 120
 # the turn model) before a fully-cleared Depths room repopulates.
 RESPAWN_THRESHOLD = 150
 
+# Session 30: Castle of the Winds' free field-Rest command -- HP/mana trickle
+# back a small amount per turn spent resting (each turn still ticks buffs/
+# poison down and advances turn_count, same "costs turns not gold" trade-off
+# as any other action, unlike the Healer's paid instant-full-heal service).
+# Capped so a pathological state (poison outpacing regen) can't loop forever.
+REST_HEAL_PER_TURN = 2
+REST_MANA_PER_TURN = 1
+REST_MAX_TURNS = 200
+
 SAVE_PATH = os.path.join(BASE_DIR, "save.db")
 
 COLOR_BG = (10, 10, 14)
@@ -94,12 +122,41 @@ COLOR_TEXT = (230, 230, 230)
 COLOR_DEBUG = (0, 255, 0)
 COLOR_POISON = (120, 200, 90)
 COLOR_DRAIN = (150, 150, 230)
+COLOR_LEVITATE = (140, 215, 235)
 COLOR_PANEL_BG = (20, 20, 28, 235)
+COLOR_PANEL_BORDER = (95, 95, 120)
+COLOR_HUD_BG = (17, 17, 24)
+COLOR_GOLD = (230, 190, 60)
+
+
+def _wrap_text(font, text, max_width):
+    """Greedy word-wrap shared by every panel/log that needs it (session 25
+    -- previously duplicated as a local closure inside
+    _draw_spellbook_panel). Splits purely on spaces and never breaks a
+    single word, matching every current caller's content (prose sentences,
+    not unbroken long tokens)."""
+    words = text.split(" ")
+    lines, current = [], ""
+    for word in words:
+        candidate = f"{current} {word}".strip()
+        if font.size(candidate)[0] <= max_width:
+            current = candidate
+        else:
+            if current:
+                lines.append(current)
+            current = word
+    if current:
+        lines.append(current)
+    return lines
 
 
 class Game:
     def __init__(self, screen, new_game=False):
         self.screen = screen
+        # Placeholder full-viewport subsurface -- load_room() (called below,
+        # once state/seed are ready) immediately replaces both of these via
+        # _resize_room_surface() sized to whatever room is actually entered.
+        self.room_draw_origin = ROOM_ORIGIN
         self.room_surface = screen.subsurface(
             pygame.Rect(*ROOM_ORIGIN, ROOM_PIXEL_W, ROOM_PIXEL_H)
         )
@@ -117,6 +174,8 @@ class Game:
             self.quests = json.load(f)
         with open(os.path.join(BASE_DIR, "data", "spells.json")) as f:
             self.spell_defs = json.load(f)  # ordered list -- unlock order matters, see engine/spells.py
+        with open(os.path.join(BASE_DIR, "data", "traps.json")) as f:
+            self.trap_defs = json.load(f)
 
         self.save = SaveManager(SAVE_PATH)
         if new_game:
@@ -157,6 +216,13 @@ class Game:
         self.unlocked_door_ids = set()
         self.open_gate_ids = set()
         self.opened_chest_ids = set()
+        # Session 28: hidden dungeon traps. Like chests/switches, `traps`
+        # always holds every trap in the room (sprung or not); which ones
+        # have been sprung is separate persisted state (sprung_trap_ids,
+        # same room_flags mechanism as opened_chest_ids), since a sprung
+        # trap stays a harmless (but visible) fixture forever.
+        self.traps = []
+        self.sprung_trap_ids = set()
         # Room-based fog of war (session 10): region ids the player has
         # physically stood in, for the *current* room. Persisted via
         # room_flags like everything else above -- see load_room/persist.
@@ -169,6 +235,10 @@ class Game:
         # a schema migration for it.
         self.detect_monsters_turns = 0
         self.detect_treasure_turns = 0
+        # Session 28: Detect Traps -- same purely-visual, not-persisted
+        # bypass-the-fog counter as the two above, gating trap fixture
+        # rendering in _draw_fixtures alongside "already sprung."
+        self.detect_traps_turns = 0
         # Depths-only: per-room repopulation state, keyed by room_id.
         # Lazily loaded from save.room_meta via _room_meta(), flushed back
         # in persist() -- same on-transition-only write discipline as
@@ -268,6 +338,15 @@ class Game:
         AssetManager.make_placeholder("switch_on", (50, 180, 70), shape="square")
         AssetManager.load_sprite("item_key", f"{I}/tile_30_9.png")
 
+        # Session 28: dungeon traps -- one caltrop-shaped placeholder per
+        # type (see AssetManager's "spike" shape), colored to hint at each
+        # trap's nature: grey steel for darts, earthy brown for a pit,
+        # sickly green for gas (matches the poison-status color language
+        # already established for the Viper/poison messaging).
+        AssetManager.make_placeholder("dart_trap", (170, 170, 180), shape="spike")
+        AssetManager.make_placeholder("pit_trap", (120, 80, 40), shape="spike")
+        AssetManager.make_placeholder("poison_gas_trap", (90, 170, 70), shape="spike")
+
         AssetManager.load_sprite("enemy_skeleton", f"{C}/tile_24_0.png")
         AssetManager.load_sprite("enemy_cultist", f"{C}/tile_30_6.png")
         # Session 24: the Wraith -- no incorporeal/ghost sprite anywhere in
@@ -291,6 +370,26 @@ class Game:
         # than the viper's diamond, distinct at a glance from every other
         # enemy silhouette in the game.
         AssetManager.make_placeholder("enemy_dragon", (200, 60, 30), shape="triangle")
+        # Session 31: Young White Dragon -- CotW's cold-elemental mirror of
+        # the Red Dragon line. No second dragon shape in the character sheet
+        # either. Tried make_tint_variant first (the same trick session 24
+        # used for the Wraith), but BLEND_RGB_MULT can only ever darken a
+        # channel, never brighten one -- the red dragon's green/blue
+        # channels (60, 30) are too low for any multiplicative wash to lift
+        # them into a pale icy color, so the "tinted" result was still
+        # visibly red (caught by rendering and comparing the two sprites
+        # directly, not just diffing raw pixel bytes). A second
+        # make_placeholder call with the same triangle shape but a genuinely
+        # pale blue-white color reads as the intended icy mirror instead.
+        AssetManager.make_placeholder("enemy_white_dragon", (225, 240, 255), shape="triangle")
+        # Session 32: Young Blue Dragon -- CotW's lightning-elemental dragon
+        # (Blue Dragons "breathe lightning" per the game's own bestiary), the
+        # third leg of the fire/cold/lightning set alongside sessions 22/31.
+        # Same triangle silhouette as its two mirror dragons, colored a
+        # saturated electric blue -- distinct from the White Dragon's pale
+        # near-white fill and from the Wraith's muted blue-violet tint (which
+        # is on a different, humanoid silhouette anyway).
+        AssetManager.make_placeholder("enemy_blue_dragon", (40, 100, 230), shape="triangle")
         AssetManager.load_sprite("player", f"{C}/tile_12_6.png")
         AssetManager.load_sprite("npc_quartermaster", f"{C}/tile_12_12.png")
         AssetManager.load_sprite("npc_merchant", f"{C}/tile_12_27.png")
@@ -378,9 +477,37 @@ class Game:
             self.room_cleared_turn[room_id] = meta["cleared_turn"]
         return self.room_epoch[room_id], self.room_cleared_turn[room_id]
 
+    def _resize_room_surface(self):
+        """Session 25 (UI pass): the room viewport is a fixed 640x512 box
+        (the Depths' full ROOM_TILES_W x ROOM_TILES_H footprint), but every
+        hand-authored room (Town Square, Armory, Crypt) is deliberately
+        smaller than that -- session 10's Armory shrank to a "cozy 14x10
+        shop interior" on purpose, for instance. Previously `room_surface`
+        was one subsurface carved out at __init__ and never touched again,
+        so a smaller room's undrawn tiles just stayed whatever
+        draw()'s per-frame `fill((0, 0, 0))` left them: a solid black block
+        in the bottom-right of the viewport, functionally identical to the
+        dead window margins this session's other fix already removed, just
+        one level down. Recreating the subsurface on every room transition
+        (never per-frame -- consistent with everything else here that only
+        recomputes on a room change) at exactly the room's own pixel size,
+        centered in the fixed viewport, turns that into symmetric
+        letterboxing against the frame border instead -- the actual
+        playable area now fills its own bounds regardless of which room
+        it's showing. self.room_draw_origin is the resulting screen-space
+        offset; handle_room_click uses it (not the fixed ROOM_ORIGIN) to
+        convert a click back to a room-local tile."""
+        w = min(self.room.width * TILE_SIZE, ROOM_PIXEL_W)
+        h = min(self.room.height * TILE_SIZE, ROOM_PIXEL_H)
+        ox = ROOM_ORIGIN[0] + (ROOM_PIXEL_W - w) // 2
+        oy = ROOM_ORIGIN[1] + (ROOM_PIXEL_H - h) // 2
+        self.room_draw_origin = (ox, oy)
+        self.room_surface = self.screen.subsurface(pygame.Rect(ox, oy, w, h))
+
     def load_room(self, room_id, spawn_x, spawn_y):
         self.current_room_id = room_id
         self.room = Room.load(room_id)
+        self._resize_room_surface()
 
         flags = self.save.get_room_flags(room_id)
         dead_ids = set(flags.get("enemy_dead", set()))
@@ -392,6 +519,7 @@ class Game:
         self.unlocked_door_ids = set(flags.get("door_unlocked", set()))
         self.open_gate_ids = set(flags.get("gate_open", set()))
         self.opened_chest_ids = set(flags.get("chest_opened", set()))
+        self.sprung_trap_ids = set(flags.get("trap_sprung", set()))
 
         if room_id.startswith("proc:"):
             _, _seed_str, level_str, gx_str, gy_str = room_id.split(":")
@@ -436,6 +564,7 @@ class Game:
         self.gates = [g for g in self.room.gate_templates if g["id"] not in self.open_gate_ids]
         self.switches = list(self.room.switch_templates)
         self.chests = list(self.room.chest_templates)
+        self.traps = list(self.room.trap_templates)
 
         self.enemies = []
         for t in enemy_templates:
@@ -513,6 +642,7 @@ class Game:
             "door_unlocked": self.unlocked_door_ids,
             "gate_open": self.open_gate_ids,
             "chest_opened": self.opened_chest_ids,
+            "trap_sprung": self.sprung_trap_ids,
         }
 
     def persist(self):
@@ -547,6 +677,10 @@ class Game:
             self.detect_monsters_turns -= 1
         if self.detect_treasure_turns > 0:
             self.detect_treasure_turns -= 1
+        if self.detect_traps_turns > 0:
+            self.detect_traps_turns -= 1
+        if self.player.levitation_turns > 0:
+            self.player.levitation_turns -= 1
 
         messages = []
         if self.player.poison_turns > 0:
@@ -584,7 +718,7 @@ class Game:
         result = self.player.try_move(
             dx, dy, self.room, self.enemies, self.items, self.npcs,
             locked_doors=self.locked_doors, gates=self.gates,
-            chests=self.chests, switches=self.switches,
+            chests=self.chests, switches=self.switches, traps=self.traps,
             blocked=self._blocked_positions(),
         )
         self._reveal_region_at_player()
@@ -711,6 +845,14 @@ class Game:
                 messages.append("You hear a distant mechanism unlock.")
                 AssetManager.play_sfx("door")
 
+        elif kind == "trap":
+            trap = result["trap"]
+            if trap["id"] not in self.sprung_trap_ids:
+                self.sprung_trap_ids.add(trap["id"])
+                messages += resolve_trap(self.player, self.trap_defs[trap["type"]], [])
+            # else: already sprung -- just a normal walk-through, same as
+            # re-entering an opened chest's tile.
+
         elif kind == "exit":
             AssetManager.play_sfx("door")
             exit_data = result["exit"]
@@ -742,6 +884,85 @@ class Game:
         # still consume a turn -- monsters get to act on every player input.
         self._take_turn(messages)
 
+    def attempt_disarm(self):
+        """Session 29: Castle of the Winds' Disarm Trap command -- targets
+        whatever's directly ahead of the player (`Player.facing`, the same
+        "ahead of you" targeting a bolt spell already uses) rather than
+        requiring the player to walk onto the trap the way an un-disarmed
+        one is always sprung. Deliberately bound to a different key than the
+        real game's 'd' -- that's already WASD-right movement here (see
+        MOVE_KEYS). Only ever resolves against an already-*detected* trap
+        (Detect Traps must be active): an undetected trap in front of the
+        player must look identical to no trap at all, or the message itself
+        would leak information the fog/detection system is built to hide."""
+        if self.player.hp <= 0:
+            return
+        fx, fy = self.player.facing
+        tx, ty = self.player.x + fx, self.player.y + fy
+        target = None
+        if self.detect_traps_turns > 0:
+            target = next(
+                (t for t in self.traps if t["x"] == tx and t["y"] == ty
+                 and t["id"] not in self.sprung_trap_ids),
+                None,
+            )
+        if target is None:
+            self.message_log = ["There's nothing to disarm there."]
+            self.dirty = True
+            return
+
+        poison_msgs = self._advance_turn()
+        if self.player.hp <= 0:
+            self._handle_death(poison_msgs)
+            return
+        messages = list(poison_msgs)
+        self.sprung_trap_ids.add(target["id"])
+        _, messages = resolve_disarm(self.player, self.trap_defs[target["type"]], messages)
+        self._learn_new_spells(messages)
+        self.dirty = True
+        self._take_turn(messages)
+
+    def field_rest(self):
+        """Session 30: Castle of the Winds' free in-place Rest command --
+        advance turns doing nothing but trickling back HP/mana until both
+        are full, a safety cap is hit, or the player dies to poison mid-rest
+        (poison still ticks every turn, same as any other action). Blocked
+        outright while a living enemy shares the room: resting is turn-based
+        and single-room, so nothing could wander in mid-rest that wasn't
+        already here -- the check only needs to happen once, up front, not
+        per simulated turn. Distinct from the Healer's rest_at_healer()
+        (session 15/24), which is instant and full but costs gold instead of
+        game time."""
+        if self.player.hp <= 0:
+            return
+        if self.enemies:
+            self.message_log = ["You can't rest with enemies nearby."]
+            self.dirty = True
+            return
+        if self.player.hp >= self.player.max_hp and self.player.mana >= self.player.effective_max_mana():
+            self.message_log = ["Already at full strength."]
+            self.dirty = True
+            return
+
+        messages = []
+        turns_rested = 0
+        for _ in range(REST_MAX_TURNS):
+            poison_msgs = self._advance_turn()
+            turns_rested += 1
+            messages += poison_msgs
+            if self.player.hp <= 0:
+                self._handle_death(messages)
+                return
+            self.player.hp = min(self.player.max_hp, self.player.hp + REST_HEAL_PER_TURN)
+            self.player.mana = min(self.player.effective_max_mana(), self.player.mana + REST_MANA_PER_TURN)
+            if self.player.hp >= self.player.max_hp and self.player.mana >= self.player.effective_max_mana():
+                break
+
+        messages.append(f"You rest for {turns_rested} turn{'s' if turns_rested != 1 else ''} and recover some strength.")
+        self._learn_new_spells(messages)
+        self.dirty = True
+        self._take_turn(messages)
+
     def _take_turn(self, messages):
         """Common tail end of any player action that doesn't change rooms:
         run enemy AI, then either apply the result or handle player death."""
@@ -751,7 +972,12 @@ class Game:
         if self.player.hp <= 0:
             self._handle_death(messages)
         elif messages:
-            self.message_log = messages[-3:]
+            # Trimmed to LOG_MAX_LINES raw messages -- generous now that
+            # _draw_message_log has a box tall enough to show that many
+            # (session 25); wrapping can still spread a single long message
+            # across multiple visual lines, but that's handled at render
+            # time, not here.
+            self.message_log = messages[-LOG_MAX_LINES:]
 
     def _run_enemy_turns(self):
         messages = []
@@ -783,7 +1009,7 @@ class Game:
         self.player.poison_damage = 0
         self.load_room(target_room, target_x, target_y)
         death_msg = "You have fallen. Reviving at your last save..."
-        self.message_log = ((prior_messages or []) + [death_msg])[-3:]
+        self.message_log = ((prior_messages or []) + [death_msg])[-LOG_MAX_LINES:]
 
     def toggle_inventory(self):
         self.inventory_open = not self.inventory_open
@@ -1343,6 +1569,12 @@ class Game:
         elif effect == "detect_treasure":
             self.detect_treasure_turns = spell.get("duration", 1)
             message = f"You cast {spell['name']}. You sense the treasure hidden nearby."
+        elif effect == "detect_traps":
+            self.detect_traps_turns = spell.get("duration", 1)
+            message = f"You cast {spell['name']}. Hidden mechanisms reveal themselves."
+        elif effect == "levitation":
+            self.player.levitation_turns = spell.get("duration", 1)
+            message = f"You cast {spell['name']}. You drift above the floor, safe from mundane traps."
         elif effect == "cure_poison":
             # Session 23: matches Castle of the Winds' actual Neutralize
             # Poison spell -- purges the DoT outright rather than healing the
@@ -1355,12 +1587,77 @@ class Game:
                 message = f"You cast {spell['name']}. The poison in your veins is purged."
             else:
                 message = f"You cast {spell['name']}, but you weren't poisoned."
+        elif effect == "identify":
+            # Session 27: a mana-cost alternative to the Merchant's paid
+            # Identify service (session 16) -- same target selection
+            # (oldest unidentified Found Gear instance, the same list the
+            # shop panel's identify rows already iterate) and the same
+            # `identified = True` mutation, just no gold changes hands.
+            targets = self.unidentified_bag_instances()
+            if targets:
+                instance = targets[0]
+                instance["identified"] = True
+                name = equip_display_name(self.equipment_defs, instance)
+                message = f"You cast {spell['name']}. Identified: {name}."
+            else:
+                message = f"You cast {spell['name']}, but you have nothing unidentified to reveal."
+        elif effect == "remove_curse":
+            # Session 27: a mana-cost alternative to the Merchant's paid
+            # Remove Curse service (session 16) -- same target selection
+            # (first cursed equipped slot) and the same remove_curse_item
+            # call, just no gold changes hands.
+            slots = self.cursed_equipped_slots()
+            if slots:
+                slot = slots[0]
+                remove_curse_item(self.player, self.equipment_defs, slot)
+                message = f"You cast {spell['name']}. The curse on your {slot_label(slot).lower()} lifts."
+            else:
+                message = f"You cast {spell['name']}, but nothing you wear is cursed."
+
+        recall_target = None
+        if effect == "recall":
+            # Session 26: Castle of the Winds' Word of Recall -- cast away
+            # from town, it anchors the return trip and pulls the player
+            # home; cast again in town, it pulls them right back to that
+            # anchor. One spell, direction picked by where you're standing,
+            # same as the real scroll (and the same "in town vs. not" split
+            # main.py already uses for save.DEFAULT_ROOM elsewhere). The
+            # anchor is deliberately NOT cleared after a return trip -- like
+            # the real item, casting it again from the dungeon is what moves
+            # the anchor, not reading it from town.
+            if self.current_room_id == DEFAULT_ROOM:
+                if self.player.recall_room:
+                    recall_target = (self.player.recall_room, self.player.recall_x, self.player.recall_y)
+                    message = f"You cast {spell['name']}. The dungeon pulls you back."
+                else:
+                    message = f"You cast {spell['name']}, but you have nowhere to recall to."
+            else:
+                self.player.recall_room = self.current_room_id
+                self.player.recall_x, self.player.recall_y = self.player.x, self.player.y
+                recall_target = (DEFAULT_ROOM, DEFAULT_SPAWN[0], DEFAULT_SPAWN[1])
+                message = f"You cast {spell['name']}. The town pulls you home."
 
         self.player.mana -= spell["mana_cost"]
         poison_msgs = self._advance_turn()
         self.spellbook_open = False
         self.dirty = True
-        self._take_turn(poison_msgs + ([message] if message else []))
+
+        if recall_target and self.player.hp > 0:
+            # Mirrors handle_move's "exit" branch: flush the room being
+            # left, load the destination, then autosave with position
+            # already pointing at where the player landed -- and skip
+            # _take_turn's enemy-turn pass, since entering a room is its
+            # own turn and nothing there has seen the player yet.
+            target_room, target_x, target_y = recall_target
+            self.save.set_room_flags(self.current_room_id, self._current_room_flags())
+            if self.current_room_id.startswith("proc:"):
+                epoch, cleared_turn = self._room_meta(self.current_room_id)
+                self.save.set_room_meta(self.current_room_id, epoch, cleared_turn)
+            self.load_room(target_room, target_x, target_y)
+            self.message_log = poison_msgs + [message] + self.message_log
+            self.persist()
+        else:
+            self._take_turn(poison_msgs + ([message] if message else []))
 
     # -- journal (quest log + dungeon automap) ------------------------------
 
@@ -1387,6 +1684,10 @@ class Game:
             if self._is_visible(enemy.x, enemy.y, self.detect_monsters_turns):
                 enemy.draw(self.room_surface, TILE_SIZE)
         self.player.draw(self.room_surface, TILE_SIZE)
+        pygame.draw.rect(
+            screen, COLOR_PANEL_BORDER,
+            (ROOM_ORIGIN[0] - 2, ROOM_ORIGIN[1] - 2, ROOM_PIXEL_W + 4, ROOM_PIXEL_H + 4), 2,
+        )
 
         self._draw_hud()
         self._draw_message_log()
@@ -1442,62 +1743,110 @@ class Game:
             sprite = AssetManager.get_sprite("locked_door")
             if sprite:
                 self.room_surface.blit(sprite, (door["x"] * TILE_SIZE, door["y"] * TILE_SIZE))
+        for trap in self.traps:
+            # Session 28: unlike every other fixture here, a trap is hidden
+            # by default even inside an already-explored (fog-revealed)
+            # region -- that's the whole point of a trap. It only shows once
+            # sprung (permanently, like an opened chest) or while Detect
+            # Traps is active, on top of the usual fog check.
+            detected = trap["id"] in self.sprung_trap_ids or self.detect_traps_turns > 0
+            if not detected or not self._is_visible(trap["x"], trap["y"], self.detect_traps_turns):
+                continue
+            sprite = AssetManager.get_sprite(trap["type"])
+            if sprite:
+                self.room_surface.blit(sprite, (trap["x"] * TILE_SIZE, trap["y"] * TILE_SIZE))
 
     def _draw_hud(self):
+        """Session 25 (UI pass): full window-width boxed bar, replacing the
+        old cramped top-left cluster that shared the window with 80px of
+        unused black margin on either side. Four stacked rows -- HP, MP,
+        Lvl/XP, Status -- each gets its own line now that the bar is sized
+        to fit them (TOP_BAR_H) rather than squeezed into a fixed 56px to
+        match the old window height; this also removes the old design's
+        biggest fragility (Lvl/XP and both status effects sharing one row,
+        which measured to within 20px of the old 800px window's right edge
+        at max level with both statuses active -- see the row-width check
+        this session's screenshots re-verified). Room name/gold stay
+        top-right, one per row, mirroring the left column's row heights."""
         font = AssetManager.get_font(16, bold=True)
+        pygame.draw.rect(self.screen, COLOR_HUD_BG, (0, 0, WINDOW_W, TOP_BAR_H))
+        pygame.draw.line(
+            self.screen, COLOR_PANEL_BORDER, (0, TOP_BAR_H - 1), (WINDOW_W, TOP_BAR_H - 1)
+        )
+
+        eff_max_mana = self.player.effective_max_mana()
+        bar_x, bar_w, bar_h = 12, 110, 12
+        row1_y, row2_y, row3_y, row4_y = 8, 28, 48, 66
+
         hp_text = font.render(f"HP {self.player.hp}/{self.player.max_hp}", True, COLOR_TEXT)
+        pygame.draw.rect(self.screen, COLOR_HP_BG, (bar_x, row1_y, bar_w, bar_h))
+        fill_w = int(bar_w * max(0, self.player.hp) / self.player.max_hp)
+        pygame.draw.rect(self.screen, COLOR_HP, (bar_x, row1_y, fill_w, bar_h))
+        self.screen.blit(hp_text, (bar_x + bar_w + 8, row1_y - 3))
+
         # Session 24: shows the drained ceiling, not the raw stat, so a
         # Wraith-touched player sees their actual current cap (e.g. "MP
         # 5/17" rather than a misleading "MP 5/20") -- see
         # Player.effective_max_mana().
-        eff_max_mana = self.player.effective_max_mana()
         mana_text = font.render(f"MP {self.player.mana}/{eff_max_mana}", True, COLOR_TEXT)
+        pygame.draw.rect(self.screen, COLOR_MP_BG, (bar_x, row2_y, bar_w, bar_h))
+        mana_fill_w = int(bar_w * max(0, self.player.mana) / eff_max_mana) if eff_max_mana else 0
+        pygame.draw.rect(self.screen, COLOR_MP, (bar_x, row2_y, mana_fill_w, bar_h))
+        self.screen.blit(mana_text, (bar_x + bar_w + 8, row2_y - 3))
+
         lvl_text = font.render(
             f"Lv {self.player.level}  XP {self.player.xp}/{self.player.level * 30}", True, COLOR_TEXT
         )
-        room_text = font.render(self.room.name, True, COLOR_TEXT)
-        gold_text = font.render(f"Gold {self.player.gold}", True, (230, 190, 60))
+        self.screen.blit(lvl_text, (bar_x, row3_y))
 
-        bar_x, bar_y, bar_w, bar_h = 10, 8, 140, 12
-        pygame.draw.rect(self.screen, COLOR_HP_BG, (bar_x, bar_y, bar_w, bar_h))
-        fill_w = int(bar_w * max(0, self.player.hp) / self.player.max_hp)
-        pygame.draw.rect(self.screen, COLOR_HP, (bar_x, bar_y, fill_w, bar_h))
-
-        mana_bar_y = bar_y + bar_h + 4
-        pygame.draw.rect(self.screen, COLOR_MP_BG, (bar_x, mana_bar_y, bar_w, bar_h))
-        mana_fill_w = int(bar_w * max(0, self.player.mana) / eff_max_mana) if eff_max_mana else 0
-        pygame.draw.rect(self.screen, COLOR_MP, (bar_x, mana_bar_y, mana_fill_w, bar_h))
-
-        self.screen.blit(hp_text, (bar_x + bar_w + 10, bar_y - 2))
-        self.screen.blit(mana_text, (bar_x + bar_w + 10, mana_bar_y - 2))
-        self.screen.blit(lvl_text, (bar_x + bar_w + 10, mana_bar_y + bar_h + 4))
-        self.screen.blit(room_text, (WINDOW_W - room_text.get_width() - 10, 10))
-        self.screen.blit(gold_text, (WINDOW_W - gold_text.get_width() - 10, 28))
-
-        # Shares the level/XP line rather than adding a fourth row -- a
-        # fourth row at this font size would run straight into the room
-        # viewport, which starts immediately at ROOM_ORIGIN's y. Poisoned
-        # and Drained can both be showing at once, so each advances the
-        # next one's x offset rather than assuming a fixed slot.
-        status_x = bar_x + bar_w + 10 + lvl_text.get_width() + 20
+        status_x = bar_x
         if self.player.poison_turns > 0:
             poison_text = font.render(f"Poisoned ({self.player.poison_turns})", True, COLOR_POISON)
-            self.screen.blit(poison_text, (status_x, mana_bar_y + bar_h + 4))
+            self.screen.blit(poison_text, (status_x, row4_y))
             status_x += poison_text.get_width() + 20
         if self.player.mana_drain > 0:
             # Session 24: no countdown (unlike Poisoned) -- drain doesn't
             # wear off on its own, only paying the Healer clears it (see
             # cure_mana_drain), so this shows the amount, not a timer.
             drain_text = font.render(f"Drained (-{self.player.mana_drain} MP)", True, COLOR_DRAIN)
-            self.screen.blit(drain_text, (status_x, mana_bar_y + bar_h + 4))
+            self.screen.blit(drain_text, (status_x, row4_y))
+            status_x += drain_text.get_width() + 20
+        if self.player.levitation_turns > 0:
+            levitate_text = font.render(f"Levitating ({self.player.levitation_turns})", True, COLOR_LEVITATE)
+            self.screen.blit(levitate_text, (status_x, row4_y))
+
+        room_text = font.render(self.room.name, True, COLOR_TEXT)
+        gold_text = font.render(f"Gold {self.player.gold}", True, COLOR_GOLD)
+        self.screen.blit(room_text, (WINDOW_W - room_text.get_width() - 12, row1_y - 3))
+        self.screen.blit(gold_text, (WINDOW_W - gold_text.get_width() - 12, row2_y - 3))
 
     def _draw_message_log(self):
+        """Session 25 (UI pass): boxed panel spanning the full log bar
+        (LOG_ORIGIN/LOG_H, see top of file) instead of bare text floating
+        directly on the background with no boundary and no wrapping -- the
+        reported bug was a long line running off the right edge of the
+        window and a second line getting clipped by the bottom edge, since
+        the old version had neither a wrap step nor a box tall enough for
+        more than one line. Wraps every retained message to the box's
+        width first, then shows however many wrapped lines fit in
+        LOG_MAX_LINES, most recent last (so a short turn's single message
+        still lands at a stable spot rather than jumping around)."""
         font = AssetManager.get_font(14)
-        y = ROOM_ORIGIN[1] + ROOM_PIXEL_H + 6
-        for line in self.message_log[-2:]:
-            text = font.render(line, True, COLOR_TEXT)
-            self.screen.blit(text, (10, y))
+        panel = pygame.Surface((WINDOW_W - HUD_GAP * 2, LOG_H), pygame.SRCALPHA)
+        panel.fill(COLOR_PANEL_BG)
+        pygame.draw.rect(panel, COLOR_PANEL_BORDER, panel.get_rect(), 2)
+
+        max_line_w = panel.get_width() - 20
+        wrapped_lines = []
+        for line in self.message_log:
+            wrapped_lines.extend(_wrap_text(font, line, max_line_w))
+
+        y = 10
+        for line in wrapped_lines[-LOG_MAX_LINES:]:
+            panel.blit(font.render(line, True, COLOR_TEXT), (10, y))
             y += 18
+
+        self.screen.blit(panel, LOG_ORIGIN)
 
     def _draw_debug_overlay(self, fps_target, is_focused, actual_fps):
         font = AssetManager.get_font(14)
@@ -1511,7 +1860,20 @@ class Game:
         panel.fill((0, 0, 0, 160))
         for i, line in enumerate(lines):
             panel.blit(font.render(line, True, COLOR_DEBUG), (6, 6 + i * 18))
-        self.screen.blit(panel, (WINDOW_W - panel.get_width() - 8, 34))
+        self.screen.blit(panel, (WINDOW_W - panel.get_width() - 8, TOP_BAR_H + 8))
+
+    def _panel_surface(self, panel_w, panel_h):
+        """Shared background+border for every overlay panel (session 25 --
+        previously each of the 7 panel draw methods duplicated
+        `pygame.Surface(...); panel.fill(COLOR_PANEL_BG)` with no border,
+        so a panel's edge was only ever implied by where its text stopped).
+        The border is drawn on the panel surface itself, not the screen, so
+        it moves with the panel and stays correct regardless of where
+        _begin_panel_hitboxes ends up centering it."""
+        panel = pygame.Surface((panel_w, panel_h), pygame.SRCALPHA)
+        panel.fill(COLOR_PANEL_BG)
+        pygame.draw.rect(panel, COLOR_PANEL_BORDER, panel.get_rect(), 2)
+        return panel
 
     def _begin_panel_hitboxes(self, panel_w, panel_h):
         """Call at the top of any panel's draw method, before laying out
@@ -1579,8 +1941,15 @@ class Game:
         it's being called from a fresh click or a repeat."""
         if self.player.hp <= 0:
             return
-        local_x, local_y = pos[0] - ROOM_ORIGIN[0], pos[1] - ROOM_ORIGIN[1]
-        if not (0 <= local_x < ROOM_PIXEL_W and 0 <= local_y < ROOM_PIXEL_H):
+        # Session 25: rooms smaller than the full viewport are letterboxed
+        # at self.room_draw_origin, not the fixed ROOM_ORIGIN (see
+        # _resize_room_surface) -- a click has to be measured against
+        # wherever the room is actually drawn, and bounds-checked against
+        # its own (possibly smaller) pixel size, not the viewport's.
+        origin_x, origin_y = self.room_draw_origin
+        local_x, local_y = pos[0] - origin_x, pos[1] - origin_y
+        room_w, room_h = self.room_surface.get_size()
+        if not (0 <= local_x < room_w and 0 <= local_y < room_h):
             return
         tile_x, tile_y = local_x // TILE_SIZE, local_y // TILE_SIZE
         dx_raw, dy_raw = tile_x - self.player.x, tile_y - self.player.y
@@ -1729,6 +2098,10 @@ class Game:
             self.held_move_key = key
             self.held_move_dir = MOVE_KEYS[key]
             self.next_move_repeat_at = pygame.time.get_ticks() + MOVE_REPEAT_DELAY_MS
+        elif key == pygame.K_t:
+            self.attempt_disarm()
+        elif key == pygame.K_r:
+            self.field_rest()
         elif pygame.K_1 <= key <= pygame.K_8:
             self.quick_use_item(key - pygame.K_1)
         return False
@@ -1816,8 +2189,7 @@ class Game:
         gear_y = equip_y + 24 + len(SLOTS) * 18 + 14
         panel_h = gear_y + 24 + max(1, len(gear)) * 18 + 30
 
-        panel = pygame.Surface((panel_w, panel_h), pygame.SRCALPHA)
-        panel.fill(COLOR_PANEL_BG)
+        panel = self._panel_surface(panel_w, panel_h)
         origin = self._begin_panel_hitboxes(panel_w, panel_h)
 
         panel.blit(title_font.render("Inventory", True, COLOR_TEXT), (10, 8))
@@ -1881,8 +2253,7 @@ class Game:
         self.screen.blit(overlay, (0, 0))
 
         panel_w, panel_h = 340, 160
-        panel = pygame.Surface((panel_w, panel_h), pygame.SRCALPHA)
-        panel.fill(COLOR_PANEL_BG)
+        panel = self._panel_surface(panel_w, panel_h)
         origin = self._begin_panel_hitboxes(panel_w, panel_h)
 
         title_font = AssetManager.get_font(16, bold=True)
@@ -1925,15 +2296,22 @@ class Game:
         overlay.fill((0, 0, 0, 140))
         self.screen.blit(overlay, (0, 0))
 
-        panel_w = 360
+        # Session 25: was 360 -- the hint line ("Up/Down select, U/Enter/
+        # click act, Esc close", shared verbatim with the Shop/Bookshop
+        # panels) measures 352px at this font, which left it running to
+        # within 2px of the panel's own edge even before this session added
+        # a visible border there (see _panel_surface) to make that kind of
+        # near-miss actually noticeable. Widened rather than shortened the
+        # hint, same call already made for this exact class of bug
+        # elsewhere in this file.
+        panel_w = 390
         title_font = AssetManager.get_font(16, bold=True)
         font = AssetManager.get_font(14)
 
         rows = self._healer_rows()
         panel_h = 40 + 20 + len(rows) * 20 + 34
 
-        panel = pygame.Surface((panel_w, panel_h), pygame.SRCALPHA)
-        panel.fill(COLOR_PANEL_BG)
+        panel = self._panel_surface(panel_w, panel_h)
         origin = self._begin_panel_hitboxes(panel_w, panel_h)
 
         npc_name = self.active_npc.name if self.active_npc else "Healer"
@@ -1980,8 +2358,7 @@ class Game:
         body_rows = max(1, len(rows))
         panel_h = 36 + body_rows * 20 + 34
 
-        panel = pygame.Surface((panel_w, panel_h), pygame.SRCALPHA)
-        panel.fill(COLOR_PANEL_BG)
+        panel = self._panel_surface(panel_w, panel_h)
         origin = self._begin_panel_hitboxes(panel_w, panel_h)
 
         npc_name = self.active_npc.name if self.active_npc else "Scholar"
@@ -2025,21 +2402,63 @@ class Game:
         overlay.fill((0, 0, 0, 140))
         self.screen.blit(overlay, (0, 0))
 
-        # Session 18: 460 fit every pre-existing row, but "<current> -> <next
-        # tier>" for the new, longer ring/amulet names (e.g. "Amulet of
-        # Greater Vitality -3 [cursed] -> Amulet of Supreme Vitality (155g)")
-        # measures 680px at this font -- widened rather than shortening the
-        # names, same "widen the panel, don't shrink the text" call sessions
-        # 13/16 already made for this exact panel.
-        panel_w = 700
+        # Session 25 (UI pass): was a fixed 700px-wide, single-line-per-row
+        # panel -- the widest legitimate line, a "<current> -> <next tier>"
+        # ring/amulet upgrade row (e.g. "Amulet of Greater Vitality -3
+        # [cursed] -> Amulet of Supreme Vitality (155g)"), measures 680px at
+        # this font, and session 18 widened the panel to fit it rather than
+        # touch the text. That doesn't fit the new, narrower window (see
+        # WINDOW_W at the top of the file -- it's sized around the 640px
+        # room viewport, not this panel). Rather than re-widen the window
+        # around one panel's one worst-case row, this wraps any row whose
+        # rendered line doesn't fit -- same word-wrap every other panel's
+        # long text already uses (_wrap_text) -- and measures each row's
+        # actual line count before laying anything out, same
+        # measure-then-build approach the Spellbook/Inventory panels already
+        # use for their own variable-length content.
+        panel_w = 480
         title_font = AssetManager.get_font(16, bold=True)
         font = AssetManager.get_font(14)
 
         rows = self._shop_rows()
-        panel_h = 36 + len(rows) * 20 + 34
 
-        panel = pygame.Surface((panel_w, panel_h), pygame.SRCALPHA)
-        panel.fill(COLOR_PANEL_BG)
+        def row_line(kind, payload):
+            if kind == "slot":
+                slot = payload
+                instance_id = self.player.equipment.get(slot)
+                instance = self.player.equipment_instances.get(instance_id) if instance_id else None
+                equipped_name = equip_display_name(self.equipment_defs, instance)
+                offer_type = next_offer(self.player, self.equipment_defs, slot)
+                if offer_type is None:
+                    return f"{slot_label(slot)}: {equipped_name} (finest owned)"
+                offer = self.equipment_defs[offer_type]
+                return f"{slot_label(slot)}: {equipped_name} -> {offer['name']} ({offer['value']}g)"
+            if kind == "identify":
+                instance = self.player.equipment_instances[payload]
+                base_name = self.equipment_defs[instance["base_type"]]["name"]
+                return f"Identify {base_name} ({self.IDENTIFY_COST}g)"
+            if kind == "remove_curse":
+                return f"Remove curse: {slot_label(payload)} ({self.REMOVE_CURSE_COST}g)"
+            if kind == "sell_item":
+                item_def = self.item_defs.get(payload, {})
+                count = self.inventory.stacks.get(payload, 0)
+                price = self._sell_price(item_def.get("value", 0))
+                return f"Sell {item_def.get('name', payload)} x{count} ({price}g)"
+            instance = self.player.equipment_instances[payload]
+            name = equip_display_name(self.equipment_defs, instance)
+            price = self._sell_price(self.equipment_defs[instance["base_type"]]["value"])
+            return f"Sell {name} ({price}g)"
+
+        entries = [
+            _wrap_text(font, row_line(kind, payload), panel_w - 30) for kind, payload in rows
+        ]
+
+        y = 36
+        for wrapped in entries:
+            y += 18 * max(1, len(wrapped)) + 4
+        panel_h = max(120, y + 30)
+
+        panel = self._panel_surface(panel_w, panel_h)
         origin = self._begin_panel_hitboxes(panel_w, panel_h)
 
         npc_name = self.active_npc.name if self.active_npc else "Merchant"
@@ -2048,38 +2467,16 @@ class Game:
             (10, 8),
         )
 
-        for i, (kind, payload) in enumerate(rows):
+        y = 36
+        for i, wrapped in enumerate(entries):
+            row_top = y
             prefix = "> " if i == self.shop_cursor else "  "
-            if kind == "slot":
-                slot = payload
-                instance_id = self.player.equipment.get(slot)
-                instance = self.player.equipment_instances.get(instance_id) if instance_id else None
-                equipped_name = equip_display_name(self.equipment_defs, instance)
-                offer_type = next_offer(self.player, self.equipment_defs, slot)
-                if offer_type is None:
-                    line = f"{prefix}{slot_label(slot)}: {equipped_name} (finest owned)"
-                else:
-                    offer = self.equipment_defs[offer_type]
-                    line = f"{prefix}{slot_label(slot)}: {equipped_name} -> {offer['name']} ({offer['value']}g)"
-            elif kind == "identify":
-                instance = self.player.equipment_instances[payload]
-                base_name = self.equipment_defs[instance["base_type"]]["name"]
-                line = f"{prefix}Identify {base_name} ({self.IDENTIFY_COST}g)"
-            elif kind == "remove_curse":
-                line = f"{prefix}Remove curse: {slot_label(payload)} ({self.REMOVE_CURSE_COST}g)"
-            elif kind == "sell_item":
-                item_def = self.item_defs.get(payload, {})
-                count = self.inventory.stacks.get(payload, 0)
-                price = self._sell_price(item_def.get("value", 0))
-                line = f"{prefix}Sell {item_def.get('name', payload)} x{count} ({price}g)"
-            else:
-                instance = self.player.equipment_instances[payload]
-                name = equip_display_name(self.equipment_defs, instance)
-                price = self._sell_price(self.equipment_defs[instance["base_type"]]["value"])
-                line = f"{prefix}Sell {name} ({price}g)"
-            row_y = 36 + i * 20
-            panel.blit(font.render(line, True, COLOR_TEXT), (10, row_y))
-            row_rect = pygame.Rect(origin[0], origin[1] + row_y, panel_w, 18)
+            for li, wrapped_line in enumerate(wrapped):
+                text = f"{prefix}{wrapped_line}" if li == 0 else f"    {wrapped_line}"
+                panel.blit(font.render(text, True, COLOR_TEXT), (10, y))
+                y += 18
+            y += 4
+            row_rect = pygame.Rect(origin[0], origin[1] + row_top, panel_w, y - row_top)
             self.panel_click_targets.append((row_rect, lambda idx=i: self._click_shop_slot(idx)))
 
         hint = font.render("Up/Down select, U/Enter/click act, Esc close", True, (160, 160, 160))
@@ -2093,11 +2490,13 @@ class Game:
         5 spells -- adding divination pushed a 7th spell past that and
         garbled the hint line into the last description, the same class of
         clipping bug session 13's panel-width fix addressed). A fixed
-        *width* is still fine (descriptions word-wrap to it), only height
-        needs to grow with content, so this measures wrapped line counts
-        first, then builds the panel surface at the exact height needed --
-        no arbitrary cap, since the spell list is small and only grows by
-        one entry per future session."""
+        *width* is still fine (descriptions word-wrap to it); height grows
+        with content up to the window's own height, at which point the
+        content area scrolls to keep the cursor row visible instead of
+        overflowing the screen top/bottom (session 29 -- the ladder
+        reaching 13 entries at Levitation is exactly the "just add one more
+        entry" growth this method's previous no-cap comment assumed would
+        stay small forever; it didn't)."""
         overlay = pygame.Surface((WINDOW_W, WINDOW_H), pygame.SRCALPHA)
         overlay.fill((0, 0, 0, 140))
         self.screen.blit(overlay, (0, 0))
@@ -2105,34 +2504,31 @@ class Game:
         panel_w = 420
         title_font = AssetManager.get_font(16, bold=True)
         font = AssetManager.get_font(14)
-
-        def wrap(text, max_width):
-            words = text.split(" ")
-            lines, current = [], ""
-            for word in words:
-                candidate = f"{current} {word}".strip()
-                if font.size(candidate)[0] <= max_width:
-                    current = candidate
-                else:
-                    if current:
-                        lines.append(current)
-                    current = word
-            if current:
-                lines.append(current)
-            return lines
+        content_top, hint_h = 40, 34
 
         spells = self._known_spell_list()
-        entries = [(spell, wrap(spell["description"], panel_w - 36)) for spell in spells]
+        entries = [(spell, _wrap_text(font, spell["description"], panel_w - 36)) for spell in spells]
 
-        y = 40
-        if not entries:
-            y += 20
+        row_tops, y = [], 0
         for _spell, wrapped_lines in entries:
+            row_tops.append(y)
             y += 18 + 16 * len(wrapped_lines) + 8
-        panel_h = max(160, y + 34)  # +34: hint line and its bottom margin
+        content_h = y if entries else 20
 
-        panel = pygame.Surface((panel_w, panel_h), pygame.SRCALPHA)
-        panel.fill(COLOR_PANEL_BG)
+        max_panel_h = WINDOW_H - 40  # 20px breathing room top/bottom
+        panel_h = max(160, min(max_panel_h, content_top + content_h + hint_h))
+        viewport_h = panel_h - content_top - hint_h
+
+        scroll = 0
+        if entries and content_h > viewport_h:
+            cursor_top = row_tops[self.spellbook_cursor]
+            cursor_bottom = cursor_top + (
+                18 + 16 * len(entries[self.spellbook_cursor][1]) + 8
+            )
+            scroll = max(0, cursor_bottom - viewport_h)
+            scroll = min(scroll, content_h - viewport_h, cursor_top)
+
+        panel = self._panel_surface(panel_w, panel_h)
         origin = self._begin_panel_hitboxes(panel_w, panel_h)
 
         panel.blit(
@@ -2140,21 +2536,25 @@ class Game:
             (10, 8),
         )
 
-        y = 40
         if not entries:
-            panel.blit(font.render("No spells known yet.", True, COLOR_TEXT), (10, y))
+            panel.blit(font.render("No spells known yet.", True, COLOR_TEXT), (10, content_top))
+        panel.set_clip(pygame.Rect(0, content_top, panel_w, viewport_h))
         for i, (spell, wrapped_lines) in enumerate(entries):
-            row_top = y
+            row_top = content_top + row_tops[i] - scroll
+            row_h = 18 + 16 * len(wrapped_lines) + 8
+            if row_top + row_h < content_top or row_top > content_top + viewport_h:
+                continue  # fully outside the visible window -- skip drawing and hitboxing it
             prefix = "> " if i == self.spellbook_cursor else "  "
             line = f"{prefix}{spell['name']} ({spell['mana_cost']} MP)"
-            panel.blit(font.render(line, True, COLOR_TEXT), (10, y))
-            y += 18
+            ty = row_top
+            panel.blit(font.render(line, True, COLOR_TEXT), (10, ty))
+            ty += 18
             for wrapped_line in wrapped_lines:
-                panel.blit(font.render(wrapped_line, True, (170, 170, 170)), (26, y))
-                y += 16
-            y += 8
-            row_rect = pygame.Rect(origin[0], origin[1] + row_top, panel_w, y - row_top)
+                panel.blit(font.render(wrapped_line, True, (170, 170, 170)), (26, ty))
+                ty += 16
+            row_rect = pygame.Rect(origin[0], origin[1] + row_top, panel_w, row_h)
             self.panel_click_targets.append((row_rect, lambda idx=i: self._click_cast_spell(idx)))
+        panel.set_clip(None)
 
         hint = font.render("Up/Down select, U/Enter/click cast, Esc close", True, (160, 160, 160))
         panel.blit(hint, (10, panel_h - 24))
@@ -2167,8 +2567,7 @@ class Game:
         self.screen.blit(overlay, (0, 0))
 
         panel_w, panel_h = 460, 470
-        panel = pygame.Surface((panel_w, panel_h), pygame.SRCALPHA)
-        panel.fill(COLOR_PANEL_BG)
+        panel = self._panel_surface(panel_w, panel_h)
         origin = self._begin_panel_hitboxes(panel_w, panel_h)
 
         title_font = AssetManager.get_font(16, bold=True)
@@ -2256,8 +2655,15 @@ def _draw_menu(screen, options, cursor, confirming_new_game, hit_rects):
     option_font = AssetManager.get_font(16, bold=True)
     hint_font = AssetManager.get_font(14)
 
+    # Session 25: anchored off WINDOW_H // 2 rather than fixed pixel
+    # offsets (140/240/280) tuned for the old 600px-tall window -- those
+    # left the menu stranded in the top third of the taller window this
+    # session's layout rework produced (see WINDOW_H at the top of the
+    # file). Every element still ends up in the same relative spot, just
+    # scaled to whatever the window's actual height is.
+    mid_y = WINDOW_H // 2
     title = title_font.render("Wayfarer", True, COLOR_TEXT)
-    screen.blit(title, (WINDOW_W // 2 - title.get_width() // 2, 140))
+    screen.blit(title, (WINDOW_W // 2 - title.get_width() // 2, mid_y - 140))
 
     hit_rects.clear()
     if confirming_new_game:
@@ -2267,13 +2673,13 @@ def _draw_menu(screen, options, cursor, confirming_new_game, hit_rects):
         ]
         for i, line in enumerate(lines):
             text = hint_font.render(line, True, COLOR_TEXT)
-            screen.blit(text, (WINDOW_W // 2 - text.get_width() // 2, 280 + i * 22))
+            screen.blit(text, (WINDOW_W // 2 - text.get_width() // 2, mid_y + i * 22))
     else:
         for i, label in enumerate(options):
             color = COLOR_TEXT if i == cursor else (140, 140, 140)
             prefix = "> " if i == cursor else "  "
             text = option_font.render(f"{prefix}{label}", True, color)
-            pos = (WINDOW_W // 2 - 90, 240 + i * 34)
+            pos = (WINDOW_W // 2 - 90, mid_y - 40 + i * 34)
             screen.blit(text, pos)
             hit_rects.append((pygame.Rect(pos[0], pos[1], 160, text.get_height()), i))
         hint = hint_font.render("Up/Down select, Enter/click confirm, Esc quit", True, (160, 160, 160))
@@ -2379,7 +2785,7 @@ def main():
     is_focused = True
     fps_target = ACTIVE_FPS
 
-    print("Wayfarer running. Arrows/WASD move (bump an NPC to talk; hold to keep walking), left-click an adjacent tile to do the same (hold and drag to keep walking toward the cursor), 1-8 quick-use item, I inventory, C spellbook, M quest log/map, F3 debug, ESC quit. Panels: click a row to use/cast/buy it, click outside to close.")
+    print("Wayfarer running. Arrows/WASD move (bump an NPC to talk; hold to keep walking), left-click an adjacent tile to do the same (hold and drag to keep walking toward the cursor), T disarm a detected trap ahead of you, R rest (free, costs turns, blocked with enemies nearby), 1-8 quick-use item, I inventory, C spellbook, M quest log/map, F3 debug, ESC quit. Panels: click a row to use/cast/buy it, click outside to close.")
 
     while running:
         for event in pygame.event.get():

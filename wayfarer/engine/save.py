@@ -71,6 +71,16 @@ class SaveManager:
             # same as poison, since it's only cured by paying the Healer).
             "mana_drain INTEGER DEFAULT 0",
             "resist_undead INTEGER DEFAULT 0",
+            # Session 26: Word of Recall's anchor -- where to return the
+            # player when the spell is cast from town. NULL until it's been
+            # cast at least once away from town, same "persists indefinitely,
+            # not a countdown" reasoning as mana_drain above.
+            "recall_room TEXT",
+            "recall_x INTEGER",
+            "recall_y INTEGER",
+            # Session 29: Levitation's countdown -- same persistence
+            # reasoning as buff_defense_turns above.
+            "levitation_turns INTEGER DEFAULT 0",
             *(f"equip_{slot} TEXT" for slot in SLOTS),
         ):
             try:
@@ -147,6 +157,7 @@ class SaveManager:
                        mana, max_mana, buff_defense_bonus, buff_defense_turns,
                        poison_turns, poison_damage, resist_elemental,
                        mana_drain, resist_undead,
+                       recall_room, recall_x, recall_y, levitation_turns,
                        {equip_cols}
                 FROM player WHERE id = 1"""
         )
@@ -167,6 +178,10 @@ class SaveManager:
             "resist_elemental": row[20] or 0,
             "mana_drain": row[21] or 0,
             "resist_undead": row[22] or 0,
+            "recall_room": row[23],
+            "recall_x": row[24],
+            "recall_y": row[25],
+            "levitation_turns": row[26] or 0,
         }
         current_room = _migrate_room_id(row[6])
         pos = (row[7], row[8])
@@ -174,7 +189,7 @@ class SaveManager:
         turn_count = row[10] or 0
         depths_kills = row[11] or 0
         quest_index = row[12] or 0
-        equipment = dict(zip(SLOTS, row[23:23 + len(SLOTS)]))
+        equipment = dict(zip(SLOTS, row[27:27 + len(SLOTS)]))
 
         inv_rows = self.conn.execute("SELECT item_type, count FROM inventory")
         inventory = {item_type: count for item_type, count in inv_rows}
@@ -238,8 +253,10 @@ class SaveManager:
                                      mana, max_mana, buff_defense_bonus,
                                      buff_defense_turns, poison_turns,
                                      poison_damage, resist_elemental,
-                                     mana_drain, resist_undead, {equip_cols})
-                VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, {equip_placeholders})
+                                     mana_drain, resist_undead,
+                                     recall_room, recall_x, recall_y,
+                                     levitation_turns, {equip_cols})
+                VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, {equip_placeholders})
                 ON CONFLICT(id) DO UPDATE SET
                   hp=excluded.hp, max_hp=excluded.max_hp,
                   xp=excluded.xp, level=excluded.level,
@@ -259,6 +276,10 @@ class SaveManager:
                   resist_elemental=excluded.resist_elemental,
                   mana_drain=excluded.mana_drain,
                   resist_undead=excluded.resist_undead,
+                  recall_room=excluded.recall_room,
+                  recall_x=excluded.recall_x,
+                  recall_y=excluded.recall_y,
+                  levitation_turns=excluded.levitation_turns,
                   {equip_updates}""",
             (
                 player.hp, player.max_hp, player.xp, player.level,
@@ -270,6 +291,8 @@ class SaveManager:
                 player.poison_turns, player.poison_damage,
                 player.resist_elemental,
                 player.mana_drain, player.resist_undead,
+                player.recall_room, player.recall_x, player.recall_y,
+                player.levitation_turns,
                 *(player.equipment.get(slot) for slot in SLOTS),
             ),
         )

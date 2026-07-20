@@ -147,6 +147,59 @@ def enemy_attack(enemy, player):
     return log
 
 
+def resolve_trap(player, trap_def, log):
+    """Session 28: a sprung dungeon trap (Castle of the Winds' dart/pit/gas
+    traps). Damage bypasses defense entirely -- it's an environmental
+    mechanism, not a weapon blow, same "armor doesn't stop this" reasoning
+    session 22 already applied to elemental damage, just for a different
+    reason here (no incoming attack to parry, only a hazard to step in).
+    A poison-gas trap also inflicts the same refreshes-rather-than-stacks
+    DoT a Viper's bite does (see _maybe_poison) -- reuses Player.poison_turns/
+    poison_damage directly rather than a separate trap-poison field.
+
+    Session 29: Levitation makes the player "impervious to non-magical
+    traps" (Castle of the Winds' own wording) -- every trap type this engine
+    has is non-magical, so an active levitation_turns buff skips damage and
+    the poison DoT outright rather than reducing them."""
+    if player.levitation_turns > 0:
+        log.append(f"{trap_def['trigger_message']} You drift over it, untouched.")
+        return log
+    dmg = random.randint(trap_def["damage_min"], trap_def["damage_max"])
+    player.hp = max(0, player.hp - dmg)
+    log.append(f"{trap_def['trigger_message']} You take {dmg} damage.")
+    AssetManager.play_sfx("hit")
+
+    if trap_def.get("poison_damage"):
+        player.poison_turns = max(player.poison_turns, trap_def["poison_duration"])
+        player.poison_damage = max(player.poison_damage, trap_def["poison_damage"])
+        log.append("You feel sickly.")
+
+    if player.hp <= 0:
+        log.append("You have fallen...")
+
+    return log
+
+
+def resolve_disarm(player, trap_def, log):
+    """Session 29: Castle of the Winds' Disarm Trap command, attempted
+    against a *detected* trap directly ahead of the player (see main.py's
+    Game.attempt_disarm) rather than a walk-onto. Chance is the trap's own
+    base difficulty plus a small per-level bonus, capped so a tough trap is
+    never a certainty. Success permanently neutralizes it (same "sprung and
+    inert forever" state a walk-onto trigger leaves behind) and grants XP;
+    failure springs it exactly like blundering onto it blind, including
+    Levitation's damage immunity via resolve_trap above."""
+    chance = min(0.95, trap_def.get("disarm_chance", 0.5) + player.level * 0.02)
+    if random.random() < chance:
+        log.append(f"You carefully disarm the {trap_def['name'].lower()}.")
+        AssetManager.play_sfx("pickup")
+        grant_xp(player, trap_def.get("disarm_xp", 5), log)
+        return True, log
+    log.append("Your fingers slip -- it triggers!")
+    resolve_trap(player, trap_def, log)
+    return False, log
+
+
 def grant_xp(player, amount, log):
     player.xp += amount
     threshold = player.level * XP_PER_LEVEL

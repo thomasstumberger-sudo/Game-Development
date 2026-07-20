@@ -58,6 +58,17 @@ class AssetManager:
                 points = [(size // 2, pad), (size - pad, size - pad), (pad, size - pad)]
                 pygame.draw.polygon(surf, color, points)
                 pygame.draw.polygon(surf, outline, points, outline_w)
+            elif shape == "spike":
+                # Session 28: dungeon traps -- no matching art in either
+                # sheet (they're floor-level hazards, not items or
+                # monsters), so a caltrop-style "X" reads as a hazard marker
+                # distinct from every enemy shape and the switch's plain
+                # square.
+                mid = size // 2
+                thickness = max(2, size // 5)
+                pygame.draw.line(surf, color, (pad, pad), (size - pad, size - pad), thickness)
+                pygame.draw.line(surf, color, (size - pad, pad), (pad, size - pad), thickness)
+                pygame.draw.circle(surf, outline, (mid, mid), max(1, size // 6))
             else:
                 rect = pygame.Rect(pad, pad, size - pad * 2, size - pad * 2)
                 pygame.draw.rect(surf, color, rect, border_radius=max(1, size // 10))
