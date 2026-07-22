@@ -16,6 +16,7 @@ import os
 import sys
 import json
 import math
+import uuid
 
 import pygame
 
@@ -23,8 +24,8 @@ sys.path.append(os.path.abspath(os.path.dirname(__file__)))
 
 from engine.assets import AssetManager, BASE_DIR
 from engine.room import Room
-from engine.entity import Player, Enemy, ItemPickup, EquipmentDrop, NPC
-from engine.combat import resolve_bump_attack, resolve_spell_hit, enemy_attack, grant_xp, resolve_trap, resolve_disarm
+from engine.entity import Player, Enemy, ItemPickup, EquipmentDrop, SpellbookDrop, NPC
+from engine.combat import resolve_bump_attack, resolve_spell_hit, resolve_ball_splash_to_player, enemy_attack, grant_xp, resolve_trap, resolve_disarm
 from engine.inventory import Inventory
 from engine.save import SaveManager, DEFAULT_ROOM, DEFAULT_SPAWN
 from engine.procgen import generate_room, scale_stats_for_level, room_doors
@@ -122,7 +123,12 @@ COLOR_TEXT = (230, 230, 230)
 COLOR_DEBUG = (0, 255, 0)
 COLOR_POISON = (120, 200, 90)
 COLOR_DRAIN = (150, 150, 230)
+COLOR_WEAKEN = (200, 150, 100)  # session 37: Wight attack drain, earthy tone to match its sprite tint
 COLOR_LEVITATE = (140, 215, 235)
+COLOR_RESIST_FIRE = (225, 120, 60)
+COLOR_RESIST_COLD = (190, 225, 250)
+COLOR_RESIST_LIGHTNING = (110, 150, 235)
+COLOR_SLEEP = (180, 180, 255)  # session 40: Sleep Monster's "Zzz" tag over an asleep enemy
 COLOR_PANEL_BG = (20, 20, 28, 235)
 COLOR_PANEL_BORDER = (95, 95, 120)
 COLOR_HUD_BG = (17, 17, 24)
@@ -337,6 +343,11 @@ class Game:
         AssetManager.make_placeholder("switch_off", (150, 40, 40), shape="square")
         AssetManager.make_placeholder("switch_on", (50, 180, 70), shape="square")
         AssetManager.load_sprite("item_key", f"{I}/tile_30_9.png")
+        # Session 39: dungeon-found spellbooks -- no readable/book art in
+        # either sheet, same "no matching sprite" situation as the switches
+        # above, so a placeholder (see AssetManager's new "book" shape) in a
+        # violet distinct from every other item/potion tint used so far.
+        AssetManager.make_placeholder("item_spellbook", (150, 90, 200), shape="book")
 
         # Session 28: dungeon traps -- one caltrop-shaped placeholder per
         # type (see AssetManager's "spike" shape), colored to hint at each
@@ -357,6 +368,24 @@ class Game:
         # undead's own silhouette, just ghostlier, reads correctly at a
         # glance next to the plain white Skeleton.
         AssetManager.make_tint_variant("enemy_wraith", "enemy_skeleton", (130, 150, 220), strength=0.8)
+        # Session 35: Dark Wraith and Abyss Wraith -- same skeleton-silhouette
+        # trick as the base Wraith above, just darker tints so the family
+        # reads as an escalating series at a glance (pale blue-violet ->
+        # deep violet -> near-black void) rather than three unrelated colors.
+        # BLEND_RGB_MULT only darkens, which is exactly what a "deeper into
+        # the abyss" progression needs -- no repeat of session 31's
+        # can't-brighten problem here.
+        AssetManager.make_tint_variant("enemy_dark_wraith", "enemy_skeleton", (80, 60, 130), strength=0.9)
+        AssetManager.make_tint_variant("enemy_abyss_wraith", "enemy_skeleton", (35, 20, 55), strength=0.95)
+        # Session 37: the Wight family -- same skeleton-silhouette tint
+        # trick, but an earthy brown/grey/stone palette rather than the
+        # Wraith family's blue-violet one, so the two undead-drain families
+        # read as visually distinct at a glance (barrow-dweller vs. ghost)
+        # even though both reuse the same base sprite. Escalating darkness
+        # by tier, same "deeper -> darker" progression as the Wraiths.
+        AssetManager.make_tint_variant("enemy_barrow_wight", "enemy_skeleton", (150, 120, 80), strength=0.7)
+        AssetManager.make_tint_variant("enemy_tunnel_wight", "enemy_skeleton", (100, 85, 70), strength=0.85)
+        AssetManager.make_tint_variant("enemy_castle_wight", "enemy_skeleton", (60, 50, 45), strength=0.95)
         # No slime/blob-shaped monster anywhere in the character sheet (it's
         # all bipedal humanoids) -- kept as the original procedural
         # placeholder rather than force a bad fit.
@@ -390,6 +419,17 @@ class Game:
         # near-white fill and from the Wraith's muted blue-violet tint (which
         # is on a different, humanoid silhouette anyway).
         AssetManager.make_placeholder("enemy_blue_dragon", (40, 100, 230), shape="triangle")
+        # Session 33: Young Green Dragon -- CotW's poison-gas-breathing
+        # dragon color (Red/fire, White/cold, Blue/lightning, Green/poison
+        # gas is the game's actual four-color roster, confirmed via
+        # research rather than assumed -- see PROGRESS.MD). Unlike the other
+        # three, this isn't a new elemental damage_type: it reuses the
+        # Viper's poison_chance/poison_damage/poison_duration mechanism
+        # (session 21) as its breath weapon, so no combat.py changes were
+        # needed here either. Same triangle silhouette, a saturated
+        # forest/toxin green distinct from both the Slime's muted green
+        # circle and the Viper's olive diamond.
+        AssetManager.make_placeholder("enemy_green_dragon", (20, 150, 40), shape="triangle")
         AssetManager.load_sprite("player", f"{C}/tile_12_6.png")
         AssetManager.load_sprite("npc_quartermaster", f"{C}/tile_12_12.png")
         AssetManager.load_sprite("npc_merchant", f"{C}/tile_12_27.png")
@@ -547,10 +587,12 @@ class Game:
             enemy_templates = population["enemies"]
             item_templates = population["items"]
             equipment_drop_templates = population["equipment_drops"]
+            spellbook_drop_templates = population["spellbook_drops"]
         else:
             enemy_templates = self.room.enemy_templates
             item_templates = self.room.item_templates
             equipment_drop_templates = self.room.equipment_drop_templates
+            spellbook_drop_templates = self.room.spellbook_drop_templates
 
         self.current_room_enemy_ids = {t["id"] for t in enemy_templates}
         self.dead_enemy_ids = dead_ids
@@ -587,6 +629,25 @@ class Game:
             EquipmentDrop(t["id"], t["base_type"], t["enchant"], t["x"], t["y"], self.equipment_defs[t["base_type"]])
             for t in equipment_drop_templates
             if t["id"] not in self.taken_item_ids
+        ] + [
+            # Session 39: dungeon-found spellbooks -- same floor-entity
+            # split as EquipmentDrop above, just teaching a spell on pickup
+            # instead of adding a per-instance gear record.
+            SpellbookDrop(t["id"], t["spell_id"], t["x"], t["y"], self._spell_def(t["spell_id"]))
+            for t in spellbook_drop_templates
+            if t["id"] not in self.taken_item_ids
+        ]
+        # Session 43: consumables a player dropped from the Inventory panel
+        # on a previous visit -- persisted per-room (see engine/save.py's
+        # room_drops table) rather than a procgen template, so they survive
+        # a room transition and back the same way taken/opened/sprung state
+        # does. self.room_drops is the live in-memory copy this session
+        # mutates on drop/pickup; flushed back alongside room_flags (see
+        # persist() and the "exit"/Word of Recall room-transition sites).
+        self.room_drops = self.save.get_room_drops(room_id)
+        self.items += [
+            ItemPickup(d["id"], d["type"], d["x"], d["y"], self.item_defs[d["type"]])
+            for d in self.room_drops
         ]
         # NPCs never appear in proc rooms (self.room.npc_templates is
         # always [] there) and are never "dead" -- no flags to filter by.
@@ -649,6 +710,7 @@ class Game:
         """Full autosave: current room flags/meta + player + inventory.
         Called on room transition and on quit -- never per-frame."""
         self.save.set_room_flags(self.current_room_id, self._current_room_flags())
+        self.save.set_room_drops(self.current_room_id, self.room_drops)
         if self.current_room_id.startswith("proc:"):
             epoch, cleared_turn = self._room_meta(self.current_room_id)
             self.save.set_room_meta(self.current_room_id, epoch, cleared_turn)
@@ -681,6 +743,18 @@ class Game:
             self.detect_traps_turns -= 1
         if self.player.levitation_turns > 0:
             self.player.levitation_turns -= 1
+        if self.player.temp_resist_fire_turns > 0:
+            self.player.temp_resist_fire_turns -= 1
+            if self.player.temp_resist_fire_turns == 0:
+                self.player.temp_resist_fire_bonus = 0
+        if self.player.temp_resist_cold_turns > 0:
+            self.player.temp_resist_cold_turns -= 1
+            if self.player.temp_resist_cold_turns == 0:
+                self.player.temp_resist_cold_bonus = 0
+        if self.player.temp_resist_lightning_turns > 0:
+            self.player.temp_resist_lightning_turns -= 1
+            if self.player.temp_resist_lightning_turns == 0:
+                self.player.temp_resist_lightning_bonus = 0
 
         messages = []
         if self.player.poison_turns > 0:
@@ -774,6 +848,26 @@ class Game:
                 base_name = self.equipment_defs[item.base_type]["name"]
                 messages.append(f"Found {base_name} (unidentified).")
                 AssetManager.play_sfx("pickup")
+            elif isinstance(item, SpellbookDrop):
+                # Session 39: closes engine/spells.py's own "spellbooks as
+                # dungeon loot" future-work note. Unlike EquipmentDrop, this
+                # never enters an inventory/bag -- it teaches its spell
+                # immediately, same as buy_spellbook, or (since procgen is a
+                # pure function of seed/position with no live player state
+                # to consult -- see procgen.py's SPELL_IDS_BY_BAND comment)
+                # refunds half its book_cost in gold if the roll duplicated
+                # an already-known spell rather than silently wasting it.
+                self.taken_item_ids.add(item.id)
+                self.items = [i for i in self.items if i.id != item.id]
+                spell = self._spell_def(item.spell_id)
+                if item.spell_id in self.known_spells:
+                    refund = spell["book_cost"] // 2
+                    self.player.gold += refund
+                    messages.append(f"You already know {spell['name']} -- you sell the book for {refund} gold.")
+                else:
+                    self.known_spells.add(item.spell_id)
+                    messages.append(f"You study a found spellbook and learn {spell['name']}!")
+                AssetManager.play_sfx("pickup")
             else:
                 item_def = self.item_defs[item.type]
                 if item_def.get("effect") == "gold":
@@ -788,6 +882,11 @@ class Game:
                 elif self.inventory.add_item(item.type):
                     self.taken_item_ids.add(item.id)
                     self.items = [i for i in self.items if i.id != item.id]
+                    # Session 43: a no-op filter for a template item's id,
+                    # but clears a player-dropped one back out of the
+                    # persisted per-room drop list so it doesn't reappear
+                    # after the room is left and re-entered.
+                    self.room_drops = [d for d in self.room_drops if d["id"] != item.id]
                     messages.append(f"Picked up {item.name}.")
                     AssetManager.play_sfx("pickup")
                 else:
@@ -820,6 +919,18 @@ class Game:
                 self.opened_chest_ids.add(chest["id"])
                 base_name = self.equipment_defs[eq["base_type"]]["name"]
                 messages.append(f"The chest holds {base_name} (unidentified)!")
+                AssetManager.play_sfx("pickup")
+            elif "spellbook" in chest:
+                spell_id = chest["spellbook"]["spell_id"]
+                spell = self._spell_def(spell_id)
+                self.opened_chest_ids.add(chest["id"])
+                if spell_id in self.known_spells:
+                    refund = spell["book_cost"] // 2
+                    self.player.gold += refund
+                    messages.append(f"The chest holds a spellbook, but you already know {spell['name']} -- {refund} gold instead.")
+                else:
+                    self.known_spells.add(spell_id)
+                    messages.append(f"The chest holds a spellbook! You learn {spell['name']}!")
                 AssetManager.play_sfx("pickup")
             else:
                 item_type = chest["item_type"]
@@ -866,6 +977,7 @@ class Game:
             # Flush the room we're leaving *before* load_room overwrites
             # this state with the destination's.
             self.save.set_room_flags(self.current_room_id, self._current_room_flags())
+            self.save.set_room_drops(self.current_room_id, self.room_drops)
             if self.current_room_id.startswith("proc:"):
                 epoch, cleared_turn = self._room_meta(self.current_room_id)
                 self.save.set_room_meta(self.current_room_id, epoch, cleared_turn)
@@ -1073,6 +1185,32 @@ class Game:
         if message is None:
             return
         self.message_log = [message]
+        remaining = self._inventory_rows()
+        self.inventory_cursor = min(self.inventory_cursor, max(0, len(remaining) - 1))
+        self.dirty = True
+
+    def drop_selected_item(self):
+        """Session 43: X in the Inventory panel drops one unit of the
+        consumable under the cursor onto the player's own tile, closing
+        out PROGRESS.MD's "No drop mechanics for consumables" future-work
+        note. Scoped to consumables only, same line _use_item_at_index/
+        _activate_inventory_row already draw -- found/equipped gear stays
+        bag-only, no drop path for an EquipmentInstance. Persisted per-room
+        (self.room_drops, flushed to engine/save.py's room_drops table
+        alongside room_flags) so it's still on the floor after leaving the
+        room and coming back, and picked back up the same way any other
+        floor item is (see the "pickup" branch in handle_move)."""
+        rows = self._inventory_rows()
+        if self.inventory_cursor >= len(rows) or rows[self.inventory_cursor][0] != "item":
+            return
+        _, item_type, _count, item_def = rows[self.inventory_cursor]
+        if not self.inventory.remove_item(item_type):
+            return
+        entity_id = f"drop:{uuid.uuid4().hex}"
+        x, y = self.player.x, self.player.y
+        self.room_drops.append({"id": entity_id, "type": item_type, "x": x, "y": y})
+        self.items.append(ItemPickup(entity_id, item_type, x, y, item_def))
+        self.message_log = [f"Dropped {item_def.get('name', item_type)}."]
         remaining = self._inventory_rows()
         self.inventory_cursor = min(self.inventory_cursor, max(0, len(remaining) - 1))
         self.dirty = True
@@ -1355,14 +1493,37 @@ class Game:
         self.message_log = [f"The wraith-touch fades. Your mana ceiling is restored for {cost} gold."]
         self.dirty = True
 
+    # Session 37: Restore Sapped Strength -- the Wight family's attack-drain
+    # counterpart to Restore Drained Mana above, same per-point gold pricing
+    # and reversal shape (see Player.attack_drain's docstring for why this
+    # engine drains attack rather than STR/DEX/CON directly).
+    def attack_drain_cure_cost(self):
+        return math.ceil(self.player.attack_drain * self.DRAIN_CURE_COST_PER_POINT)
+
+    def cure_attack_drain(self):
+        if self.player.attack_drain <= 0:
+            return
+        cost = self.attack_drain_cure_cost()
+        if self.player.gold < cost:
+            self.message_log = ["Not enough gold to lift the drain."]
+            self.dirty = True
+            return
+        self.player.gold -= cost
+        self.player.attack += self.player.attack_drain
+        self.player.attack_drain = 0
+        self.message_log = [f"The wight-touch fades. Your strength is restored for {cost} gold."]
+        self.dirty = True
+
     def _healer_rows(self):
-        """Rest is always present; Restore Drained Mana only appears once
-        there's actually a drain to cure -- same "append an extra action
-        only when it applies" pattern session 16 gave the Merchant panel's
-        Identify/Remove Curse rows."""
+        """Rest is always present; Restore Drained Mana/Restore Sapped
+        Strength only appear once there's actually a drain to cure -- same
+        "append an extra action only when it applies" pattern session 16
+        gave the Merchant panel's Identify/Remove Curse rows."""
         rows = ["rest"]
         if self.player.mana_drain > 0:
             rows.append("cure_drain")
+        if self.player.attack_drain > 0:
+            rows.append("cure_attack_drain")
         return rows
 
     def healer_move_cursor(self, delta):
@@ -1374,10 +1535,13 @@ class Game:
         rows = self._healer_rows()
         if index >= len(rows):
             return
-        if rows[index] == "rest":
+        kind = rows[index]
+        if kind == "rest":
             self.rest_at_healer()
-        else:
+        elif kind == "cure_drain":
             self.cure_mana_drain()
+        else:
+            self.cure_attack_drain()
         self.healer_cursor = min(self.healer_cursor, max(0, len(self._healer_rows()) - 1))
 
     # -- bookshop (session 19) ----------------------------------------------
@@ -1416,6 +1580,9 @@ class Game:
         self.buy_spellbook(rows[index]["id"])
         self.bookshop_cursor = min(self.bookshop_cursor, max(0, len(self._bookshop_rows()) - 1))
 
+    def _spell_def(self, spell_id):
+        return next(s for s in self.spell_defs if s["id"] == spell_id)
+
     def buy_spellbook(self, spell_id):
         """Same insufficient-gold-is-a-silent-no-op pattern every other gold
         sink in this game uses. No mana/level check -- the whole point is
@@ -1423,7 +1590,7 @@ class Game:
         walk out knowing Firebolt."""
         if spell_id in self.known_spells:
             return
-        spell = next(s for s in self.spell_defs if s["id"] == spell_id)
+        spell = self._spell_def(spell_id)
         cost = spell["book_cost"]
         if self.player.gold < cost:
             self.message_log = ["Not enough gold."]
@@ -1475,6 +1642,33 @@ class Game:
                     return enemy
         return None
 
+    def _ball_impact_point(self, spell):
+        """Where a ball spell (Fireball/Cold Ball/Ball Lightning) detonates.
+        Source material: "Balls are so large that they always hit... may hit
+        something and explode before reaching their targets, but this
+        applies only to the center tile." A bolt fizzles entirely if its
+        line is empty (see _bolt_target returning None); a ball still goes
+        off somewhere -- this walks the same facing/range/wall-blocked line,
+        stopping at the first enemy, the last walkable tile before a wall/
+        closed door, or the max-range tile if the line is clear the whole
+        way. Returns None only if the very first step is already blocked
+        (nowhere at all to detonate)."""
+        dx, dy = self.player.facing
+        if dx == 0 and dy == 0:
+            return None
+        blocked = self._blocked_positions()
+        x, y = self.player.x, self.player.y
+        last = None
+        for _ in range(spell.get("range", 5)):
+            nx, ny = x + dx, y + dy
+            if not self.room.is_walkable(nx, ny) or (nx, ny) in blocked:
+                break
+            x, y = nx, ny
+            last = (x, y)
+            if any(enemy.alive and enemy.x == x and enemy.y == y for enemy in self.enemies):
+                break
+        return last
+
     def _resolve_blink(self, spell):
         """Slide the player up to `range` tiles along their facing
         direction, stopping just short of a wall, a closed locked
@@ -1524,7 +1718,17 @@ class Game:
         effect = spell["effect"]
         message = None
         if effect == "heal":
-            healed = min(spell.get("value", 0), self.player.max_hp - self.player.hp)
+            # CotW's own Heal Minor/Medium/Major Wounds each restore a flat
+            # amount OR a percent of max HP, whichever is more -- the flat
+            # floor keeps a low-tier heal useful the moment it's learned
+            # (this engine's leveling adds 10 max_hp/level, so the two
+            # amounts cross over almost exactly at each spell's unlock
+            # level), while the percent keeps it from falling off at high
+            # level. Spells with no "percent" key (none currently) just fall
+            # back to the flat value.
+            pct_amount = round(self.player.max_hp * spell.get("percent", 0))
+            heal_amount = max(spell.get("value", 0), pct_amount)
+            healed = min(heal_amount, self.player.max_hp - self.player.hp)
             self.player.hp += healed
             message = f"You cast {spell['name']}. Restored {healed} HP."
         elif effect == "buff_defense":
@@ -1560,6 +1764,64 @@ class Game:
                         and self.room_cleared_turn.get(self.current_room_id) is None
                     ):
                         self.room_cleared_turn[self.current_room_id] = self.turn_count
+        elif effect == "ball":
+            # Session 41: Castle of the Winds' Fireball/Cold Ball/Ball
+            # Lightning -- "affect a 3x3 area. Do damage equivalent to the
+            # corresponding bolt in the center square, and half as much
+            # damage in the eight adjacent squares." There's deliberately no
+            # ball spell for Spark (CotW's own directory: "no ball spell
+            # corresponding to Magic Arrow"), so every damage_type here is
+            # elemental -- always bypasses defense the same way the sibling
+            # bolt spells already do, no physical branch needed.
+            center = self._ball_impact_point(spell)
+            if center is None:
+                message = f"You cast {spell['name']}, but it finds no target."
+            else:
+                cx, cy = center
+                damage_type = spell.get("damage_type", "physical")
+                base = spell.get("value", 0)
+                ring_dmg = max(1, round(base / 2))
+                logs = []
+                hit_any = False
+                for enemy in list(self.enemies):
+                    if not enemy.alive:
+                        continue
+                    dist = max(abs(enemy.x - cx), abs(enemy.y - cy))
+                    if dist > 1:
+                        continue
+                    dmg = base if (enemy.x, enemy.y) == (cx, cy) else ring_dmg
+                    logs.extend(resolve_spell_hit(self.player, enemy, dmg, spell["name"], damage_type))
+                    hit_any = True
+                    if not enemy.alive:
+                        self.dead_enemy_ids.add(enemy.id)
+                        if self.current_room_id.startswith("proc:"):
+                            self.depths_kills += 1
+                self.enemies = [e for e in self.enemies if e.alive]
+                if (
+                    self.current_room_id.startswith("proc:")
+                    and self.current_room_enemy_ids
+                    and self.current_room_enemy_ids <= self.dead_enemy_ids
+                    and self.room_cleared_turn.get(self.current_room_id) is None
+                ):
+                    self.room_cleared_turn[self.current_room_id] = self.turn_count
+                # Source material: balls "may hurt the player, but
+                # nevertheless be worthwhile." In this engine's facing-line
+                # aim (no free tile-cursor targeting), that happens whenever
+                # the blast's center is adjacent to the player -- the 3x3
+                # ring then covers the player's own tile too.
+                if max(abs(self.player.x - cx), abs(self.player.y - cy)) <= 1:
+                    splash = resolve_ball_splash_to_player(self.player, ring_dmg, damage_type)
+                    self.player.hp -= splash
+                    logs.append(f"The blast catches you for {splash}!")
+                    if self.player.hp <= 0:
+                        self.player.hp = 0
+                        logs.append("You have fallen...")
+                if not logs:
+                    logs.append(f"You cast {spell['name']}. The blast finds nothing to hurt.")
+                elif not hit_any:
+                    logs.insert(0, f"You cast {spell['name']}.")
+                self._learn_new_spells(logs)
+                message = " ".join(logs)
         elif effect == "blink":
             landed = self._resolve_blink(spell)
             message = f"You cast {spell['name']}." if landed else f"You cast {spell['name']}, but nothing happens."
@@ -1613,6 +1875,125 @@ class Game:
                 message = f"You cast {spell['name']}. The curse on your {slot_label(slot).lower()} lifts."
             else:
                 message = f"You cast {spell['name']}, but nothing you wear is cursed."
+        elif effect == "resist_element":
+            # Session 34: Castle of the Winds' Resist Fire/Cold/Lightning --
+            # a temporary per-element buff, stacking additively with the
+            # flat, always-on resist_elemental amulet stat (see
+            # engine/combat.py's _enemy_damage_to_player). Re-casting the
+            # same resist spell refreshes it to the new duration/bonus
+            # rather than stacking, same "overwrite, don't compound"
+            # reasoning buff_defense_turns already uses for Stone Skin.
+            dtype = spell.get("damage_type")
+            value = spell.get("value", 0)
+            duration = spell.get("duration", 1)
+            if dtype == "fire":
+                self.player.temp_resist_fire_bonus = value
+                self.player.temp_resist_fire_turns = duration
+            elif dtype == "cold":
+                self.player.temp_resist_cold_bonus = value
+                self.player.temp_resist_cold_turns = duration
+            elif dtype == "lightning":
+                self.player.temp_resist_lightning_bonus = value
+                self.player.temp_resist_lightning_turns = duration
+            message = f"You cast {spell['name']}. {dtype.capitalize()} resistance +{value}% for {duration} turns."
+        elif effect == "reveal_room":
+            # Session 38: Castle of the Winds' Light -- "reveals a room...
+            # including any monsters or objects that may be within it."
+            # This engine already has a per-room fog-of-war (session 10/11)
+            # that normally only lifts region-by-region as the player
+            # physically walks into each one; Light just unions in every
+            # region this room has at once, reusing revealed_regions/
+            # _current_room_flags exactly as _reveal_region_at_player does
+            # for a single region, so the reveal persists through
+            # save/reload the same way. A room with no `regions` (every
+            # hand-authored room except the Crypt) has nothing to reveal.
+            if self.room.regions:
+                region_ids = {r["id"] for r in self.room.regions}
+                newly = region_ids - self.revealed_regions
+                self.revealed_regions |= region_ids
+                message = (
+                    f"You cast {spell['name']}. The room is bathed in light."
+                    if newly else
+                    f"You cast {spell['name']}, but this room holds no more secrets."
+                )
+            else:
+                message = f"You cast {spell['name']}, but there's nothing here to reveal."
+        elif effect == "sleep":
+            # Session 40: Castle of the Winds' Sleep Monster -- "puts one
+            # target monster to sleep... some monsters and all bosses are
+            # immune and all will wake in about ten minutes or when
+            # attacked." Reuses _bolt_target's exact facing/range/line-of-
+            # sight targeting (same single-enemy-ahead aim as the bolt
+            # spells), but sets Enemy.sleep_turns instead of dealing damage
+            # -- see engine/entity.py's Enemy.take_turn (skips its whole
+            # turn while asleep) and engine/combat.py's resolve_bump_attack/
+            # resolve_spell_hit (either kind of hit wakes it, forfeiting the
+            # sleeping enemy's retaliation on a melee wake-up).
+            target = self._bolt_target(spell)
+            if target is None:
+                message = f"You cast {spell['name']}, but it finds no target."
+            elif target.sleep_immune:
+                message = f"You cast {spell['name']}, but {target.name} is unaffected."
+            else:
+                target.sleep_turns = spell.get("duration", 20)
+                message = f"You cast {spell['name']}. {target.name} slumps into a deep sleep."
+        elif effect == "slow":
+            # Session 42: Castle of the Winds' Slow Monster -- "slows the
+            # target monster's movement and attacks to half... a second
+            # cast reduces the speed to 1/3, a third to 1/4, etc." Same
+            # single-enemy facing/range targeting as Sleep Monster above
+            # and the same sleep_immune boss-immunity check (see
+            # engine/entity.py's Enemy.slow_level docstring for why); unlike
+            # Sleep there's no wear-off duration in the source text, so each
+            # cast just increments slow_level and resets slow_tick so the
+            # new, finer cadence starts clean rather than mid-cycle.
+            target = self._bolt_target(spell)
+            if target is None:
+                message = f"You cast {spell['name']}, but it finds no target."
+            elif target.sleep_immune:
+                message = f"You cast {spell['name']}, but {target.name} is unaffected."
+            else:
+                target.slow_level += 1
+                target.slow_tick = 0
+                message = (
+                    f"You cast {spell['name']}. {target.name} is slowed to "
+                    f"1/{target.slow_level + 1} speed."
+                )
+        elif effect == "reveal_map":
+            # Session 38: Castle of the Winds' Clairvoyance -- "fills in the
+            # player's map of a 10x10 area anywhere on the floor." Adapted to
+            # this engine's room-grid automap (session 8): marks every Depths
+            # room within `radius` grid-cells of the player's current room as
+            # discovered, via the same save.mark_discovered/self.discovered
+            # bookkeeping load_room already does on a physical visit -- so
+            # the journal's automap and door-connection rendering
+            # (room_doors is a pure function of coordinates, see procgen.py)
+            # work identically for a room revealed by magic as one actually
+            # walked into, no new state model needed. Only meaningful in the
+            # Depths -- the three hand-authored town rooms have no room-grid
+            # automap at all (see PROGRESS.MD's Known Limitations).
+            if self.current_room_id.startswith("proc:"):
+                _, _seed_str, level_str, gx_str, gy_str = self.current_room_id.split(":")
+                level = int(level_str)
+                cx, cy = int(gx_str), int(gy_str)
+                radius = spell.get("radius", 2)
+                if level not in self.discovered:
+                    self.discovered[level] = self.save.get_discovered_rooms(level)
+                newly = 0
+                for dx in range(-radius, radius + 1):
+                    for dy in range(-radius, radius + 1):
+                        coord = (cx + dx, cy + dy)
+                        if coord not in self.discovered[level]:
+                            self.save.mark_discovered(level, *coord)
+                            self.discovered[level].add(coord)
+                            newly += 1
+                message = (
+                    f"You cast {spell['name']}. The dungeon's paths reveal themselves."
+                    if newly else
+                    f"You cast {spell['name']}, but you've already mapped everything nearby."
+                )
+            else:
+                message = f"You cast {spell['name']}, but there is no dungeon floor to map here."
 
         recall_target = None
         if effect == "recall":
@@ -1650,6 +2031,7 @@ class Game:
             # own turn and nothing there has seen the player yet.
             target_room, target_x, target_y = recall_target
             self.save.set_room_flags(self.current_room_id, self._current_room_flags())
+            self.save.set_room_drops(self.current_room_id, self.room_drops)
             if self.current_room_id.startswith("proc:"):
                 epoch, cleared_turn = self._room_meta(self.current_room_id)
                 self.save.set_room_meta(self.current_room_id, epoch, cleared_turn)
@@ -1683,6 +2065,21 @@ class Game:
         for enemy in self.enemies:
             if self._is_visible(enemy.x, enemy.y, self.detect_monsters_turns):
                 enemy.draw(self.room_surface, TILE_SIZE)
+                if enemy.sleep_turns > 0:
+                    # Session 40: a translucent tint over a sleeping enemy's
+                    # own tile -- visual confirmation Sleep Monster actually
+                    # landed, same "don't just trust the log line" screenshot
+                    # discipline every UI-touching session since 11 follows.
+                    # A text tag was tried first and rejected: at a 16px tile
+                    # (session 9's native scale) any label tall enough to
+                    # read spills into the tile above, which is exactly where
+                    # an adjacent player sprite sits during the common
+                    # "walk up and melee the sleeper" case -- see PROGRESS.MD
+                    # session 40 for the screenshot that caught this. A
+                    # same-tile tint has no such spillover.
+                    tint = pygame.Surface((TILE_SIZE, TILE_SIZE), pygame.SRCALPHA)
+                    tint.fill((150, 150, 255, 110))
+                    self.room_surface.blit(tint, (enemy.x * TILE_SIZE, enemy.y * TILE_SIZE))
         self.player.draw(self.room_surface, TILE_SIZE)
         pygame.draw.rect(
             screen, COLOR_PANEL_BORDER,
@@ -1811,9 +2208,30 @@ class Game:
             drain_text = font.render(f"Drained (-{self.player.mana_drain} MP)", True, COLOR_DRAIN)
             self.screen.blit(drain_text, (status_x, row4_y))
             status_x += drain_text.get_width() + 20
+        if self.player.attack_drain > 0:
+            # Session 37: same no-countdown reasoning as Drained above --
+            # only paying the Healer (cure_attack_drain) clears a Wight's
+            # touch.
+            weaken_text = font.render(f"Weakened (-{self.player.attack_drain} ATK)", True, COLOR_WEAKEN)
+            self.screen.blit(weaken_text, (status_x, row4_y))
+            status_x += weaken_text.get_width() + 20
         if self.player.levitation_turns > 0:
             levitate_text = font.render(f"Levitating ({self.player.levitation_turns})", True, COLOR_LEVITATE)
             self.screen.blit(levitate_text, (status_x, row4_y))
+            status_x += levitate_text.get_width() + 20
+        if self.player.temp_resist_fire_turns > 0:
+            fire_text = font.render(f"Resist Fire ({self.player.temp_resist_fire_turns})", True, COLOR_RESIST_FIRE)
+            self.screen.blit(fire_text, (status_x, row4_y))
+            status_x += fire_text.get_width() + 20
+        if self.player.temp_resist_cold_turns > 0:
+            cold_text = font.render(f"Resist Cold ({self.player.temp_resist_cold_turns})", True, COLOR_RESIST_COLD)
+            self.screen.blit(cold_text, (status_x, row4_y))
+            status_x += cold_text.get_width() + 20
+        if self.player.temp_resist_lightning_turns > 0:
+            lightning_text = font.render(
+                f"Resist Lightning ({self.player.temp_resist_lightning_turns})", True, COLOR_RESIST_LIGHTNING
+            )
+            self.screen.blit(lightning_text, (status_x, row4_y))
 
         room_text = font.render(self.room.name, True, COLOR_TEXT)
         gold_text = font.render(f"Gold {self.player.gold}", True, COLOR_GOLD)
@@ -2088,6 +2506,8 @@ class Game:
                 self.inventory_move_cursor(1)
             elif key in (pygame.K_u, pygame.K_RETURN):
                 self.use_selected_item()
+            elif key == pygame.K_x:
+                self.drop_selected_item()
             elif pygame.K_1 <= key <= pygame.K_8:
                 self.select_inventory_slot(key - pygame.K_1)
             return False
@@ -2242,7 +2662,7 @@ class Game:
             row_rect = pygame.Rect(origin[0], origin[1] + row_y, panel_w, 16)
             self.panel_click_targets.append((row_rect, lambda idx=idx: self._click_use_inventory(idx)))
 
-        hint = font.render("Up/Down or 1-8 select, U/click use/equip, I/Esc close", True, (160, 160, 160))
+        hint = font.render("Up/Down or 1-8 select, U/click use/equip, X drop, I/Esc close", True, (160, 160, 160))
         panel.blit(hint, (10, panel_h - 24))
 
         self.screen.blit(panel, origin)
@@ -2328,8 +2748,10 @@ class Game:
             if kind == "rest":
                 line = f"{prefix}Rest (already at full strength)" if rest_cost == 0 \
                     else f"{prefix}Rest and recover fully ({rest_cost}g)"
-            else:
+            elif kind == "cure_drain":
                 line = f"{prefix}Restore Drained Mana (-{self.player.mana_drain} MP) ({self.drain_cure_cost()}g)"
+            else:
+                line = f"{prefix}Restore Sapped Strength (-{self.player.attack_drain} ATK) ({self.attack_drain_cure_cost()}g)"
             row_y = 60 + i * 20
             panel.blit(font.render(line, True, COLOR_TEXT), (10, row_y))
             row_rect = pygame.Rect(origin[0], origin[1] + row_y, panel_w, 18)

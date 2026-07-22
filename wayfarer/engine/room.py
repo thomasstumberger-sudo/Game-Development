@@ -58,6 +58,10 @@ class Room:
         # Structural template only (base_type/enchant/position); the actual
         # per-instance record is created on pickup (main.py).
         self.equipment_drop_templates = data.get("equipment_drops", [])
+        # Session 39: spellbooks lying on the floor -- same structural-
+        # template-only split as equipment_drop_templates above (spell_id/
+        # position; the actual learn-or-refund happens on pickup, main.py).
+        self.spellbook_drop_templates = data.get("spellbook_drops", [])
         self.npc_templates = data.get("npcs", [])
         # Session 10 additions -- all optional/empty by default so existing
         # simple hand-authored rooms (no interior structure) need no changes.

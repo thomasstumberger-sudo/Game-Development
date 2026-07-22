@@ -71,6 +71,10 @@ class SaveManager:
             # same as poison, since it's only cured by paying the Healer).
             "mana_drain INTEGER DEFAULT 0",
             "resist_undead INTEGER DEFAULT 0",
+            # Session 37: the Wight family's attack-drain counterpart to
+            # mana_drain above -- same "persists indefinitely, only the
+            # Healer clears it" reasoning, see Player.attack_drain.
+            "attack_drain INTEGER DEFAULT 0",
             # Session 26: Word of Recall's anchor -- where to return the
             # player when the spell is cast from town. NULL until it's been
             # cast at least once away from town, same "persists indefinitely,
@@ -81,6 +85,19 @@ class SaveManager:
             # Session 29: Levitation's countdown -- same persistence
             # reasoning as buff_defense_turns above.
             "levitation_turns INTEGER DEFAULT 0",
+            # Session 34: Resist Fire/Cold/Lightning -- Castle of the Winds'
+            # own per-element temporary resistance spells, distinct from the
+            # flat, generic-across-every-element resist_elemental amulet
+            # stat above. Same bonus+turns countdown-buff pair as
+            # buff_defense_bonus/turns, just one pair per element since a
+            # player can have all three running at once (e.g. before a
+            # multi-dragon vault fight).
+            "temp_resist_fire_bonus INTEGER DEFAULT 0",
+            "temp_resist_fire_turns INTEGER DEFAULT 0",
+            "temp_resist_cold_bonus INTEGER DEFAULT 0",
+            "temp_resist_cold_turns INTEGER DEFAULT 0",
+            "temp_resist_lightning_bonus INTEGER DEFAULT 0",
+            "temp_resist_lightning_turns INTEGER DEFAULT 0",
             *(f"equip_{slot} TEXT" for slot in SLOTS),
         ):
             try:
@@ -130,6 +147,19 @@ class SaveManager:
                 PRIMARY KEY (level, gx, gy)
             )"""
         )
+        # Session 43: consumables dropped back onto the floor from the
+        # Inventory panel -- distinct from room_flags because a drop needs
+        # its own type/position remembered, not just a boolean per
+        # entity_id. Full-replace per room, same semantics as room_flags,
+        # flushed at the same call sites (see main.py's persist()/"exit"/
+        # Word of Recall, all three of which already flush room_flags).
+        self.conn.execute(
+            """CREATE TABLE IF NOT EXISTS room_drops (
+                room_id TEXT, entity_id TEXT, item_type TEXT,
+                x INTEGER, y INTEGER,
+                PRIMARY KEY (room_id, entity_id)
+            )"""
+        )
         self.conn.commit()
 
     def has_save(self):
@@ -144,6 +174,7 @@ class SaveManager:
         for table in (
             "player", "inventory", "room_flags", "room_meta",
             "discovered_rooms", "known_spells", "equipment_instances",
+            "room_drops",
         ):
             self.conn.execute(f"DELETE FROM {table}")
         self.conn.commit()
@@ -158,6 +189,10 @@ class SaveManager:
                        poison_turns, poison_damage, resist_elemental,
                        mana_drain, resist_undead,
                        recall_room, recall_x, recall_y, levitation_turns,
+                       temp_resist_fire_bonus, temp_resist_fire_turns,
+                       temp_resist_cold_bonus, temp_resist_cold_turns,
+                       temp_resist_lightning_bonus, temp_resist_lightning_turns,
+                       attack_drain,
                        {equip_cols}
                 FROM player WHERE id = 1"""
         )
@@ -182,6 +217,13 @@ class SaveManager:
             "recall_x": row[24],
             "recall_y": row[25],
             "levitation_turns": row[26] or 0,
+            "temp_resist_fire_bonus": row[27] or 0,
+            "temp_resist_fire_turns": row[28] or 0,
+            "temp_resist_cold_bonus": row[29] or 0,
+            "temp_resist_cold_turns": row[30] or 0,
+            "temp_resist_lightning_bonus": row[31] or 0,
+            "temp_resist_lightning_turns": row[32] or 0,
+            "attack_drain": row[33] or 0,
         }
         current_room = _migrate_room_id(row[6])
         pos = (row[7], row[8])
@@ -189,7 +231,7 @@ class SaveManager:
         turn_count = row[10] or 0
         depths_kills = row[11] or 0
         quest_index = row[12] or 0
-        equipment = dict(zip(SLOTS, row[27:27 + len(SLOTS)]))
+        equipment = dict(zip(SLOTS, row[34:34 + len(SLOTS)]))
 
         inv_rows = self.conn.execute("SELECT item_type, count FROM inventory")
         inventory = {item_type: count for item_type, count in inv_rows}
@@ -255,8 +297,13 @@ class SaveManager:
                                      poison_damage, resist_elemental,
                                      mana_drain, resist_undead,
                                      recall_room, recall_x, recall_y,
-                                     levitation_turns, {equip_cols})
-                VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, {equip_placeholders})
+                                     levitation_turns,
+                                     temp_resist_fire_bonus, temp_resist_fire_turns,
+                                     temp_resist_cold_bonus, temp_resist_cold_turns,
+                                     temp_resist_lightning_bonus, temp_resist_lightning_turns,
+                                     attack_drain,
+                                     {equip_cols})
+                VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, {equip_placeholders})
                 ON CONFLICT(id) DO UPDATE SET
                   hp=excluded.hp, max_hp=excluded.max_hp,
                   xp=excluded.xp, level=excluded.level,
@@ -280,6 +327,13 @@ class SaveManager:
                   recall_x=excluded.recall_x,
                   recall_y=excluded.recall_y,
                   levitation_turns=excluded.levitation_turns,
+                  temp_resist_fire_bonus=excluded.temp_resist_fire_bonus,
+                  temp_resist_fire_turns=excluded.temp_resist_fire_turns,
+                  temp_resist_cold_bonus=excluded.temp_resist_cold_bonus,
+                  temp_resist_cold_turns=excluded.temp_resist_cold_turns,
+                  temp_resist_lightning_bonus=excluded.temp_resist_lightning_bonus,
+                  temp_resist_lightning_turns=excluded.temp_resist_lightning_turns,
+                  attack_drain=excluded.attack_drain,
                   {equip_updates}""",
             (
                 player.hp, player.max_hp, player.xp, player.level,
@@ -293,6 +347,10 @@ class SaveManager:
                 player.mana_drain, player.resist_undead,
                 player.recall_room, player.recall_x, player.recall_y,
                 player.levitation_turns,
+                player.temp_resist_fire_bonus, player.temp_resist_fire_turns,
+                player.temp_resist_cold_bonus, player.temp_resist_cold_turns,
+                player.temp_resist_lightning_bonus, player.temp_resist_lightning_turns,
+                player.attack_drain,
                 *(player.equipment.get(slot) for slot in SLOTS),
             ),
         )
@@ -349,6 +407,33 @@ class SaveManager:
         ]
         self.conn.executemany(
             "INSERT INTO room_flags (room_id, flag_type, entity_id) VALUES (?, ?, ?)",
+            rows,
+        )
+        self.conn.commit()
+
+    def get_room_drops(self, room_id):
+        """Returns [{"id", "type", "x", "y"}, ...] for every consumable a
+        player has dropped in this room and not yet picked back up."""
+        rows = self.conn.execute(
+            "SELECT entity_id, item_type, x, y FROM room_drops WHERE room_id = ?",
+            (room_id,),
+        )
+        return [
+            {"id": entity_id, "type": item_type, "x": x, "y": y}
+            for entity_id, item_type, x, y in rows
+        ]
+
+    def set_room_drops(self, room_id, drops):
+        """drops: [{"id", "type", "x", "y"}, ...] -- a full replace, same
+        semantics as set_room_flags."""
+        self.conn.execute("DELETE FROM room_drops WHERE room_id = ?", (room_id,))
+        rows = [
+            (room_id, drop["id"], drop["type"], drop["x"], drop["y"])
+            for drop in drops
+        ]
+        self.conn.executemany(
+            """INSERT INTO room_drops (room_id, entity_id, item_type, x, y)
+               VALUES (?, ?, ?, ?, ?)""",
             rows,
         )
         self.conn.commit()

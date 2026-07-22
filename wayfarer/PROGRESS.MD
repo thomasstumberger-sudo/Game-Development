@@ -3236,6 +3236,917 @@ data/content addition, zero engine-code changes.
   full `main()` boot, not just mtime); all runs used a scratch DB path via
   a monkeypatched `main.SAVE_PATH`.
 
+### Session 33 — Young Green Dragon (poison gas breath), completing CotW's actual four-color dragon set
+
+User-driven request: "look up the game Castle of the Winds and continue
+development." Sessions 22/31/32 built three of what the prior session's
+own Known Limitations note assumed was a fire/cold/lightning/**acid**
+elemental quartet ("`'lightning' and 'acid' are still just names nothing
+uses yet`"). This session researched that assumption directly before
+building anything and found it was wrong: Wikibooks' Castle of the Winds
+monster reference states the game's actual four dragon colors and breaths
+are "Red (breathe fire), Blue (breathe lightning), White (breathe cold),
+Green (breathe poison gas)" — there is no acid-breathing dragon in CotW.
+A separate AI-summarized web search had suggested acid as lightning's
+"opposing element," but that claim wasn't traceable to a primary CotW
+source and contradicts the Wikibooks bestiary, so it was discarded in
+favor of the sourced material. The real next dragon to complete the set is
+**Green, breathing poison gas** — and this engine already has a fully
+generic poison mechanism (session 21's Viper `poison_chance`/
+`poison_damage`/`poison_duration`), so this shipped as a second pure-data
+addition, not a new elemental `damage_type` the way fire/cold/lightning
+each needed.
+
+- **`data/enemies.json` gained `young_green_dragon`** — hp 44/attack
+  7/defense 3/xp_reward 40/gold_reward [15,25], in line with its three
+  mirror dragons (no power skew intended between any of the four). No
+  `damage_type` override (stays the "physical" default — its claws/bite,
+  not its breath) and no `resist_elements` (poison is never inflicted
+  *onto* an enemy anywhere in this engine, so there's nothing for it to
+  resist). Its breath weapon is instead `poison_chance: 0.6`,
+  `poison_damage: 4`, `poison_duration: 8` — reusing `_maybe_poison` in
+  `engine/combat.py` exactly as the Viper does, just rolled into a
+  much more dangerous bite/breath than the Viper's 0.5/2/6 to match a
+  mini-boss dragon rather than an early nuisance snake. **Zero engine
+  changes needed** — confirmed by re-reading `combat._maybe_poison` and
+  `procgen.scale_stats_for_level` first, same discipline sessions 22/31/32
+  applied before touching data.
+- **`engine/procgen.py`'s `ENEMY_WEIGHTS_BY_TIER`**: `young_green_dragon`
+  joins tier 2 (deepest) at the same weight (1) as its three siblings —
+  identical rare mini-boss treatment, absent from tiers 0/1.
+- **Sprite**: `AssetManager.make_placeholder("enemy_green_dragon", (20,
+  150, 40), shape="triangle")` — same triangle silhouette as the other
+  three dragons, a saturated forest/toxin green chosen to read as
+  distinct from both the Slime's muted green circle and the Viper's olive
+  diamond (different shapes anyway, but a different color family too).
+- Verified headless (SDL dummy driver, scratch DB via monkeypatched
+  `main.SAVE_PATH`), 22 checks: the enemy def resolves with hp in the
+  sibling dragons' range, no `damage_type`/`resist_elements` override, and
+  a poison bite/breath strictly stronger than the Viper's on all three
+  poison fields; `young_green_dragon` is present in tier 2 only at the
+  same weight as its three siblings, and sampling 400 rolls at tier 2
+  confirms it actually spawns; a live `resolve_bump_attack` loop confirms
+  the dragon's bite can poison the player and, when it does, applies
+  exactly *its own* `poison_damage`/`poison_duration` (not the Viper's); a
+  regression check confirms the Blue Dragon is still immune to its own
+  Lightning Bolt (no accidental interaction between this session's poison
+  addition and the existing elemental-immunity system); a full game boot
+  produces zero `[ASSET WARNING]` output, the new sprite resolves at
+  16x16, and is pixel-distinct from both the Slime's and Viper's sprite
+  fill colors; `scale_stats_for_level` scales hp upward and — confirmed by
+  actually reading the function rather than assuming — also scales
+  `poison_damage` deeper the same way it already does for the Viper
+  (session 21's existing generic behavior, inherited for free), while
+  `poison_chance`/`poison_duration` correctly pass through unscaled (no
+  such branch exists for them); a full `main()` boot through real asset
+  loading with a live `young_green_dragon` `Enemy` placed next to the
+  player renders without exception. **Also visually inspected** via a
+  rendered screenshot: the green triangle reads as clearly distinct from
+  the player, both NPCs, and (by construction) the other dragon colors.
+  Real `save.db` confirmed byte-identical (md5 checked before and after),
+  all runs used a scratch DB path via a monkeypatched `main.SAVE_PATH`.
+
+### Session 34 — Resist Fire/Cold/Lightning spells (Castle of the Winds' per-element resistance magic)
+
+User-driven request: "look up the game Castle of the Winds and continue
+development." Researched the real game's spell roster directly (Wikibooks'
+Castle of the Winds/Magic page, plus a corroborating fan spell list) rather
+than assuming, same discipline session 33 applied to the dragon set. That
+page groups CotW's defense spells as Shield (+armor) and **Resist Cold /
+Resist Fire / Resist Lightning, each "temporarily decreasing by half the
+damage the player sustains from these elemental attacks"** — a real,
+sourced spell trio this engine had never built, and a direct fix for a
+limitation this file has flagged since session 22: `resist_elemental` (the
+Amulet-of-Resistance stat) is "one flat percentage generic across every
+element... not per-element the way CotW's own separate Resist Fire/Resist
+Cold/Resist Lightning items are." Confirmed from the source that in the
+real game these are temporary *spells*, not permanent equipment — so the
+fix is new magic, not a rework of `equipment.py`'s existing amulet stat.
+
+- **`data/spells.json`** gained three new entries, continuing the existing
+  unlock-level ladder (16/17/18, book costs 335/355/375, mirroring session
+  27-33's pacing): `resist_fire`, `resist_cold`, `resist_lightning`. Each is
+  `effect: "resist_element"`, `damage_type` matching its element, `value: 50`
+  (the sourced "halves damage" -- 50% mitigation) and `duration: 20`. New
+  `category: "defense"` value, same field Stone Skin/Levitation already use,
+  no schema change needed.
+- **`engine/entity.py`**: `Player` gained three bonus/turns field pairs
+  (`temp_resist_fire_bonus/turns`, `temp_resist_cold_bonus/turns`,
+  `temp_resist_lightning_bonus/turns`) -- the same countdown-buff shape
+  `buff_defense_bonus/turns` (Stone Skin) already established, just one pair
+  per element since more than one resist spell can be active at once (e.g.
+  before a mixed dragon fight). New `Player.temp_resist_bonus(damage_type)`
+  helper looks up the right pair (0 for `"physical"` or an element with no
+  matching spell).
+- **`engine/combat.py`**'s `_enemy_damage_to_player` now adds
+  `player.temp_resist_bonus(enemy.damage_type)` on top of the existing flat
+  `resist_elemental` before applying `RESIST_CAP` (90) -- the two stack
+  additively (a +20% amulet plus an active Resist Fire mitigates 70%, not
+  just 50%), matching how a player would expect two different sources of
+  the same kind of protection to combine, and confirmed the 90% ceiling
+  still holds even when the stacked total would exceed it. Shared by both
+  `resolve_bump_attack`'s counter-hit and `enemy_attack`'s initiated hit
+  (same function both already called), so a dragon's melee bite is
+  mitigated identically regardless of which path landed it.
+- **`main.py`**: new `elif effect == "resist_element":` branch in
+  `cast_selected_spell` (same explicit per-element `if/elif` shape
+  `Player.temp_resist_bonus` already uses, not a generic `setattr` --
+  matches this file's existing preference for explicit branches over
+  dynamic attribute dispatch even though the data would allow the shorter
+  form). `_advance_turn` ticks all three countdown pairs down and zeroes
+  the bonus at 0, same pattern as `buff_defense_turns`/`levitation_turns`.
+  Casting the same resist spell again refreshes rather than stacks (verified
+  below) -- overwrite semantics, same as Stone Skin. Three new HUD colors
+  (`COLOR_RESIST_FIRE`/`COLD`/`LIGHTNING`, picked to echo the matching
+  dragon sprites' fill colors from sessions 22/31/32) and three new status-row
+  entries next to the existing Poisoned/Drained/Levitating indicators,
+  each only shown while its `_turns > 0`.
+- **`engine/save.py`**: six new `INTEGER DEFAULT 0` columns (the three
+  bonus/turns pairs), same `ALTER TABLE ... ADD COLUMN` migration pattern
+  every prior session's additions used -- threaded through `load_game`'s
+  positional `SELECT`/row-index unpacking and `save_game`'s `INSERT ...
+  ON CONFLICT DO UPDATE`, both carefully re-indexed since these are
+  positional columns (the six new ones sit between `levitation_turns` and
+  the `equip_<slot>` columns, so every equipment-slot row index shifted by
+  6 and was updated accordingly).
+- Verified headless (SDL dummy driver, scratch DB via monkeypatched
+  `main.SAVE_PATH`), 31 checks: all three spells load with the right
+  `effect`/`damage_type` and the unlock-level ladder (now 18 entries) stays
+  strictly increasing; fresh `Player` defaults are inactive and
+  `temp_resist_bonus` returns 0 for every element; a fire hit is mitigated
+  to exactly half once `temp_resist_fire_bonus` is set and unaffected for
+  cold (no cross-element bleed); the flat `resist_elemental` and an active
+  Resist Fire stack additively (20% + 50% -> 30% damage taken, not 50%);
+  `RESIST_CAP` still holds when the stacked total would otherwise exceed
+  90%; a real `cast_selected_spell()` call against a level-20 character
+  (all three spells known) sets the right bonus/turns and deducts the right
+  mana, and the buff correctly ticks down and clears after its duration
+  elapses; recasting refreshes to 50 rather than stacking to 100; a
+  save/reload round trip preserves all three elements' bonus/turns
+  mid-buff; the bookshop panel (17 not-yet-known spells at a fresh
+  character) and the spellbook panel (18 known spells for the level-20 test
+  character) both render without exception or clipping -- the spellbook's
+  session-29 scroll fix and the bookshop's uncapped-height layout both have
+  comfortable headroom left at this count (410px needed of 714px available
+  window height); the HUD renders correctly with all three resist buffs
+  active simultaneously. **Also visually inspected** via a rendered
+  screenshot: "Resist Fire (5)", "Resist Cold (7)", "Resist Lightning (3)"
+  render left-to-right on the status row in three visually distinct
+  colors, no overlap or clipping against the existing HP/MP/level rows. A
+  full `main()` boot through the real title menu to a `QUIT` exits cleanly.
+  Real `save.db` confirmed byte-identical (md5 checked before and after),
+  all runs used a scratch DB path.
+
+### Session 35 — Dark Wraith and Abyss Wraith (rounding out CotW's Wraith family)
+
+User-driven request: "look up the game Castle of the Winds and continue
+development." Picked directly off this file's own Known Limitations note
+(session 24's Wraith entry): "only one Wraith variant exists (CotW has
+Pale/Dark/Abyss tiers plus the separate stat-draining Wight)." Researched
+CotW's actual undead roster before building anything (Wikibooks' *Castle of
+the Winds/Monsters* page plus a corroborating search) rather than assuming —
+confirmed the real game has **Wraith, Pale Wraith, Dark Wraith, and Abyss
+Wraith**, all of which "steal stats, mana, and health," with Dark/Pale/Abyss
+specifically noted to "drain intelligence and mana irreversibly" (Wraith and
+Pale Wraith both rate 4/10 difficulty, Dark Wraith 5/10, Abyss Wraith
+uncosted on the page but flagged as possibly boss-tier). The existing
+`wraith` entry (session 24) already fills the difficulty-4 role Wraith/Pale
+Wraith occupy, so this session added the two tiers above it — **Dark
+Wraith** and **Abyss Wraith** — rather than a fourth, redundant weak-tier
+entry; a distinct Pale Wraith with no mechanical difference from the
+existing Wraith wasn't worth adding. The stat-draining Wight family
+(Tunnel/Barrow/Castle Wight, draining STR/DEX/CON) is still out of scope —
+this engine has no such attributes to drain, same limitation session 24
+already flagged and still true.
+
+- **`data/enemies.json`** gained `dark_wraith` (hp 22/atk 3/def 2,
+  `drain_chance` 0.4, `drain_amount` 5) and `abyss_wraith` (hp 32/atk 5/def
+  3, `drain_chance` 0.5, `drain_amount` 7) — both `phases_walls: true`, same
+  as the base Wraith, and both use the exact same `drain_chance`/
+  `drain_amount` fields `combat._maybe_drain` (session 24) already reads, so
+  **zero changes to `engine/combat.py` or `engine/entity.py`** were needed;
+  the drain mechanism was already generic across any enemy def with those
+  keys, this just added two more.
+- **`engine/procgen.py`**: Dark Wraith joins `ENEMY_WEIGHTS_BY_TIER`'s
+  mid tier at weight 1 (rarer than the base Wraith's weight 2, matching its
+  one-step-up difficulty rating) and the deep tier at weight 1 alongside it;
+  Abyss Wraith is deep-tier only, weight 1, grouped with the mini-boss
+  dragons (session 22/31/32/33) rather than the regular roster — the
+  Wikibooks page's note that wraiths might belong in a "Bosses" category was
+  the basis for that call. `scale_stats_for_level`'s existing
+  `drain_amount` scaling branch (session 24) needed no changes — it already
+  applies to any enemy def carrying that key, verified directly against
+  both new types.
+- **Sprites**: no incorporeal/ghost art exists in the character sheet (same
+  gap session 24 hit for the base Wraith), so both reuse the exact
+  `make_tint_variant`-over-`enemy_skeleton` trick from session 24, just with
+  progressively darker tints — Dark Wraith a deep violet
+  (`(80, 60, 130)`, strength 0.9), Abyss Wraith a near-black void indigo
+  (`(35, 20, 55)`, strength 0.95) — so the three-tier family reads as a
+  visual escalation (pale blue-violet → deep violet → near-black) rather
+  than three unrelated colors on the same silhouette. `BLEND_RGB_MULT` can
+  only darken (session 31 already hit and worked around this limit for the
+  White Dragon), which is exactly what a "deeper/darker" progression needs,
+  so no repeat of that workaround was necessary here.
+- Verified headless (SDL dummy driver, scratch DB, 20 checks): both new
+  defs load with strictly increasing hp/attack/drain_amount across
+  Wraith → Dark Wraith → Abyss Wraith; Dark Wraith appears in the mid tier
+  but not the shallow tier, Abyss Wraith appears in the deep tier only;
+  `scale_stats_for_level` scales both new types' `drain_amount` upward at
+  level 5; sampling 60 deep-tier generated rooms confirms both actually
+  appear (21 Dark Wraith, 19 Abyss Wraith, 47 base Wraith in the sample);
+  `generate_room` determinism is unaffected; a full asset load produces
+  zero `[ASSET WARNING]`s and both new sprites resolve at 16x16; a
+  brightness comparison of the three tint variants confirms the intended
+  darkening progression holds pixel-for-pixel, not just by eye; a live
+  `Enemy("dark_wraith", ...)` instance drains a test `Player`'s mana via the
+  existing, unmodified `combat._maybe_drain` path. **Also visually
+  inspected** via a rendered screenshot comparing all three Wraith tiers
+  plus the base Skeleton side by side against the actual dungeon floor
+  tile (not just a black background) — confirmed all three stay visually
+  distinct from each other and readable against real floor art, including
+  the near-black Abyss Wraith. A full `main()` boot through the real title
+  menu to a `QUIT` exits cleanly via `sys.exit()`. Real `save.db` was
+  read (md5'd) before this session's changes and confirmed the later
+  difference in its hash/mtime came from the user's own play session in
+  between, not from any script here — every verification script in this
+  session set `main.SAVE_PATH` to a scratch path before touching a
+  `SaveManager`/`Game`.
+
+### Session 36 — Heal Medium/Major Wounds: completing CotW's three-tier healing spell ladder
+
+User-driven request: "look up the game Castle of the Winds and continue
+development." Researched CotW's actual healing spells directly (Wikibooks'
+*Castle of the Winds/Magic* page) rather than assuming, same discipline
+sessions 33-35 applied. That page states the healing category is **Heal
+Minor Wounds, Heal Medium Wounds, Heal Major Wounds**, respectively
+restoring "20%, 40%, and 60% of the user's max health or 8/16/24 hp,
+whichever is higher" — a real, sourced three-tier ladder this engine only
+had the bottom rung of (`minor_heal`, added session 12, was a flat 12hp with
+no percent component and no medium/major siblings).
+
+- **`data/spells.json`**: `minor_heal` renamed to its exact CotW name "Heal
+  Minor Wounds" and retrofitted with a new `"percent": 0.2` field (value
+  dropped from its old made-up 12 to the sourced flat floor, 8) rather than
+  left as a flat number now known to be wrong. Two new entries continue the
+  existing unlock-level ladder at 19/20 (book costs 395/415, confirmed to
+  keep following the exact `15 + unlock_level*20` formula every prior
+  session's entries have used without exception since it was first noticed
+  in session 32): `heal_medium` ("Heal Medium Wounds", percent 0.4, value
+  16, mana 7) and `heal_major` ("Heal Major Wounds", percent 0.6, value 24,
+  mana 9).
+- **`main.py`'s `cast_selected_spell`**: the `effect == "heal"` branch now
+  computes `max(value, round(max_hp * percent))` instead of just `value` —
+  the sourced "whichever is higher" rule, applied generically so all three
+  tiers (and any future heal spell with a `percent` field) share one code
+  path. A spell with no `percent` key falls back to the old flat-value
+  behavior (none currently exist, but nothing requires every heal spell to
+  set one). Turned out to land cleanly on this engine's own leveling curve
+  without further tuning: `grant_xp` adds a flat 10 max_hp per level, so
+  Heal Minor Wounds' 20%-vs-8-flat crossover falls almost exactly at its own
+  level-2 unlock point (max_hp 40 at level 2, 20% = 8) — the percent and
+  flat floor agree at the moment the spell is learned and the percent
+  gradually overtakes it every level after, rather than either amount being
+  irrelevant at some point in the level range.
+- **No other engine changes needed** — `_known_spell_list()`, the
+  Spellbook/Bookshop panels, and the Scholar NPC's catalog are all already
+  generic over `data/spells.json`'s contents (confirmed by re-reading them
+  first, same discipline sessions 22 onward have applied before touching
+  data), so the two new spells and the renamed existing one just appeared
+  correctly with zero UI code touched.
+- Verified headless (SDL dummy driver, scratch DB via monkeypatched
+  `main.SAVE_PATH`), 20 checks: 20 total spells with a strictly increasing
+  unlock-level ladder and the book-cost formula holding for all of them;
+  `minor_heal`/`heal_medium`/`heal_major` each resolve with the right
+  percent/value/unlock_level; a live `cast_selected_spell()` call against a
+  level-20 test character (max_hp 220) confirms all three tiers heal exactly
+  the percent-based amount (44/88/132) since it exceeds each spell's flat
+  floor at that max_hp; a separate low-max_hp (30) character confirms
+  `minor_heal`'s flat floor (8) wins when the percent (6) would be lower;
+  healing never overheals past `max_hp`; a real cast deducts exactly the
+  right mana cost; an insufficient-mana attempt is a no-op (no heal, no
+  mana spent); the Scholar's bookshop catalog lists both new spells,
+  correctly priced at 395g/415g as the last two rows for a fresh
+  not-yet-learned character; both the 20-entry Spellbook panel (cursor on
+  the new last row, "Heal Major Wounds") and the 19-not-yet-known-spell
+  Bookshop panel render without exception or clipping; a full `main()` boot
+  through the real title menu to a `QUIT` exits cleanly. **Also visually
+  inspected** via rendered screenshots: the Spellbook scrolled to its new
+  bottom entry (Heal Major Wounds selected, description fully visible, no
+  clipping against the existing 18-entry layout's headroom) and the
+  Bookshop's 19-row not-yet-known catalog with "Heal Medium Wounds (395g)"
+  and "Heal Major Wounds (415g)" as the correctly priced final two rows.
+  Real `save.db` confirmed byte-identical (md5 checked before and after);
+  all runs used a scratch DB path via a monkeypatched `main.SAVE_PATH`.
+
+### Session 37 — Barrow/Tunnel/Castle Wight: Castle of the Winds' second undead-drain family
+
+User-driven request: "look up the game Castle of the Winds and continue
+development." Researched CotW's actual monster roster directly (StrategyWiki's
+*Castle of the Winds/Monsters* page, Wikibooks' bestiary and battle-mechanics
+pages) rather than assuming, same discipline sessions 22 onward have applied.
+Found the Wight family named but explicitly flagged unbuilt in session 35's
+own notes ("this engine has no STR/DEX/INT/CON attributes to drain the way
+CotW's separate stat-draining Wight family does") — confirmed via research
+that Wights are real, distinct from Wraiths (three tiers, Barrow/Tunnel/
+Castle, weakest to strongest) and drain STR/DEX/CON permanently rather than
+Wraiths' intelligence, cured only at a Temple or with a potion in the source
+game.
+
+- **Adaptation, not a Wraith reskin.** This engine has no separate STR/DEX/
+  CON/INT attributes (session 35 already noted this gap and left it open).
+  Rather than build a full attribute system just for one monster family, one
+  representative existing stat stands in for the drain — `attack` — the same
+  scoping call session 24 already made for the Wraith (mana standing in for
+  intelligence). This is a genuinely separate resource from the Wraith's
+  mana drain, not the same mechanic reskinned: a character can be drained of
+  mana *and* attack independently, cured independently, by two different
+  undead families.
+- **`engine/entity.py`**: `Enemy.drain_stat` (new, default `"mana"`) picks
+  which player stat a `drain_chance`/`drain_amount` touch lowers — every
+  existing drain-capable enemy (the Wraith family) is unaffected since it
+  defaults to the pre-existing mana behavior. `Player.attack_drain` (new,
+  mirrors `mana_drain`'s persistence) is a running total of how much has
+  been drained, restored by the Healer for gold. **Different reversal
+  mechanism than mana_drain's, deliberately**: mana_drain works by lowering
+  a *ceiling* (`effective_max_mana()`) that every mana-spending/refilling
+  path already caps against, because mana has a natural current/max split to
+  layer a ceiling onto. Attack doesn't — it's a single number every combat
+  formula reads directly — so attack_drain instead directly mutates
+  `player.attack` at drain time and reverses it by adding the total back,
+  the exact "mutate the base stat, keep a running total to reverse later"
+  pattern equipment's own bonuses already use (`equip()`/`unequip()` in
+  `engine/equipment.py`, session 8). Floored so a drain can never take
+  `attack` below 1 (no permanently-disarmed player).
+- **`engine/combat.py`**: `_maybe_drain` (session 24) now branches on
+  `enemy.drain_stat` — the existing mana path is untouched (verified
+  directly: a Wraith still only ever drains mana, never attack), the new
+  attack path applies the same `resist_undead` mitigation and floor, with
+  its own log line ("saps your strength" vs. "drains your mana away").
+  `procgen.scale_stats_for_level`'s existing `drain_amount` depth-scaling
+  needed **zero changes** — it was already generic over which stat the
+  amount eventually lowers.
+- **Three new enemies** (`data/enemies.json`): Barrow Wight (hp 24/atk 5,
+  weakest), Tunnel Wight (hp 34/atk 7), Castle Wight (hp 46/atk 10,
+  strongest) — names and relative ordering sourced directly from the
+  research above, not invented. None phase through walls (`phases_walls`
+  unset) — confirmed the source game's phasing undead are Wraiths/ghosts
+  specifically, not Wights, so this family is a real ground-bound melee
+  threat rather than a second phasing enemy. Placed in
+  `procgen.ENEMY_WEIGHTS_BY_TIER`: Barrow Wight joins the Wraith at mid-tier,
+  Tunnel Wight becomes more common at the deepest tier, Castle Wight is
+  deep-tier-only at the same mini-boss-rare weight as Abyss Wraith and the
+  four dragon lines.
+- **Sprites**: no ghoul/wight-shaped art in the character sheet (same gap
+  session 24 hit for the Wraith), so all three reuse
+  `make_tint_variant("enemy_skeleton", ...)` like the Wraith family did —
+  but with an earthy brown/grey/stone palette instead of the Wraiths'
+  blue-violet one, so the two undead-drain families read as visually
+  distinct at a glance despite sharing a base silhouette. Escalating
+  darkness by tier, same "deeper → darker" progression sessions 24/35 used.
+- **UI**: HUD status row gained "Weakened (-N ATK)" (new `COLOR_WEAKEN`,
+  earthy to match the sprite tint) alongside the existing "Drained (-N MP)",
+  both no-countdown (neither wears off on its own). The Healer panel's row
+  list (`_healer_rows`/`activate_healer_row`) gained a third conditional row,
+  "Restore Sapped Strength", appearing only once `attack_drain > 0`, same
+  per-point gold pricing (`DRAIN_CURE_COST_PER_POINT`) as Restore Drained
+  Mana.
+- **`engine/save.py`**: `attack_drain INTEGER DEFAULT 0` column, same
+  `ALTER TABLE ADD COLUMN` migration pattern as every prior session's
+  additions, threaded through `load_game`/`save_game` alongside the existing
+  `mana_drain`/`resist_undead` pair.
+- Verified headless (SDL dummy driver, scratch DB, monkeypatched
+  `main.SAVE_PATH`), 53 checks: all three Wights defined with `drain_stat:
+  "attack"` and no `phases_walls`; strictly increasing hp/attack/xp across
+  the tier; every enemy type referenced anywhere in
+  `ENEMY_WEIGHTS_BY_TIER` actually exists in `enemies.json` (all three
+  tiers checked); Castle Wight absent from tiers 0/1 and present in tier 2;
+  Barrow Wight absent from tier 0; a fresh player has `attack_drain == 0`
+  and unmodified `attack`; a forced Barrow Wight touch reduces `attack` by
+  the exact drain amount and records it in `attack_drain`, with the
+  expected log line; repeated touches never drain `attack` below 1;
+  `resist_undead` mitigates the attack-drain amount by the same percentage
+  formula as mana drain; a Wraith touch (regression) still only affects
+  `mana_drain`, never `attack_drain`; `scale_stats_for_level` scales a
+  Wight's `drain_amount` with dungeon level and preserves `drain_stat`
+  across the copy; a save→load round trip preserves both the reduced
+  `attack` value and the `attack_drain` counter exactly; a full `main()`
+  boot through the real title menu to a `QUIT` posted on a real short timer
+  (session 8's own workaround for a pre-queued QUIT getting dropped by
+  `run_menu`'s event loop) exits cleanly. **Also visually inspected** via
+  rendered screenshots: all three new sprites next to the full Wraith
+  family (confirmed visually distinct earthy-vs-violet families, correct
+  per-tier darkness escalation); the HUD showing "Weakened (-4 ATK)"
+  alongside "Poisoned" with no overlap/clipping; the Healer panel with all
+  three rows visible at once (Rest, Restore Drained Mana, Restore Sapped
+  Strength) at the correct dynamic panel height. Confirmed **zero**
+  `[ASSET WARNING]` output during a full asset load. Real `save.db`
+  confirmed byte-identical (md5 checked before and after); all runs used a
+  scratch DB path.
+
+### Session 38 — Light and Clairvoyance: instant map-reveal magic (Castle of the Winds' Divination/Miscellaneous spells)
+
+User-driven request: "look up the game Castle of the Winds and continue
+development." Researched CotW's actual spell roster directly (Wikibooks'
+*Castle of the Winds/Magic* page) rather than assuming, same discipline
+sessions 22 onward have applied. Confirmed the real game's full spell list
+against `data/spells.json`'s existing 20 entries and found two sourced,
+unbuilt spells whose real-game effect ("reveal an area instantly") maps
+cleanly onto machinery this engine already has and had never pointed magic
+at: **Light** ("reveals a room... including any monsters or objects that
+may be within it") and **Clairvoyance** ("fills in the player's map of a
+10x10 area anywhere on the floor, including any traps and secret doors").
+Both are adaptations, not literal ports — Light's real-game "reveal a room"
+maps onto session 10/11's per-region fog of war (a mechanic CotW itself
+doesn't have, since Wayfarer's rooms are much bigger than the original
+game's), and Clairvoyance's "10x10 tile area" maps onto session 8's
+room-grid automap (Wayfarer's rooms *are* CotW's map cells, just far
+larger) rather than a literal tile count.
+
+- **`data/spells.json`** gained `light` (effect `reveal_room`, unlock level
+  21, mana 5, no duration/value — an instant one-shot) and `clairvoyance`
+  (effect `reveal_map`, unlock level 22, mana 10, new `radius: 2` field).
+  Both continue the existing unlock-level ladder and the `15 +
+  unlock_level*20` book-cost formula every prior session's additions have
+  followed without exception (435g/455g). 22 spells total now (was 20 as of
+  session 36).
+- **`main.py`'s `cast_selected_spell`** gained two new effect branches:
+  - `reveal_room` unions every region id in `self.room.regions` into
+    `self.revealed_regions` at once (vs. the existing
+    `_reveal_region_at_player`, which only ever adds the single region the
+    player is physically standing in). Persists through the exact same
+    `_current_room_flags()`/`region_seen` path every other region reveal
+    already uses — no new persistence code. A room with no `regions` (every
+    hand-authored room except the Crypt) is a clean no-op with its own
+    message rather than a crash on an empty set.
+  - `reveal_map` marks every `(gx, gy)` within `radius` (2, so a 5x5 block
+    of rooms) of the player's current Depths room as discovered, reusing
+    `self.discovered`/`save.mark_discovered` exactly as `load_room` already
+    does on a physical first visit — so the journal's automap and its
+    `procgen.room_doors()`-drawn connections (a pure function of
+    coordinates, session 8) render identically for a room revealed by magic
+    as one actually walked into. Written through immediately, matching
+    session 8's "discovered_rooms is never batched" discipline. Only
+    meaningful in the Depths (parses `current_room_id`'s `proc:` prefix);
+    a clean no-op message in town, where there's no room-grid automap at
+    all (see Known Limitations).
+- Both effects are idempotent and reported as such: recasting either over
+  ground already fully revealed/mapped gives a distinct "nothing left to
+  reveal here" / "already mapped everything nearby" message rather than
+  silently no-opping or re-showing the success text.
+- Verified headless (SDL dummy driver, scratch DB via monkeypatched
+  `main.SAVE_PATH`), 22 checks: 22 total spells with the unlock-level ladder
+  still strictly increasing and the book-cost formula holding for both new
+  entries; a live `cast_selected_spell()` call in a real generated Depths
+  room reveals every region in that room's `regions` list in one cast
+  (confirmed against the full region-id set, not just "some got added");
+  recasting gives the no-more-secrets message; casting Light in the hub
+  (`regions == []`) gives the nothing-to-reveal message without touching
+  `revealed_regions`; casting Clairvoyance in town gives the
+  no-dungeon-floor message; casting it in the Depths marks the exact
+  expected 5x5 `(gx, gy)` block discovered both in `self.discovered` and
+  (immediately, no save/quit needed) in the DB via
+  `save.get_discovered_rooms`; recasting over the same area gives the
+  already-mapped message; mana is deducted by exactly each spell's cost; a
+  save→reload round trip preserves both the revealed regions and the
+  discovered rooms; the Spellbook panel renders correctly at the new full
+  22-entry count with the cursor on the new last row (Clairvoyance), no
+  clipping. **Also visually inspected** via rendered screenshots: the
+  Spellbook scrolled to its new bottom entries; a Depths room's fog fully
+  black before Light and fully lit (revealing enemies, loot, and a chest
+  previously hidden in unexplored regions) immediately after; the journal's
+  Dungeon Map panel empty before Clairvoyance and showing a filled-in 5x5
+  block of connected rooms centered on the player (yellow marker) 
+  immediately after, with no travel in between. A full `main()` boot
+  through the real title menu to a `QUIT` posted on a real 1-second timer
+  exits cleanly via `sys.exit()`. Real `save.db` confirmed byte-identical
+  (md5 checked before and after); all runs used a scratch DB path via a
+  monkeypatched `main.SAVE_PATH`.
+
+### Session 39 — spellbooks as dungeon loot (Castle of the Winds' other spellbook source)
+
+User-driven request: "look up the game Castle of the Winds and continue
+development." Researched CotW directly (Wikibooks' *Items* page and
+supporting summaries) rather than assuming, same discipline recent sessions
+have applied: confirmed the source game's spellbooks "each contain a spell
+that the player can learn" and are found or purchased, not shop-only — a
+gap `engine/spells.py`'s own docstring and PROGRESS.MD's Known Limitations
+had flagged since session 19 ("Still true: spellbooks are bought, never
+found as dungeon loot... would ride the same per-instance-drop machinery
+equipment already uses if ever wanted"). That's exactly what this session
+built.
+
+- **`engine/procgen.py`** gained `SPELL_IDS_BY_BAND`, a new parallel table
+  (same "procgen trusts a key string exists, main.py resolves it against
+  the real defs" split as `EQUIPMENT_BASE_TYPES_BY_SLOT`) splitting all 22
+  `data/spells.json` ids into three unlock-level-ordered bands (7/8/7). A
+  new `"spellbook"` family joins `ITEM_WEIGHTS_BY_TIER` at tier 1/2 only
+  (never tier 0, mirroring `"equipment"`'s own tier-0 exclusion) at a flat
+  weight of 1 rather than scaling to 2 like equipment does at tier 2 — a
+  permanent spell unlock is a bigger power spike than a gear enchant range,
+  so it stays rarer-growing by design. Floor loot rolls a `spellbook_drops`
+  entry (`spell_id` chosen from the depth-banded table via the same
+  magnitude roll gear tiers already use); vault chests gained a parallel
+  `chest["spellbook"]` branch alongside the existing `chest["equipment"]`
+  one. Procgen is a pure function of `(seed, level, gx, gy, epoch)` with no
+  player state, so — unlike CotW's own text implying a duplicate is never
+  offered — a roll *can* land on a spell the player already knows; that's
+  handled at pickup time instead (see below), not by making generation
+  player-aware.
+- **`engine/entity.py`** gained `SpellbookDrop`, a new floor-entity class
+  alongside `EquipmentDrop` — same reasoning (`ItemPickup`'s stackable
+  `data/items.json` path doesn't fit something that needs a live
+  `known_spells` check on pickup instead of an inventory slot).
+- **`engine/room.py`** gained `spellbook_drop_templates` (from
+  `data.get("spellbook_drops", [])`), the same structural-template-only
+  split `equipment_drop_templates` already has.
+- **`main.py`**:
+  - `load_room` fetches `spellbook_drop_templates` from `generate_room`'s
+    population (Depths) or `self.room` (cached structure) exactly like the
+    equipment-drop fetch beside it, and folds `SpellbookDrop` instances into
+    `self.items` — no new collision-detection code needed, since
+    `Player.try_move`'s item-pickup loop is already generic over any
+    `self.items` entity by position.
+  - New `Game._spell_def(spell_id)` helper (also adopted by the pre-existing
+    `buy_spellbook`, which had the same `next(s for s in self.spell_defs...)`
+    lookup inline) backs two new branches in `handle_move`: a
+    `SpellbookDrop` pickup and a `chest["spellbook"]` open. Both add the
+    spell straight to `known_spells` — unknown case — or, if the roll
+    duplicated an already-known spell, refund half its `book_cost` in gold
+    rather than silently wasting the drop or crashing on a no-op. Both play
+    the existing `"pickup"` sfx and post a distinct message for each case.
+  - `_load_assets` registers a new `item_spellbook` placeholder sprite (see
+    below) — one fixed sprite for every spell's book, matching how a single
+    `chest_closed`/`chest_open` graphic already stands in for every chest's
+    contents regardless of what's inside.
+- **`engine/assets.py`**: `AssetManager.make_placeholder` gained a new
+  `"book"` shape — a closed-book silhouette (rounded rect + a spine line
+  offset from center) distinct from the plain-square switches use, since
+  neither sprite sheet has any readable/tome art (session 9 already
+  confirmed the item sheet is potions/gear/coins only). Colored violet
+  (`(150, 90, 200)`), distinct from every other item tint used so far
+  (mana potions are blue, gold/potions use their own family colors).
+- Verified headless (SDL dummy driver, scratch DB via monkeypatched
+  `main.SAVE_PATH`), 17 checks: `SPELL_IDS_BY_BAND` covers exactly the 22
+  real spell ids with no duplicates; scanning `generate_room` across 200
+  seeds × multiple levels/coordinates finds both floor spellbook drops and
+  chest spellbook contents; a tier-0 room (level 1, depth ≤ 1) never rolls
+  one across 300 seeds, matching equipment's own tier-0 exclusion; against
+  the actual save's real dungeon seed, walking onto a live floor spellbook
+  for an unknown spell adds it to `known_spells` immediately and removes the
+  entity from the room; force-placing a second spellbook for an
+  already-known spell refunds gold and posts the "already know" message
+  instead of erroring; opening a live chest with a `spellbook` field teaches
+  its spell and marks the chest opened; a save→reload round trip preserves
+  `known_spells` gained either way; the `item_spellbook` sprite resolves to
+  a real `Surface`. **Also visually inspected** via rendered screenshots: a
+  floor spellbook's violet book-with-spine placeholder next to the switch
+  placeholder it sits near (confirming the two read as distinct shapes, not
+  just distinct colors); the pickup message ("You study a found spellbook
+  and learn Resist Fire!"); the Spellbook panel afterward showing both Spark
+  and the newly learned Resist Fire with no clipping. A full `main()` boot
+  through the real title menu to a `QUIT` posted on a real 1-second timer
+  exits cleanly via `sys.exit()`. Real `save.db` confirmed byte-identical
+  (md5 checked before and after) across every run, all of which used a
+  scratch DB path via a monkeypatched `main.SAVE_PATH`.
+
+### Session 40 — Sleep Monster spell (Castle of the Winds' single-target crowd control)
+
+User-driven request: "look up the game Castle of the Winds and continue
+development." Researched CotW directly (Wikibooks' *Magic* page) rather than
+guessing: confirmed the real game has three monster-affecting spells this
+engine had none of — Sleep Monster ("puts one target monster to sleep. Some
+monsters and all bosses are immune and all will wake in about ten minutes or
+when attacked"), Slow Monster (halves speed, stacks further per re-cast), and
+Transmogrify Monster (randomizes the target's species). Scoped this session
+to Sleep Monster alone — one coherent feature, not all three — since it
+maps cleanly onto this engine's existing single-target bolt-spell aiming
+with no new targeting code, while Slow's "half speed" has no clean analog in
+a one-action-per-turn AI model (there's no existing notion of a monster
+acting less than once per player turn to halve) and Transmogrify would need
+a live re-roll-into-any-monster-type path nothing here has. Both are left as
+open follow-ons below rather than attempted partially.
+
+- **`engine/entity.py`**: `Enemy` gained `sleep_immune` (from
+  `data/enemies.json`, default `False`) and `sleep_turns` (pure runtime
+  combat state, defaulting to `0` and never read from `stats` — like `hp`
+  itself, it isn't persisted, since Depths enemies already regenerate fresh
+  from their room's epoch on every visit rather than being saved
+  individually; see the Architecture Notes' respawn section). `take_turn`
+  checks `sleep_turns` first: a sleeping enemy neither chases nor wanders,
+  decrementing the counter once (this method is only ever called once per
+  player action, the same cadence every other per-turn countdown in this
+  engine already relies on) and returning a new `{"type": "asleep"}` action
+  that `main.py`'s `_run_enemy_turns` silently ignores, the same way it
+  already ignores `"idle"`/`"moved"`.
+- **`engine/combat.py`**: both `resolve_bump_attack` and `resolve_spell_hit`
+  now clear `sleep_turns` to `0` the moment a sleeping enemy takes any hit,
+  matching CotW's own "wakes... when attacked." `resolve_bump_attack`
+  specifically returns immediately after waking it, *skipping that
+  exchange's retaliation* — the enemy was asleep when the swing landed, so
+  it doesn't get the usual "if it survives, it hits back" counter-hit this
+  turn, giving Sleep Monster real tactical payoff beyond just skipped enemy
+  turns. `resolve_spell_hit` has no retaliation to skip (bolts are already
+  one-sided) but still wakes the target and notes it in the log.
+- **`data/enemies.json`**: `sleep_immune: true` added to exactly the seven
+  enemy types `engine/procgen.py`'s own `ENEMY_WEIGHTS_BY_TIER` comments
+  already single out as weight-1 "mini-boss" rarities — the four young
+  dragons, Dark Wraith, Abyss Wraith, and Castle Wight. This is a deliberate
+  narrow reading of "some monsters and all bosses are immune": only the
+  "all bosses" half is a concrete, sourced fact, so only the enemies this
+  codebase already treats as boss-tier got the flag: no guess was made at
+  which ordinary monsters (if any) CotW's "some monsters" refers to, so
+  every regular enemy (skeleton, slime, cultist, Viper, base Wraith, the two
+  weaker Wights) can be put to sleep.
+- **`data/spells.json`**: new `sleep_monster` entry, unlock level 23
+  (continuing the ladder past session 38's Clairvoyance at 22), `book_cost`
+  475 (continuing the existing +20-per-level pattern), `mana_cost` 8,
+  `effect: "sleep"`, `range: 5` (matching Spark's bolt range), `duration: 20`
+  turns (matching the Resist spells' duration — CotW's own "about ten
+  minutes" has no exact turn-count equivalent in a discrete-step engine, so
+  this borrows an existing precedent rather than inventing a new number).
+- **`main.py`**: new `"sleep"` branch in `cast_selected_spell`, reusing
+  `_bolt_target` verbatim for targeting (same facing/range/line-of-sight
+  aim every bolt spell already uses) but setting `target.sleep_turns`
+  instead of dealing damage; a `sleep_immune` target gets a distinct "is
+  unaffected" message instead. Like every other spell branch, mana is spent
+  and the enemy turn still runs regardless of whether the cast found/
+  affected a target, matching the existing "a bolt spell that finds no
+  target still costs a turn" precedent. Also added a small translucent
+  blue tint drawn over any enemy with `sleep_turns > 0` (`draw`, new
+  `COLOR_SLEEP`) so a sleeping enemy is visually obvious, not just inferable
+  from the log line.
+- A text "Zzz" tag was tried first for the visual and rejected after an
+  actual screenshot caught the problem: at this engine's native 16px tile
+  size (session 9), a label tall enough to read spills upward into the tile
+  above — exactly where an adjacent player sprite sits in the common "walk
+  up and melee the sleeping target" case, since Sleep Monster's whole
+  wake-on-attack mechanic assumes the player closes to melee range. Switched
+  to a same-tile translucent tint, which has no such spillover; re-verified
+  with a second screenshot.
+- Verified headless (SDL dummy driver, scratch DB via monkeypatched
+  `main.SAVE_PATH`): casting Sleep Monster at a facing skeleton sets
+  `sleep_turns` to the spell's duration; `take_turn` on a sleeping enemy
+  returns `"asleep"` and decrements the counter without moving/attacking; a
+  melee hit on a sleeping enemy wakes it, logs "wakes with a start," and
+  skips its retaliation (player HP unchanged); a ranged spell hit on a
+  sleeping enemy also wakes it (no retaliation to skip, but the log/state
+  change both confirmed); casting at a `sleep_immune` Young Red Dragon
+  leaves `sleep_turns` at `0` and posts the "unaffected" message, and the
+  dragon's own subsequent turn still runs normally (mana/turn cost isn't
+  waived by immunity); casting with no enemy in the facing direction posts
+  the existing "finds no target" message; both spellbook-open and
+  inventory-open full `draw()` passes complete with no exception. **Also
+  visually inspected** via rendered screenshots: the initial "Zzz" text
+  attempt's overlap bug (caught only by looking at the image, not the
+  assertions — the same "screenshot catches what asserts miss" pattern
+  sessions 11/13/15/16/39 already documented) and the corrected same-tile
+  tint reading cleanly around a skeleton standing directly below the player
+  with no clipping into neighboring tiles. A full `main()` boot through the
+  real title menu to a `QUIT` posted on a real 1-second timer exits cleanly.
+  **Process note, logged for future sessions**: one earlier ad hoc `main()`
+  smoke-test invocation this session forgot to monkeypatch `SAVE_PATH` before
+  running and hit the real `save.db` directly -- caught immediately via the
+  routine before/after md5 check, which came back different. Inspected the
+  file's actual rows (`player`/`inventory`/`known_spells` tables) before
+  concluding anything: every value was internally consistent with a real,
+  in-progress level-2 character (turn_count 186, gold 33, known spells
+  matching a level-2 unlock set, sensible inventory), not the reset-to-
+  defaults state a `new_game` path would have produced -- so nothing was
+  lost, most likely just a benign SQLite page rewrite from opening/closing a
+  connection against it (the `has_save()` probe and/or one autosave of
+  identical values), not a semantic change. Re-ran the same boot check with
+  `SAVE_PATH` correctly redirected and confirmed byte-identical before/after
+  on the *real* file this second time. Flagged transparently rather than
+  silently moving on, per this project's verification discipline.
+
+### Session 41 — Fireball/Cold Ball/Ball Lightning (Castle of the Winds' area-effect elemental attacks)
+
+User-driven request: "look up the game Castle of the Winds and continue
+development... look at the ball spells." Researched CotW directly (the raw
+Wikibooks *Magic* source, not just the rendered page, to get the exact
+mechanic text): the game has three "ball" spells -- **Cold Ball**, **Ball
+Lightning**, **Fireball** -- each the AoE sibling of an existing bolt spell
+this engine already has (Cold Bolt/Lightning Bolt/Firebolt, sessions 22/31/
+32). Source text: "Affect a 3x3 area. Do damage equivalent to the
+corresponding bolt in the center square, and half as much damage in the
+eight adjacent squares... Balls are so large that they always hit... may
+hurt the player, but nevertheless be worthwhile." Also confirmed "there is
+no ball spell corresponding to Magic Arrow" -- so no non-elemental ball was
+built, matching this engine's own Spark having no AoE counterpart either.
+
+- **`data/spells.json`**: three new entries, `effect: "ball"`, continuing
+  the ladder past session 40's Sleep Monster at 23 -- Fireball (24, 495
+  gold, 13 mana), Cold Ball (25, 515 gold, 9 mana), Ball Lightning (26, 535
+  gold, 11 mana). Introduced in the same fire/cold/lightning order their
+  bolt counterparts originally shipped in (sessions 22/31/32), not the
+  wiki's own listed order (cold/lightning/fire) -- an arbitrary source
+  ordering, so this engine's own established progression order was kept
+  instead. Each carries the same `value`/`range`/`damage_type` as its bolt
+  sibling (e.g. Fireball's `value: 12` matches Firebolt's), since the
+  source material defines the ball's damage *as* "equivalent to the
+  corresponding bolt," not as its own independent number. Mana cost is
+  roughly double the sibling bolt's, reflecting the up-to-5x total damage
+  a fully-surrounded cast can deal (source gives no real numbers to copy --
+  CotW's own mana costs "depend on the caster's level," not fixed values).
+- **`main.py`**: new `_ball_impact_point(spell)`, sitting next to
+  `_bolt_target` -- walks the same facing/range/wall-blocked line, but
+  where a bolt fizzles entirely and returns `None` if its line is empty,
+  a ball always detonates *somewhere* (source: "so large that they always
+  hit"), stopping at the first enemy, the last walkable tile before a
+  wall/closed door, or the max-range tile if the line is clear the whole
+  way. Only returns `None` if the very first step out of the player's tile
+  is already blocked (nowhere at all to go off). New `"ball"` branch in
+  `cast_selected_spell`: finds the impact point, then iterates every live
+  enemy and applies Chebyshev distance from it (`max(|dx|, |dy|) <= 1` for
+  "3x3 area") -- the enemy standing exactly on the impact tile takes the
+  full `value`, everything else caught in the ring takes
+  `max(1, round(value / 2))`, reusing `resolve_spell_hit` per enemy so
+  resist/immunity/sleep-wake/defeat-XP-gold all stay in lockstep with the
+  existing bolt spells rather than duplicating that logic. Every ball's
+  `damage_type` is elemental (no ball exists for a physical spell, per the
+  source note above), so unlike the "bolt" branch there's no physical/
+  defense-mitigated fork -- always bypasses defense, matching the sibling
+  bolts' own elemental branch.
+- **Player splash damage** ("may hurt the player, but nevertheless be
+  worthwhile"): this engine has no free tile-cursor targeting the way CotW
+  does (aim is always the player's facing direction, reused verbatim from
+  every prior bolt/sleep spell) -- so a ball can only ever detonate ahead
+  of the player, never behind or beside them. The 3x3 ring still covers the
+  player's own tile whenever the impact point is directly adjacent (the
+  common case: casting at a bumping-range enemy one tile away), which is
+  exactly when the real game's own risk applies. New
+  `resolve_ball_splash_to_player` in `engine/combat.py` mirrors
+  `_enemy_damage_to_player`'s resist formula (flat `resist_elemental` plus
+  any active Resist Fire/Cold/Lightning buff, session 34) but keyed off the
+  spell's own `damage_type`/half-value instead of an attacking enemy's
+  stats, so a player standing in their own blast takes the same ring
+  damage an adjacent enemy would, mitigated the same way an incoming
+  elemental attack already is.
+- Verified headless (SDL dummy driver, scratch DB via monkeypatched
+  `main.SAVE_PATH`, confirmed byte-identical on the real `save.db` before
+  and after): all three ball spells load with `effect: "ball"`; casting
+  Fireball at a 3x3 cluster (one enemy on the impact tile, one one tile
+  away, one five tiles away) dealt exactly the full value to the center
+  enemy, half (rounded) to the ring enemy, and left the far enemy
+  untouched; mana was spent exactly once regardless of how many enemies
+  were caught; casting with no enemies anywhere still detonated (no
+  "finds no target" fizzle the way a bolt gives), spent mana, and advanced
+  the turn; casting at a fire-immune enemy correctly dealt it zero damage
+  via the existing `resolve_spell_hit` immunity branch while the player's
+  own splash damage from the same cast still landed, confirming immunity
+  is per-enemy and doesn't leak into the player's own resist math; casting
+  at an enemy one tile away (the common bump-range case) confirmed the
+  player takes ring splash damage, and casting with no adjacent target
+  confirmed they don't. A full `main()` boot through the real title menu to
+  a posted `QUIT` exits cleanly. **Also visually inspected** via rendered
+  screenshots of the Spellbook panel: the cursor on the newly-added
+  Ball Lightning entry (bottom of a now-26-spell ladder) scrolls correctly
+  into view with its full description and the "Up/Down select..." hint
+  line both intact below it -- no clipping, continuing to confirm session
+  29's scroll-to-cursor logic holds at every ladder length it's been
+  re-checked against since.
+
+### Session 42 — Slow Monster (Castle of the Winds' speed-reducing curse)
+
+User-driven request: "look up the game Castle of the Winds and continue
+development." Researched CotW directly (Wikibooks' *Magic* page, fetched
+both the rendered page and a raw export to cross-check the exact wording)
+looking specifically at the two monster-affecting spells session 40 sourced
+but deliberately left unbuilt, Slow Monster and Transmogrify Monster.
+Source text for Slow Monster: "Slows the target monster's movement and
+attacks to half. Bosses are immune. A second cast reduces the speed to
+1/3, a third to 1/4, etc. Some monsters, like devils, will never move at
+less than half the player's speed." Picked Slow over Transmogrify -- same
+reasoning session 40 already gave for skipping both: Transmogrify still
+needs a live re-roll-into-any-enemy-type path (fresh stats, sprite swap,
+re-applying HP%) nothing in `engine/entity.py` does, while Slow only needed
+a way to make an enemy act less than once per player turn, a smaller and
+more contained addition. Confirmed no "devil" enemy type exists in this
+engine (`data/enemies.json`), so that clause has nothing to apply to and
+was left unbuilt, same as it not mattering.
+
+- **`data/spells.json`**: one new entry, `slow_monster` (unlock level 27,
+  555 gold, 10 mana, `effect: "slow"`), continuing the ladder immediately
+  past session 41's Ball Lightning at 26. No `duration` field -- unlike
+  Sleep Monster's "wakes in about ten minutes," the source text for Slow
+  gives no wear-off at all, only escalation on re-cast, so this is modeled
+  as permanent runtime state rather than a countdown buff (see below).
+- **`engine/entity.py`**: `Enemy` gained `slow_level` (0 = unaffected,
+  otherwise how many times Slow has stacked on this enemy) and `slow_tick`
+  (a running counter). In `take_turn`, right after the existing sleep
+  check: if `slow_level > 0`, increment `slow_tick` and, unless it's a
+  multiple of `slow_level + 1`, return `{"type": "slowed"}` without
+  chasing/wandering/attacking -- i.e. only 1 out of every `slow_level + 1`
+  calls is a real turn. Since movement and attack both come from the same
+  `take_turn` call in this engine (there's no separate attack-rate field),
+  skipping the whole call halves (or thirds, etc.) both at once, matching
+  the source's "movement *and* attacks to half" in one mechanism rather
+  than two. Boss immunity ("Bosses are immune") reuses the existing
+  `sleep_immune` flag rather than a new near-duplicate one -- this engine
+  has no separate boss concept, and session 40 already established
+  `sleep_immune` as the mini-boss-tier (four young dragons, Dark/Abyss
+  Wraith, Castle Wight) stand-in for CotW's boss immunity, so the same
+  enemies that resist Sleep now also resist Slow.
+- **`main.py`**: new `"slow"` branch in `cast_selected_spell`, sitting
+  right after the `"sleep"` branch and reusing `_bolt_target` for the exact
+  same single-enemy facing/range/line-of-sight targeting Sleep Monster and
+  every bolt spell already use. A successful cast increments the target's
+  `slow_level` and resets `slow_tick` to 0, so a re-cast's finer interval
+  (1/3, then 1/4, ...) starts its cadence clean rather than continuing
+  mid-cycle from the old one. Message reports the new fraction (e.g.
+  "Skeleton is slowed to 1/2 speed.", then "...to 1/3 speed." on a second
+  cast). A `sleep_immune` target gets the same "unaffected" message Sleep
+  Monster's immunity branch already produces; no target in range/line gets
+  the same "finds no target" message every other targeted spell uses.
+- Verified headless (SDL dummy driver, scratch DB via monkeypatched
+  `main.SAVE_PATH`, confirmed byte-identical on the real `save.db` before
+  and after): casting Slow Monster on a fresh enemy set `slow_level` to 1
+  and produced the "1/2 speed" message; driving that enemy's `take_turn`
+  across repeated calls showed real turns spaced exactly 2 apart (1 real
+  turn per 2 calls) with every other call returning `"slowed"`; re-casting
+  on the same enemy bumped `slow_level` to 2 and re-spaced real turns
+  exactly 3 apart (1/3 speed), confirming the re-cast escalation and the
+  tick-reset both work; casting at a `sleep_immune` enemy (Young Red
+  Dragon) left `slow_level` at 0 and produced the "unaffected" message
+  while the dragon's own counter-attack still landed, confirming immunity
+  doesn't block its normal turn; casting with no enemies in the room
+  produced the "finds no target" message and still consumed mana exactly
+  once (10, matching `mana_cost`) same as every other targeted spell's
+  no-target case. A full `main()` boot through the real title menu to a
+  posted `QUIT` on a timer exits cleanly. **Also visually inspected** via a
+  rendered screenshot of the Spellbook panel with the full 27-spell ladder
+  known: the cursor on the new bottom entry, Slow Monster, scrolls
+  correctly into view with its full description and the "Up/Down
+  select..." hint line both intact below it -- no clipping, continuing to
+  confirm session 29's scroll-to-cursor logic at yet another ladder length.
+
+### Session 43 — drop consumables back onto the floor (closing the "no drop mechanics" future-work note)
+
+User-driven request: "look up the game Castle of the Winds and continue
+development." Researched CotW directly (Wikibooks' *Interface & Controls*,
+StrategyWiki's *Controls* page via search snippets since the page itself
+403s to a direct fetch, and a general web search) specifically for how the
+real game drops an item back to the ground. Found CotW's own drop mechanic
+is drag-and-drop only -- drag an inventory item onto the dungeon view (or
+the "Free Hand" slot) with the mouse -- with no dedicated keyboard command
+documented anywhere sourced. This engine has no drag-and-drop (session 8's
+inventory is a list-cursor panel, not a mouse-driven grid), so the natural
+adaptation, same "keep the mechanic, translate the input model" call
+sessions 12 (spell targeting) and 29 (trap disarm) already made, is a new
+panel hotkey rather than a drag gesture: X in the Inventory panel drops one
+unit of the consumable under the cursor onto the player's own tile. Scoped
+to consumables only, matching the Known Limitations note's own wording
+("no drop mechanics for consumables") -- found/equipped gear stays bag-only,
+no drop path added for an EquipmentInstance (same line
+`_use_item_at_index`/`_activate_inventory_row` already draw between
+consumables and gear).
+
+- **`engine/save.py`**: new `room_drops` table (`room_id, entity_id,
+  item_type, x, y`), full-replace semantics via `set_room_drops`/
+  `get_room_drops`, same pattern as the existing `room_flags` table --
+  needed its own table rather than riding `room_flags` because a drop has
+  to remember a type and a position, not just a boolean per entity_id.
+  Added to `reset()`'s wiped-table list alongside the others.
+- **`main.py`**: `load_room` now also fetches `self.save.get_room_drops`
+  for whichever room is being entered into `self.room_drops` (the live
+  in-memory copy this session mutates) and folds a matching `ItemPickup`
+  for each into `self.items`, same as the three existing template-based
+  item sources. New `drop_selected_item()` (bound to `X` in the Inventory
+  panel, `handle_key_down`'s `inventory_open` branch): no-ops unless the
+  cursor is on a plain consumable row, otherwise removes one unit from
+  `self.inventory`, mints a `f"drop:{uuid4().hex}"` id, appends a record to
+  `self.room_drops` and a live `ItemPickup` to `self.items` at the
+  player's current position. Picking a dropped item back up (the existing
+  "pickup" branch of `handle_move`) now also filters it back out of
+  `self.room_drops` -- a no-op for a template item's id, real for a
+  dropped one. `self.save.set_room_drops(self.current_room_id,
+  self.room_drops)` is flushed at exactly the same three call sites that
+  already flush `set_room_flags` (`persist()`, the "exit" stairs/door
+  branch, and Word of Recall's town/dungeon jump) so a drop survives a
+  room transition and back, a save/quit, and a recall round-trip alike.
+  Inventory panel hint line updated to "...U/click use/equip, X drop,
+  I/Esc close".
+- Verified headless (SDL dummy driver, scratch DB via monkeypatched
+  `main.SAVE_PATH`, confirmed byte-identical on the real `save.db` before
+  and after): dropped a stacked consumable from a fresh inventory --
+  stack count decremented, `room_drops` gained the record at the player's
+  exact tile, and a live `ItemPickup` appeared in `self.items`; called
+  `persist()` then `load_room()` back into the same room (simulating a
+  full leave-and-return) and confirmed the drop was still there, fetched
+  fresh from `room_drops` rather than surviving only in memory; stepped
+  off the drop's tile and back onto it and confirmed the "pickup" branch
+  restored the stack count, emptied `room_drops`, and removed the
+  `ItemPickup` from `self.items`; equipped a `shortsword` into Found Gear
+  and confirmed pressing X with the cursor on that gear row is a total
+  no-op (inventory/`room_drops` both byte-for-byte unchanged) -- gear
+  truly has no drop path. **Also visually inspected** via a rendered
+  screenshot of the Inventory panel with a consumable stack, an empty
+  Equipped section, and a Found Gear entry all present at once: the new
+  "X drop" hint fits inside the existing 500px panel width with no
+  clipping (measured 374px at the panel's own font before the screenshot,
+  same discipline session 13 established for this exact panel).
+
 ## Known Limitations / Future Work
 
 Roughly in likely-priority order — not committed to, just tracked:
@@ -3296,15 +4207,33 @@ Roughly in likely-priority order — not committed to, just tracked:
   Session 31 added the second element: `"cold"` via Cold Bolt and the
   Young White Dragon, mirroring session 22's fire pairing. Session 32 added
   the third: `"lightning"` via Lightning Bolt and the Young Blue Dragon,
-  CotW's own third elemental-dragon breath type. `"acid"` is still just a
-  name nothing uses yet — easy to add a matching enemy/spell the same way
-  the other three were, no new mechanism needed. Also still true:
-  `resist_elemental` (the player-side Amulet stat)
-  is one flat percentage generic across every element, not per-element the
-  way CotW's own separate Resist Fire/Resist Cold/Resist Lightning items
-  are (confirmed via session 31's research) — splitting it would need real
-  engine work in `equipment.py`, not attempted since nothing has needed it
-  yet (a player mitigates cold exactly as well as fire today).
+  CotW's own third elemental-dragon breath type. ~~`"acid"` is still just a
+  name nothing uses yet~~ — session 33 researched this directly (Wikibooks'
+  CotW bestiary) and found the premise was wrong: CotW's actual four dragon
+  colors/breaths are Red/fire, White/cold, Blue/lightning, Green/poison
+  gas — there is no acid dragon in the real game, and the fourth slot is
+  poison, not a fourth `damage_type`. Session 33 closed that slot with the
+  Young Green Dragon reusing the *existing* poison mechanism (session 21's
+  Viper fields) rather than adding an `"acid"` elemental type nothing in
+  CotW actually calls for. `damage_type` support for a real `"acid"` is
+  still just unused plumbing if ever wanted, but there's no CotW-sourced
+  reason to build content for it. Also still true:
+  ~~`resist_elemental` (the player-side Amulet stat) is one flat percentage
+  generic across every element, not per-element the way CotW's own separate
+  Resist Fire/Resist Cold/Resist Lightning items are~~ — session 34
+  researched this directly (Wikibooks' CotW Magic page) and found the
+  "items" framing in session 31's note was itself slightly off: in the real
+  game, Resist Fire/Cold/Lightning are **spells** (temporary, halve
+  elemental damage for a duration), not equipment. Session 34 built exactly
+  that — three new spells stacking additively on top of the still-flat,
+  still-generic `resist_elemental` amulet stat. Whether CotW's own amulets
+  are themselves per-element or generic wasn't re-researched this session
+  (out of scope — session 34 only sourced the spell page); `equipment.py`'s
+  flat amulet stat is unchanged either way, so this is still a real
+  (smaller) gap if amulets turn out to be per-element in the source game.
+  What's confirmed is the *spell* trio, and a player now has a real tool to
+  out-mitigate a specific dragon's breath (e.g. Resist Cold before a Young
+  White Dragon fight) that they didn't have before.
 - ~~**Still no cure-poison item/spell** (session 22)~~ — closed out session
   23: a new Neutralize Poison spell purges poison outright. This session's
   own research confirmed CotW's actual mechanism is the spell, not a
@@ -3337,10 +4266,11 @@ Roughly in likely-priority order — not committed to, just tracked:
   obstacles/varied shapes yet (kept simple originally to guarantee
   reachability without a maze-solver). Difficulty now scales with depth
   *and* dungeon level (sessions 3-4), but room geometry itself doesn't.
-- **Content breadth is better but still thin**: eight enemy types (session
+- **Content breadth is better but still thin**: fourteen enemy types (session
   21 added the Viper, session 22 the Young Red Dragon, session 24 the
   Wraith, session 31 the Young White Dragon, session 32 the Young Blue
-  Dragon), four item families
+  Dragon, session 33 the Young Green Dragon, session 35 the Dark Wraith and
+  Abyss Wraith, session 37 the Barrow/Tunnel/Castle Wight), four item families
   (potion/whetstone/shield/gold, each with minor/normal/greater tiers,
   sessions 5 and 8) plus eight equipment slots (session 8/18). Easy to
   extend further — just add entries to the relevant `data/*.json` and a
@@ -3351,12 +4281,25 @@ Roughly in likely-priority order — not committed to, just tracked:
   `occupied_positions` set instead (session 15's fix), a separate mechanism
   `phases_walls` doesn't touch. CotW's own wraiths pass through doors too;
   extending phasing there would need occupied_positions itself to know
-  about a per-enemy phasing flag, not attempted this session. Also still
-  true: only one Wraith variant exists (CotW has Pale/Dark/Abyss tiers plus
-  the separate stat-draining Wight) and the drain only ever targets mana —
-  this engine has no STR/DEX/INT/CON attributes to drain the way Wights do.
-- **No drop mechanics for consumables** — items are consumed permanently
-  on use, no way to drop one back onto the floor once picked up.
+  about a per-enemy phasing flag, not attempted this session. ~~Also still
+  true: only one Wraith variant exists (CotW has Pale/Dark/Abyss tiers~~ —
+  closed out session 35: Dark Wraith and Abyss Wraith joined the base Wraith
+  as two tougher, deeper-only tiers, same drain mechanism. ~~The drain only
+  ever targets mana (all three tiers) — this engine has no STR/DEX/INT/CON
+  attributes to drain the way CotW's separate stat-draining Wight family
+  does; Wight itself is still unbuilt (see session 35)~~ — closed out
+  session 37: Barrow/Tunnel/Castle Wight now drain `attack` instead (the
+  same "one representative stat stands in for the un-modeled attribute"
+  adaptation session 24 already made for the Wraith's INT/mana drain), a
+  second, separately-cured undead-drain resource alongside the Wraith
+  family's mana drain rather than a Wraith reskin.
+- ~~**No drop mechanics for consumables**~~ — closed out session 43: `X` in
+  the Inventory panel drops one unit of the selected consumable onto the
+  player's own tile, persisted per-room (`engine/save.py`'s new
+  `room_drops` table) so it's still there after a room transition and
+  back, picked back up the same way any floor item is. Still true: gear
+  (equipped or Found Gear) has no drop path -- scoped to consumables only,
+  same line session 8/16 already drew between the two systems.
 - **Spells only have one casting path** (session 12) — the Spellbook panel
   (`C`), which always costs a turn on a successful cast. There's no field
   quick-cast hotkey the way items have 1-8, a deliberate scope cut (see
@@ -3364,25 +4307,52 @@ Roughly in likely-priority order — not committed to, just tracked:
 - ~~**No purchasable/found spellbooks (session 12)**~~ — closed out session
   19: a new Scholar NPC in the town hub sells every not-yet-known spell for
   gold (`book_cost` in `data/spells.json`), learned immediately regardless
-  of level. Still true: spellbooks are bought, never found as dungeon loot
-  the way CotW's sometimes are — not attempted, would ride the same
-  per-instance-drop machinery equipment already uses (session 16/17) if
-  ever wanted.
-- **15 spells**: one per unlock tier (levels 1-5), three divination spells at
-  6/7/12 (session 15: Detect Monsters/Detect Treasure; session 28: Detect
-  Traps), Neutralize Poison at 8 (session 23), Word of Recall at 9 (session
-  26, CotW's "misc"-category town/dungeon shortcut), Identify/Remove
-  Curse at 10/11 (session 27, mana-cost alternatives to the Merchant's paid
-  versions of the same two actions), Levitation at 13 (session 29,
-  trap-damage immunity paired with Detect Traps' own duration), Cold
-  Bolt at 14 (session 31, the second attack-spell element alongside
-  session 12's original Spark and session 22's Firebolt), and Lightning
-  Bolt at 15 (session 32, the third element). Easy to
-  extend further: add an entry to `data/spells.json` and, if it's a new
-  `effect` type, a branch in `Game.cast_selected_spell` (session 12) --
-  the Spellbook panel now scrolls to fit whatever the ladder grows to
-  (session 29), so a 15th entry won't reintroduce the clipping this
-  session found and fixed.
+  of level. ~~Still true: spellbooks are bought, never found as dungeon loot
+  the way CotW's sometimes are~~ — closed out session 39: spellbooks now
+  also drop as Depths floor loot and vault chest contents, riding the same
+  per-instance-drop machinery equipment already uses (session 16/17), same
+  as this note predicted.
+- **27 spells** (this note had drifted stale as of session 36 -- last
+  updated at session 32's "15 spells" and not revised when sessions 34/36
+  each added three more; corrected here, and again for sessions 38/40/41/42's
+  additions): one per unlock tier (levels 1-5),
+  three divination spells at 6/7/12 (session 15: Detect Monsters/Detect
+  Treasure; session 28: Detect Traps), Neutralize Poison at 8 (session 23),
+  Word of Recall at 9 (session 26, CotW's "misc"-category town/dungeon
+  shortcut), Identify/Remove Curse at 10/11 (session 27, mana-cost
+  alternatives to the Merchant's paid versions of the same two actions),
+  Levitation at 13 (session 29, trap-damage immunity paired with Detect
+  Traps' own duration), Cold Bolt at 14 (session 31, the second
+  attack-spell element alongside session 12's original Spark and session
+  22's Firebolt), Lightning Bolt at 15 (session 32, the third element),
+  Resist Fire/Cold/Lightning at 16/17/18 (session 34, additive with the
+  flat `resist_elemental` amulet stat), and Heal Medium/Major Wounds at
+  19/20 (session 36, completing the Heal Minor Wounds ladder with CotW's
+  own sourced percent-of-max-hp-or-flat-whichever-is-higher formula), and
+  Light/Clairvoyance at 21/22 (session 38, instant region-fog and
+  automap-room reveals), Sleep Monster at 23 (session 40, single-target
+  crowd control), and Fireball/Cold Ball/Ball Lightning at 24/25/26
+  (session 41, 3x3-area siblings of Firebolt/Cold Bolt/Lightning Bolt,
+  full damage center + half-damage ring, "always hit," and can splash the
+  player if cast at an adjacent target), and Slow Monster at 27 (session
+  42, halves a target's action rate per cast, stacking to 1/3, 1/4, etc.
+  on re-cast, boss-immune via the same `sleep_immune` flag Sleep Monster
+  uses). Now 27 spells total. Easy to extend further: add an entry to
+  `data/spells.json` and, if it's a new `effect` type, a branch in
+  `Game.cast_selected_spell` (session 12) -- the Spellbook panel scrolls to
+  fit whatever the ladder grows to (session 29), confirmed again at 27
+  entries in session 42.
+- ~~**Slow Monster and Transmogrify Monster are still unbuilt** (session
+  40)~~ — half closed out session 42: Slow Monster shipped, giving
+  `Enemy.take_turn` a `slow_level`/`slow_tick` pair that skips all but 1 in
+  every `slow_level + 1` calls, so "acting less than once per turn" (this
+  note's original blocker) turned out to just need a modulo counter, not a
+  deeper AI-timing model. ~~Transmogrify (turns the target into a random
+  other monster, preserving its HP percentage) would need a live
+  re-roll-into-any-enemy-type path (fresh stats block, sprite swap,
+  re-applying whatever HP% it had) nothing in `engine/entity.py` currently
+  does~~ — still true and still unbuilt, the bigger lift of the original
+  pair; not attempted this session, deliberately scoped to Slow alone.
 ~~**No trap disarm mechanic or Levitation spell (session 28)**~~ — closed
   out session 29: a new Disarm Trap command (`T`, since `d` is already
   WASD-right movement) targets a detected trap directly ahead of the player

@@ -69,6 +69,18 @@ class AssetManager:
                 pygame.draw.line(surf, color, (pad, pad), (size - pad, size - pad), thickness)
                 pygame.draw.line(surf, color, (size - pad, pad), (pad, size - pad), thickness)
                 pygame.draw.circle(surf, outline, (mid, mid), max(1, size // 6))
+            elif shape == "book":
+                # Session 39: dungeon-found spellbooks -- no book/tome art
+                # in either sheet (session 9's item16 sheet is potions/gear/
+                # coins, no readables), so a closed-book silhouette (cover
+                # rect + spine line) distinct from every existing item
+                # placeholder (potions/shields are drawn as real sprites;
+                # only switches use plain "square" today).
+                rect = pygame.Rect(pad, pad, size - pad * 2, size - pad * 2)
+                pygame.draw.rect(surf, color, rect, border_radius=max(1, size // 10))
+                pygame.draw.rect(surf, outline, rect, outline_w, border_radius=max(1, size // 10))
+                spine_x = pad + (size - pad * 2) // 3
+                pygame.draw.line(surf, outline, (spine_x, pad), (spine_x, size - pad), outline_w)
             else:
                 rect = pygame.Rect(pad, pad, size - pad * 2, size - pad * 2)
                 pygame.draw.rect(surf, color, rect, border_radius=max(1, size // 10))

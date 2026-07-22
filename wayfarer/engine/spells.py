@@ -14,9 +14,17 @@ NPC (see main.py's buy_spellbook) sells any not-yet-known spell for gold,
 learned immediately regardless of level -- it adds straight to the same
 known_spells set newly_learned() feeds, so nothing here needed to change.
 
-Future work (out of scope for this pass): spellbooks as dungeon loot rather
-than shop-only, more than one spell per category, quick-cast hotkey (today
-casting only happens from the Spellbook panel).
+Session 39 closed the "spellbooks as dungeon loot" gap this docstring used
+to flag: procgen.py can now roll a SpellbookDrop (floor) or a chest
+"spellbook" field, depth-banded via SPELL_IDS_BY_BAND, and main.py's pickup
+handler adds straight to known_spells too (or refunds half the book's gold
+cost if the roll duplicated an already-known spell, since procgen is a pure
+function of seed/position with no live known_spells to consult when
+rolling). Still nothing here needed to change -- same "adds straight to
+known_spells" shape as the Scholar.
+
+Future work (out of scope for this pass): more than one spell per category,
+quick-cast hotkey (today casting only happens from the Spellbook panel).
 """
 
 

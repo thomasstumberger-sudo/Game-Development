@@ -72,10 +72,48 @@ class Enemy(Entity):
         # doesn't define these, same convention as poison_chance above.
         self.drain_chance = stats.get("drain_chance", 0)
         self.drain_amount = stats.get("drain_amount", 0)
+        # Session 37: which player stat a drain touch lowers -- "mana"
+        # (default, every existing drain-capable enemy, i.e. the Wraith
+        # family) or "attack" (Castle of the Winds' Wight family, which
+        # drains STR/DEX/CON rather than intelligence/mana; this engine has
+        # no separate attributes, so -- same adaptation session 24 already
+        # made for the Wraith's INT drain standing in as a mana drain --
+        # Wight drain stands in as an attack drain, see combat._maybe_drain
+        # and Player.attack_drain below).
+        self.drain_stat = stats.get("drain_stat", "mana")
         # CotW's wraiths "pass through walls and doors" -- take_turn below
         # skips the wall check (not the closed-door/gate one, still folded
         # into occupied_positions by the caller) when this is set.
         self.phases_walls = stats.get("phases_walls", False)
+        # Session 40: whether Sleep Monster can affect this type at all --
+        # CotW's own wording is "some monsters and all bosses are immune";
+        # only the "all bosses" half is sourced concretely, so this is set
+        # true only for the mini-boss-tier rarities data/enemies.json and
+        # engine/procgen.py's ENEMY_WEIGHTS_BY_TIER already single out as
+        # weight-1 rare (the four young dragons, Dark/Abyss Wraith, Castle
+        # Wight) rather than guessing at which "some monsters" the real
+        # game means. sleep_turns itself is pure runtime combat state, not
+        # spawn data -- like hp, it isn't loaded from `stats` and doesn't
+        # need a save.py column, since Depths enemies are regenerated fresh
+        # from epoch on every room visit rather than persisted individually.
+        self.sleep_immune = stats.get("sleep_immune", False)
+        self.sleep_turns = 0
+        # Session 42: Slow Monster (Castle of the Winds' "slows the target
+        # monster's movement and attacks to half... a second cast reduces
+        # the speed to 1/3, a third to 1/4, etc."). Unlike sleep_turns this
+        # has no wear-off timer in the source text -- it's runtime combat
+        # state that stacks per re-cast rather than counting down, reset
+        # only by the same fresh-per-room-visit regeneration every other
+        # per-enemy runtime field already relies on (see sleep_immune's own
+        # note above). slow_level 0 means unaffected; N means every Nth+1
+        # take_turn call is a real turn (1/(N+1) speed) and the rest are
+        # skipped, reusing the same single per-player-action call cadence
+        # sleep_turns already counts against. Boss immunity ("Bosses are
+        # immune") reuses sleep_immune rather than a near-duplicate flag --
+        # this engine has no separate boss concept, and session 40 already
+        # established sleep_immune as the mini-boss-tier stand-in for it.
+        self.slow_level = 0
+        self.slow_tick = 0
 
     @property
     def alive(self):
@@ -90,6 +128,24 @@ class Enemy(Entity):
         still-closed fixture."""
         if not self.alive:
             return {"type": "idle"}
+
+        if self.sleep_turns > 0:
+            # Session 40: a sleeping enemy neither chases nor wanders --
+            # counts down here since this is only ever called once per
+            # player action (see main.py's Game._run_enemy_turns), the same
+            # "one call = one turn" cadence every other per-turn countdown
+            # in this engine relies on.
+            self.sleep_turns -= 1
+            return {"type": "asleep"}
+
+        if self.slow_level > 0:
+            # Every (slow_level + 1)th call is a real turn; the rest are
+            # skipped outright -- "movement and attacks" both come from the
+            # same take_turn call, so skipping the whole call halves (or
+            # thirds, etc.) both at once with no separate attack-rate field.
+            self.slow_tick += 1
+            if self.slow_tick % (self.slow_level + 1) != 0:
+                return {"type": "slowed"}
 
         dist = max(abs(player.x - self.x), abs(player.y - self.y))
         if dist <= self.aggro_range:
@@ -143,6 +199,23 @@ class EquipmentDrop(Entity):
         self.base_type = base_type
         self.enchant = enchant
         self.name = equipment_def.get("name", base_type)
+
+
+class SpellbookDrop(Entity):
+    """A spellbook lying on a Depths floor (session 39) -- Castle of the
+    Winds' other spellbook source (session 19 built the Scholar's paid
+    catalog; see engine/spells.py's "future work" note this closes out).
+    Distinct from ItemPickup for the same reason EquipmentDrop is: picking
+    one up needs a live known_spells check main.py's generic Inventory path
+    doesn't have, not a stackable data/items.json type -- it teaches its
+    spell (or, if already known, crumbles for a gold refund) rather than
+    occupying an inventory slot."""
+
+    def __init__(self, entity_id, spell_id, x, y, spell_def):
+        super().__init__(x, y, "item_spellbook")
+        self.id = entity_id
+        self.spell_id = spell_id
+        self.name = f"Spellbook: {spell_def.get('name', spell_id)}"
 
 
 class NPC(Entity):
@@ -207,6 +280,18 @@ class Player(Entity):
         # same Amulet line (see engine/equipment.py) rather than a second
         # item line -- this engine keeps one amulet slot doing double duty.
         self.resist_undead = stats.get("resist_undead", 0)
+        # Session 34: Resist Fire/Cold/Lightning -- Castle of the Winds' own
+        # temporary per-element resistance spells (see engine/spells.py's
+        # "resist_element" effect), stacking additively with the flat,
+        # always-on resist_elemental above rather than replacing it. Same
+        # countdown-buff pair shape as buff_defense_bonus/turns, just one
+        # pair per element since more than one can be active at once.
+        self.temp_resist_fire_bonus = stats.get("temp_resist_fire_bonus", 0)
+        self.temp_resist_fire_turns = stats.get("temp_resist_fire_turns", 0)
+        self.temp_resist_cold_bonus = stats.get("temp_resist_cold_bonus", 0)
+        self.temp_resist_cold_turns = stats.get("temp_resist_cold_turns", 0)
+        self.temp_resist_lightning_bonus = stats.get("temp_resist_lightning_bonus", 0)
+        self.temp_resist_lightning_turns = stats.get("temp_resist_lightning_turns", 0)
         # Permanent (until paid off at the Healer, see main.py's
         # cure_mana_drain) reduction to the *usable* mana ceiling -- a
         # separate field rather than mutating max_mana directly, same
@@ -218,6 +303,15 @@ class Player(Entity):
         # raw stat.
         self.mana_drain = stats.get("mana_drain", 0)
         self.mana = min(self.mana, self.effective_max_mana())
+        # Session 37: a Wight's touch (see drain_stat above) permanently
+        # subtracts from `attack` directly instead -- the same "mutate the
+        # base stat, keep a running total to reverse later" pattern
+        # equipment's bonuses already use (see engine/equipment.py's
+        # equip()/unequip()), rather than mana_drain's separate-ceiling
+        # approach, since attack has no natural current/max split to layer
+        # a ceiling onto. attack_drain is just the reversal record -- only
+        # paying the Healer (main.py's cure_attack_drain) zeroes it.
+        self.attack_drain = stats.get("attack_drain", 0)
         # Session 26: Word of Recall's anchor point -- set the moment the
         # spell is cast away from town, read back the moment it's cast
         # *in* town. Persisted (unlike the detect-spell timers) for the
@@ -254,6 +348,20 @@ class Player(Entity):
         against this instead, so a drained player can't be topped back up
         past what they're actually able to hold right now."""
         return max(0, self.max_mana - self.mana_drain)
+
+    def temp_resist_bonus(self, damage_type):
+        """Session 34: the active Resist Fire/Cold/Lightning bonus for a
+        given elemental damage_type, or 0 if that spell isn't currently up
+        (or damage_type is "physical"/anything with no matching spell).
+        Read by engine/combat.py's _enemy_damage_to_player alongside the
+        flat resist_elemental stat."""
+        if damage_type == "fire":
+            return self.temp_resist_fire_bonus if self.temp_resist_fire_turns > 0 else 0
+        if damage_type == "cold":
+            return self.temp_resist_cold_bonus if self.temp_resist_cold_turns > 0 else 0
+        if damage_type == "lightning":
+            return self.temp_resist_lightning_bonus if self.temp_resist_lightning_turns > 0 else 0
+        return 0
 
     def try_move(self, dx, dy, room, enemies, items, npcs=(),
                  locked_doors=(), gates=(), chests=(), switches=(), traps=(), blocked=None):

@@ -96,7 +96,18 @@ ENEMY_WEIGHTS_BY_TIER = [
     # own undead-drain monsters (Wraiths, Wights) show up well past the
     # earliest levels, and this engine has no cure for the drain except
     # gold, so a brand-new character shouldn't be able to stumble into one.
-    [("slime", 1), ("skeleton", 3), ("cultist", 1), ("viper", 1), ("wraith", 2)],
+    # Session 35: Dark Wraith joins at mid-tier too, rarer than the base
+    # Wraith -- CotW rates it one difficulty step up (5/10 vs. Wraith/Pale
+    # Wraith's 4/10, confirmed via research, see PROGRESS.MD session 35), so
+    # it's a real but uncommon step-up encounter here rather than deep-only.
+    # Session 37: Barrow Wight joins at mid-tier too, alongside the Wraith --
+    # CotW's own Wight family (confirmed via research, see PROGRESS.MD
+    # session 37: Barrow/Tunnel/Castle, weakest to strongest) is a second,
+    # unrelated undead-drain family, not a Wraith recolor -- it drains
+    # STR/DEX/CON (adapted here as an attack drain, see
+    # engine/entity.py's Player.attack_drain) rather than intelligence/mana,
+    # and doesn't phase through walls the way Wraiths/ghosts do.
+    [("slime", 1), ("skeleton", 3), ("cultist", 1), ("viper", 1), ("wraith", 2), ("dark_wraith", 1), ("barrow_wight", 2), ("tunnel_wight", 1)],
     # Session 22: Young Red Dragon is deep-tier only and deliberately rare
     # (weight 1 against the other three's combined 6) -- a mini-boss-flavor
     # threat, not a regular encounter, matching how cultist was already the
@@ -110,12 +121,30 @@ ENEMY_WEIGHTS_BY_TIER = [
     # CotW's Blue Dragons breathe lightning, the third leg of the
     # fire/cold/lightning elemental set this engine now covers; no reason to
     # make it rarer or commoner than its two mirror dragons.
-    [("slime", 1), ("skeleton", 2), ("cultist", 3), ("young_red_dragon", 1), ("young_white_dragon", 1), ("young_blue_dragon", 1), ("wraith", 2)],
+    # Session 33: Young Green Dragon (poison gas) joins at the same weight,
+    # completing CotW's actual four-color dragon roster (Red/fire, White/
+    # cold, Blue/lightning, Green/poison gas -- confirmed via research, see
+    # PROGRESS.MD session 33). It's a mini-boss like its three siblings, not
+    # a new elemental damage_type -- see data/enemies.json for why.
+    # Session 35: Dark Wraith and Abyss Wraith join here, deep-tier only --
+    # CotW's actual wraith family (confirmed via Wikibooks research, see
+    # PROGRESS.MD session 35) is Wraith, Pale Wraith, Dark Wraith, and Abyss
+    # Wraith, all draining intelligence/mana irreversibly. Dark Wraith gets
+    # the same weight-1 step-up rarity it has at mid-tier; Abyss Wraith is
+    # the strongest of the three built here and only ever appears this deep,
+    # weighted the same as the mini-boss dragons rather than more common.
+    # Session 37: the full Wight family shows up here -- Barrow Wight
+    # continues at the same weight as mid-tier, Tunnel Wight gets more
+    # common, and Castle Wight (the strongest of the three, see
+    # data/enemies.json) is deep-tier only, weighted the same mini-boss-rare
+    # 1 as Abyss Wraith and the four dragon lines rather than a regular
+    # encounter.
+    [("slime", 1), ("skeleton", 2), ("cultist", 3), ("young_red_dragon", 1), ("young_white_dragon", 1), ("young_blue_dragon", 1), ("young_green_dragon", 1), ("wraith", 2), ("dark_wraith", 1), ("abyss_wraith", 1), ("barrow_wight", 1), ("tunnel_wight", 2), ("castle_wight", 1)],
 ]
 ITEM_WEIGHTS_BY_TIER = [
     [("potion", 5), ("whetstone", 1), ("gold", 3), ("mana_potion", 2)],
-    [("potion", 4), ("whetstone", 2), ("shield", 2), ("gold", 3), ("mana_potion", 3), ("equipment", 1)],
-    [("potion", 3), ("whetstone", 3), ("shield", 3), ("gold", 3), ("mana_potion", 3), ("equipment", 2)],
+    [("potion", 4), ("whetstone", 2), ("shield", 2), ("gold", 3), ("mana_potion", 3), ("equipment", 1), ("spellbook", 1)],
+    [("potion", 3), ("whetstone", 3), ("shield", 3), ("gold", 3), ("mana_potion", 3), ("equipment", 2), ("spellbook", 1)],
 ]
 # Session 17: chests (vault loot) reuse ITEM_WEIGHTS_BY_TIER directly,
 # including "equipment" -- a chest can now hold a per-instance gear drop the
@@ -145,6 +174,23 @@ EQUIPMENT_BASE_TYPES_BY_SLOT = {
     "amulet": ["amulet_resist_basic", "amulet_resist_fine", "amulet_resist_masterwork"],
 }
 EQUIPMENT_SLOTS = list(EQUIPMENT_BASE_TYPES_BY_SLOT.keys())
+# Session 39: dungeon-found spellbooks (Castle of the Winds' other
+# spellbook source alongside the Scholar's paid catalog -- see
+# engine/spells.py's "future work" note this closes out). Same "procgen
+# trusts a key string exists, main.py resolves it against the real defs"
+# split as EQUIPMENT_BASE_TYPES_BY_SLOT above: three bands mirroring
+# data/spells.json's own unlock_level order (low/mid/high thirds, 7+8+7 of
+# the 22 spells) rather than reading the json file from here. Deeper tiers
+# skew toward the later band via the same magnitude roll gear tiers use,
+# so a found spellbook's power tracks depth the same way gear enchant does
+# -- but unlike gear (deterministic per-room, no player state), the band
+# only bounds *which* spell can roll; whether the player already knows it
+# is a live check main.py's pickup handler makes, not this pure generator.
+SPELL_IDS_BY_BAND = [
+    ["spark", "minor_heal", "stone_skin", "firebolt", "blink", "detect_monsters", "detect_treasure"],
+    ["neutralize_poison", "word_of_recall", "identify", "remove_curse", "detect_traps", "levitation", "cold_bolt", "lightning_bolt"],
+    ["resist_fire", "resist_cold", "resist_lightning", "heal_medium", "heal_major", "light", "clairvoyance"],
+]
 _MAGNITUDE_TO_GEAR_TIER = {"minor": 0, "normal": 1, "greater": 2}
 # Once a family (potion/whetstone/shield) is picked, roll its magnitude --
 # "normal" keeps the item's plain, pre-existing type key (e.g. "potion");
@@ -513,8 +559,8 @@ def generate_room(seed, level, gx, gy, epoch=0):
     # flat scatter across the whole interior) -----------------------------
     max_enemies_per_room = 3 if tier == 2 else 2
     item_chance = 0.6 if tier == 0 else 0.75
-    enemies, items, equipment_drops, traps = [], [], [], []
-    e_i = i_i = eq_i = tr_i = 0
+    enemies, items, equipment_drops, spellbook_drops, traps = [], [], [], [], []
+    e_i = i_i = eq_i = sb_i = tr_i = 0
     room_occupied = {i: set() for i in range(len(core_rects))}
     for i, rect in enumerate(core_rects):
         occupied = room_occupied[i]
@@ -560,6 +606,15 @@ def generate_room(seed, level, gx, gy, epoch=0):
                         "x": pt[0], "y": pt[1],
                     })
                     eq_i += 1
+                elif family == "spellbook":
+                    magnitude = _weighted_choice(pop_rng, MAGNITUDE_WEIGHTS_BY_TIER[tier])
+                    band = _MAGNITUDE_TO_GEAR_TIER[magnitude]
+                    spellbook_drops.append({
+                        "id": f"proc_{seed}_{level}_{gx}_{gy}_sb{sb_i}_ep{epoch}",
+                        "spell_id": pop_rng.choice(SPELL_IDS_BY_BAND[band]),
+                        "x": pt[0], "y": pt[1],
+                    })
+                    sb_i += 1
                 else:
                     magnitude = _weighted_choice(pop_rng, MAGNITUDE_WEIGHTS_BY_TIER[tier])
                     item_type = family if magnitude == "normal" else f"{family}_{magnitude}"
@@ -632,6 +687,13 @@ def generate_room(seed, level, gx, gy, epoch=0):
                     "base_type": EQUIPMENT_BASE_TYPES_BY_SLOT[gear_slot][gear_tier],
                     "enchant": roll_enchant(layout_rng),
                 }
+            elif family == "spellbook":
+                # Same "spellbook" branch as floor loot above, but rolled
+                # off layout_rng (not pop_rng) -- a chest's contents are
+                # structural/permanent, same reasoning as the equipment
+                # branch above.
+                band = _MAGNITUDE_TO_GEAR_TIER[magnitude]
+                chest["spellbook"] = {"spell_id": layout_rng.choice(SPELL_IDS_BY_BAND[band])}
             else:
                 chest["item_type"] = family if magnitude == "normal" else f"{family}_{magnitude}"
             chests.append(chest)
@@ -644,6 +706,7 @@ def generate_room(seed, level, gx, gy, epoch=0):
         "enemies": enemies,
         "items": items,
         "equipment_drops": equipment_drops,
+        "spellbook_drops": spellbook_drops,
         "regions": regions,
         "locked_doors": locked_doors,
         "gates": gates,

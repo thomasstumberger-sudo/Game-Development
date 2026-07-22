@@ -43,18 +43,33 @@ def _maybe_drain(enemy, player, log):
     lower the player's usable mana ceiling rather than (or alongside) its
     direct hit -- see engine/entity.py's Enemy.drain_chance/drain_amount and
     Player.mana_drain/resist_undead. A no-op for every enemy that doesn't
-    define drain_chance (i.e. every enemy type except Wraith today), same
-    shape as _maybe_poison above. Unlike poison, this never wears off on its
-    own -- only paying the Healer (main.py's cure_mana_drain) reverses it --
-    so each additional bite adds to the running total rather than refreshing
-    a duration."""
+    define drain_chance (i.e. every enemy type except the Wraith/Wight
+    families today), same shape as _maybe_poison above. Unlike poison, this
+    never wears off on its own -- only paying the Healer (main.py's
+    cure_mana_drain/cure_attack_drain) reverses it -- so each additional
+    bite adds to the running total rather than refreshing a duration.
+
+    Session 37: enemy.drain_stat picks which stat this particular touch
+    lowers -- "mana" (Wraith family, unchanged from session 24) or "attack"
+    (Wight family, Castle of the Winds' STR/DEX/CON drain -- see
+    Player.attack_drain's docstring for why attack stands in for those).
+    Both share the same resist_undead mitigation and running-total-not-
+    duration persistence; only which field they touch differs."""
     if enemy.drain_chance <= 0 or random.random() >= enemy.drain_chance:
         return
     resist = min(RESIST_CAP, max(0, player.resist_undead))
     amount = max(1, round(enemy.drain_amount * (100 - resist) / 100))
-    player.mana_drain += amount
-    player.mana = min(player.mana, player.effective_max_mana())
-    log.append(f"{enemy.name}'s touch drains your mana away!")
+    if enemy.drain_stat == "attack":
+        amount = min(amount, player.attack - 1)  # never drain below 1 attack
+        if amount <= 0:
+            return
+        player.attack -= amount
+        player.attack_drain += amount
+        log.append(f"{enemy.name}'s touch saps your strength!")
+    else:
+        player.mana_drain += amount
+        player.mana = min(player.mana, player.effective_max_mana())
+        log.append(f"{enemy.name}'s touch drains your mana away!")
 
 
 RESIST_CAP = 90  # never let a single amulet reach true immunity
@@ -70,8 +85,28 @@ def _enemy_damage_to_player(enemy, player):
     and enemy_attack's initiated hit so the two paths can't drift apart."""
     if enemy.damage_type == "physical":
         return max(1, enemy.attack - (player.defense + player.buff_defense_bonus))
-    resist = min(RESIST_CAP, max(0, player.resist_elemental))
+    # Session 34: a Resist Fire/Cold/Lightning spell stacks additively on
+    # top of the flat, always-on amulet resist -- e.g. a player with a +20%
+    # Amulet of Resistance who casts Resist Fire (+50%) mitigates 70% of an
+    # incoming fire hit, not just whichever of the two is larger.
+    resist = player.resist_elemental + player.temp_resist_bonus(enemy.damage_type)
+    resist = min(RESIST_CAP, max(0, resist))
     return max(1, round(enemy.attack * (100 - resist) / 100))
+
+
+def resolve_ball_splash_to_player(player, base_damage, damage_type):
+    """Session 41: Fireball/Cold Ball/Ball Lightning's own source material
+    notes the blast "may hurt the player" -- in this engine's facing-line
+    targeting (no free tile-cursor aim like the real game's), that happens
+    whenever the ball detonates adjacent to the player, since the 3x3 ring
+    covers the player's own tile in that case (see main.py's
+    cast_selected_spell "ball" branch). Same resist formula
+    _enemy_damage_to_player uses -- the amulet's flat resist_elemental plus
+    any active Resist spell -- just keyed off the spell's own damage_type/
+    value instead of an attacking enemy's."""
+    resist = player.resist_elemental + player.temp_resist_bonus(damage_type)
+    resist = min(RESIST_CAP, max(0, resist))
+    return max(1, round(base_damage * (100 - resist) / 100))
 
 
 def resolve_bump_attack(player, enemy):
@@ -86,6 +121,18 @@ def resolve_bump_attack(player, enemy):
 
     if enemy.hp <= 0:
         _apply_defeat(player, enemy, log)
+        return log
+
+    if enemy.sleep_turns > 0:
+        # Session 40: Castle of the Winds' Sleep Monster wears off "when
+        # attacked" -- waking mid-swing means the enemy doesn't get this
+        # exchange's retaliation, the same "free hit" a sneak attack on a
+        # sleeping target implies. A still-sleeping enemy never reaches
+        # take_turn's own chase/attack branch either (see engine/entity.py),
+        # so skipping the counter-hit here is the only place this needs to
+        # be enforced.
+        enemy.sleep_turns = 0
+        log.append(f"{enemy.name} wakes with a start!")
         return log
 
     dmg_to_player = _enemy_damage_to_player(enemy, player)
@@ -121,7 +168,15 @@ def resolve_spell_hit(player, enemy, damage, spell_name, damage_type="physical")
         return [f"You cast {spell_name}, but {enemy.name} is immune to it."]
 
     effective = max(1, round(damage * (1 - resist))) if resist else damage
-    log = [f"You cast {spell_name}. Hits {enemy.name} for {effective}."]
+    wake_note = ""
+    if enemy.sleep_turns > 0:
+        # Session 40: a bolt spell has no retaliation to skip (it's ranged,
+        # see this function's own docstring), but a sleeping enemy hit by
+        # one should still wake rather than staying asleep for a hit it
+        # very much felt.
+        enemy.sleep_turns = 0
+        wake_note = f" {enemy.name} wakes with a start!"
+    log = [f"You cast {spell_name}. Hits {enemy.name} for {effective}.{wake_note}"]
     enemy.hp -= effective
     AssetManager.play_sfx("hit")
 
