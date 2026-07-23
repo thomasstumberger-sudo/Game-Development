@@ -1,0 +1,1328 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>The Capsize Engine</title>
+<style>
+  :root{
+    --bg:#0b0e14; --panel:#131822; --panel-2:#0f131b; --border:#232b3a;
+    --text:#dfe6f0; --muted:#8291a8;
+    --bow:#e8c547; --starboard:#4fe07f; --stern:#63e0c7; --port:#e0574f;
+    --danger:#e0574f; --safe:#4fe07f;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0; min-height:100vh; background:radial-gradient(ellipse at 50% 0%, #161d2b, var(--bg) 65%);
+    color:var(--text); font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    display:flex; flex-direction:column; align-items:center; padding:24px 16px 60px;
+  }
+  h1{font-size:20px; font-weight:600; letter-spacing:.03em; margin:0 0 2px;}
+  .subtitle{color:var(--muted); font-size:13px; margin-bottom:18px;}
+  .layout{display:flex; gap:20px; flex-wrap:wrap; justify-content:center; max-width:1160px; width:100%;}
+  .panel{
+    background:linear-gradient(180deg,var(--panel),var(--panel-2));
+    border:1px solid var(--border); border-radius:14px; padding:16px;
+  }
+  .radar-panel{display:flex; flex-direction:column; align-items:center; gap:10px;}
+  canvas{border-radius:10px; background:#060a12;}
+  .readout-row{display:flex; gap:18px; font-size:12px; color:var(--muted); font-variant-numeric:tabular-nums;}
+  .readout-row b{color:var(--text); font-weight:600;}
+  .status-line{font-size:13px; font-weight:600; text-align:center; min-height:18px;}
+  .status-safe{color:var(--safe);}
+  .status-warn{color:#e0b84f;}
+  .status-danger{color:var(--danger);}
+
+  .side{display:flex; flex-direction:column; gap:14px; width:340px;}
+  .factions{display:flex; flex-direction:column; gap:10px;}
+  .faction-card{
+    border:1px solid var(--border); border-radius:10px; padding:10px 12px;
+    background:rgba(255,255,255,0.02); cursor:pointer; user-select:none;
+    transition:background .15s ease, transform .1s ease, opacity .15s ease;
+  }
+  .faction-card:hover:not(.disabled){background:rgba(255,255,255,0.06); border-color:#2c3648;}
+  .faction-card:active:not(.disabled){transform:scale(0.98);}
+  .faction-card.disabled{opacity:.45; cursor:not-allowed;}
+  .faction-head{display:flex; justify-content:space-between; align-items:center; font-size:13px; margin-bottom:6px;}
+  .faction-name{display:flex; align-items:center; gap:8px; font-weight:600;}
+  .dot{width:10px; height:10px; border-radius:50%; display:inline-block; flex-shrink:0;}
+  .bar-track{height:7px; border-radius:4px; background:#1c2330; overflow:hidden;}
+  .bar-fill{height:100%; border-radius:4px; transition:width .25s ease;}
+  .faction-meta{display:flex; justify-content:space-between; font-size:11px; color:var(--muted); margin-top:4px;}
+
+  .convert-box{display:flex; flex-direction:column; gap:6px;}
+  .convert-hint{font-size:11px; color:var(--muted); line-height:1.4; margin:0;}
+  .pending-list{display:flex; flex-direction:column; gap:4px; margin-top:2px; min-height:6px;}
+  .pending-item{
+    display:flex; justify-content:space-between; align-items:center; font-size:11px; color:var(--muted);
+    background:rgba(255,255,255,0.03); border:1px solid var(--border); border-radius:6px; padding:4px 8px;
+  }
+  .pending-item b{color:var(--text); font-weight:600;}
+
+  button{
+    background:#1b2433; color:var(--text); border:1px solid var(--border);
+    border-radius:6px; padding:7px 12px; font-size:12px; cursor:pointer; font-weight:600;
+    transition:background .15s ease, transform .1s ease;
+  }
+  button:hover:not(:disabled){background:#243149;}
+  button:active:not(:disabled){transform:scale(0.97);}
+  button:disabled{opacity:.35; cursor:not-allowed;}
+
+  .resource-row{display:flex; justify-content:space-between; align-items:center; font-size:13px;}
+  .resource-row b{font-variant-numeric:tabular-nums;}
+
+  .legend{display:flex; flex-wrap:wrap; gap:10px; font-size:11px; color:var(--muted); justify-content:center;}
+  .legend span{display:flex; align-items:center; gap:5px;}
+
+  .controls-row{display:flex; gap:8px; justify-content:center;}
+  .controls-row button{flex:1;}
+
+  .gen-banner{
+    position:fixed; inset:0; background:rgba(5,7,12,0.88); display:none;
+    align-items:center; justify-content:center; z-index:50; flex-direction:column; gap:10px; text-align:center; padding:20px;
+  }
+  .gen-banner.show{display:flex;}
+  .gen-banner h2{color:var(--danger); font-size:28px; margin:0; letter-spacing:.05em;}
+  .gen-banner p{color:var(--text); font-size:14px; max-width:420px; margin:0;}
+  .gen-banner button{margin-top:12px; padding:10px 22px; font-size:13px;}
+
+  .upgrades{font-size:11px; color:var(--muted); text-align:center;}
+
+  .helm-row{display:flex; align-items:center; gap:14px;}
+  .wheel-wrap{width:64px; height:64px; flex-shrink:0; display:flex; align-items:center; justify-content:center;}
+  .wheel{
+    width:58px; height:58px; border-radius:50%;
+    border:4px solid #5a4632; background:radial-gradient(circle, #3a2f22 0%, #241d15 70%);
+    position:relative; transition:transform .08s linear;
+  }
+  .wheel::before{
+    content:""; position:absolute; inset:0; border-radius:50%;
+    background:
+      linear-gradient(0deg, transparent 46%, #5a4632 46%, #5a4632 54%, transparent 54%),
+      linear-gradient(60deg, transparent 46%, #5a4632 46%, #5a4632 54%, transparent 54%),
+      linear-gradient(120deg, transparent 46%, #5a4632 46%, #5a4632 54%, transparent 54%);
+  }
+  .wheel::after{
+    content:""; position:absolute; left:50%; top:50%; width:14px; height:14px;
+    margin:-7px 0 0 -7px; border-radius:50%; background:#6b5641; border:2px solid #3a2f22;
+  }
+  .helm-buttons{display:flex; flex-direction:column; gap:6px; flex:1;}
+  .helm-buttons button{width:100%;}
+  .heading-readout{font-size:11px; color:var(--muted); text-align:center; margin-top:8px;}
+  .heading-readout b{color:var(--text);}
+
+  .hull-bar-track{height:8px; border-radius:4px; background:#1c2330; overflow:hidden; margin-top:4px;}
+  .hull-bar-fill{height:100%; border-radius:4px; background:linear-gradient(90deg,#e0574f,#e0b84f,#4fe07f); transition:width .25s ease;}
+
+  .batteries{display:flex; flex-direction:column; gap:10px;}
+  .battery{border:1px solid var(--border); border-radius:10px; padding:10px 12px; background:rgba(255,255,255,0.02);}
+  .battery-head{display:flex; justify-content:space-between; align-items:center; font-size:13px; font-weight:600; margin-bottom:8px;}
+  .battery-stage{font-weight:400; color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.04em;}
+  .battery-actions{display:flex; gap:6px;}
+  .battery-actions button{flex:1; padding:6px 4px; font-size:11px;}
+</style>
+</head>
+<body>
+
+<h1>The Capsize Engine</h1>
+<div class="subtitle">Trim the ship. Don't let her settle.</div>
+
+<div class="layout">
+
+  <div class="panel radar-panel">
+    <canvas id="radar" width="480" height="380"></canvas>
+    <div class="status-line" id="statusLine">STEADY</div>
+    <div class="readout-row">
+      <span>List: <b id="readX">0.00</b></span>
+      <span>Trim: <b id="readY">0.00</b></span>
+      <span>|Tilt|: <b id="readMag">0.00</b></span>
+      <span>Capsize limit: <b id="readThreshold">15.0</b></span>
+    </div>
+    <div class="legend">
+      <span><span class="dot" style="background:var(--bow)"></span>Bow</span>
+      <span><span class="dot" style="background:var(--starboard)"></span>Starboard</span>
+      <span><span class="dot" style="background:var(--stern)"></span>Stern</span>
+      <span><span class="dot" style="background:var(--port)"></span>Port</span>
+    </div>
+    <div class="controls-row">
+      <button id="pauseBtn">Pause</button>
+      <button id="speedBtn">Speed: 1x</button>
+      <button id="resetBtn">Reset Voyage</button>
+    </div>
+    <div class="upgrades" id="genInfo">Voyage 1 &middot; Ticks afloat: 0 &middot; Hull refit bonus: +0.000</div>
+  </div>
+
+  <div class="side">
+    <div class="panel">
+      <div class="resource-row">
+        <span>Crew Stamina (command resource)</span>
+        <b id="devotionVal">0.0</b>
+      </div>
+      <div class="resource-row" style="margin-top:8px;">
+        <span>Hull Integrity</span>
+        <b id="hullVal">100</b>
+      </div>
+      <div class="hull-bar-track"><div class="hull-bar-fill" id="hullBar" style="width:100%;"></div></div>
+    </div>
+
+    <div class="panel">
+      <div style="font-size:13px; font-weight:600; margin-bottom:8px;">Helm</div>
+      <div class="helm-row">
+        <div class="wheel-wrap"><div class="wheel" id="wheelEl"></div></div>
+        <div class="helm-buttons">
+          <button id="rudderPortBtn">&#8630; Wheel Port</button>
+          <button id="rudderStarBtn">&#8631; Wheel Starboard</button>
+        </div>
+      </div>
+      <div class="heading-readout">Heading <b id="headingVal">000</b>&deg; &middot; Rudder <b id="rudderVal">0.00</b></div>
+    </div>
+
+    <div class="panel factions" id="factionList"></div>
+
+    <div class="panel convert-box">
+      <div style="font-size:13px; font-weight:600; margin-bottom:2px;">Ballast Trim</div>
+      <p class="convert-hint">Click a station's ballast bar to call for a trim toward it. The crew can't move heavy cargo precisely on a pitching deck — orders cost stamina up front, take a few moments to execute, and pull a rough, uneven amount from whichever stations can spare the weight.</p>
+      <div class="pending-list" id="pendingList"></div>
+    </div>
+
+    <div class="panel">
+      <div style="font-size:13px; font-weight:600; margin-bottom:2px;">Cannons</div>
+      <p class="convert-hint">Reload, prime, aim, then fire each battery in turn. Aiming needs a raider within arc off that side; firing kicks the deck sideways, opposite the guns.</p>
+      <div class="batteries" id="batteryList"></div>
+    </div>
+  </div>
+
+</div>
+
+<div class="gen-banner" id="genBanner">
+  <h2 id="genBannerHeadline">SHE'S GONE OVER</h2>
+  <p id="genBannerText"></p>
+  <button id="genContinueBtn">Launch Next Hull</button>
+</div>
+
+<script>
+(function(){
+  "use strict";
+
+  // ---------------------------------------------------------------------
+  // Tunable simulation constants
+  // Same vector-differential core as the weather-deity prototype this was
+  // forked from (see /weather/index.html), retuned for a symmetric growth
+  // loop: see note above `tick()` for why that changed.
+  // ---------------------------------------------------------------------
+  const FORCE_SCALE    = 0.0045; // scales raw ballast*weight force into vector-space units
+  const NOISE_STD       = 1.1;   // std-dev of gaussian wave/wind noise per axis, per tick
+  const BASE_GAMMA      = 0.05;  // restorative righting-moment (hull wants to sit level)
+  const FLOOD_GROWTH    = 0.014; // self-reinforcing flooding rate toward whichever side is low
+  const BASELINE_GROWTH = 0.0010;// tiny organic drift for stations not currently "low"
+  const DEVOTION_RATE   = 0.6;   // crew stamina regenerated per tick
+  const TICK_MS          = 150;  // simulation ms per fixed tick
+
+  // Ballast Trim (demographic modulation) — deliberately sloppy & delayed
+  const RALLY_COST       = 8;    // stamina cost to call an order
+  const RALLY_LAG_TICKS  = 3;    // ticks before the order executes
+  const RALLY_MIN        = 8;    // min headcount an order tries to move
+  const RALLY_MAX        = 20;   // max headcount an order tries to move
+  const RALLY_MIN_LEFT   = 5;    // a source station is never stripped below this
+
+  // Helm: rudder eases toward held input, turning yaws the heading and
+  // heels the ship (a new force feeding the same list/trim vector above)
+  const RUDDER_EASE_RATE = 0.12;  // fraction rudder closes the gap to input, per tick
+  const TURN_RATE_DEG    = 1.7;   // heading deg turned per tick at full rudder deflection
+  const TURN_HEEL_FORCE  = 0.85;  // vector.x force per tick from a deflected rudder
+
+  // Enemy raiders — approach, seek a broadside on the player, fire on a timer
+  const SPAWN_CHANCE_PER_TICK = 0.006;
+  const MAX_ENEMIES        = 2;
+  const SPAWN_DISTANCE     = 300;  // world units; also the render-scale reference range
+  const ENGAGE_DISTANCE    = 165;  // range an enemy tries to hold once closed
+  const APPROACH_SPEED     = 1.1;  // world units/tick closed while approaching
+  const REPOSITION_DEG     = 0.9;  // deg/tick an enemy adjusts bearing hunting for a broadside
+  const ENEMY_FIRE_ARC     = 30;   // deg either side of abeam (90/270) an enemy needs to fire
+  const ENEMY_FIRE_CHANCE  = 0.035;// per-tick chance to fire once in arc & engaged
+  const ENEMY_HIT_DAMAGE   = 9;    // hull integrity lost per hit
+  const ENEMY_SHOCK_FORCE  = 2.2;  // magnitude of the random tilt kick a hit delivers
+  const ENEMY_HP           = 3;
+  const ENEMY_SINK_TICKS   = 20;   // ticks a sunk hull lingers on screen before despawn
+
+  // Player cannons — reload/prime/aim/fire, gated by stamina, range & arc
+  const CANNON_RELOAD_TICKS = 5;
+  const CANNON_PRIME_TICKS  = 3;
+  const CANNON_RELOAD_COST  = 6;
+  const CANNON_PRIME_COST   = 4;
+  const CANNON_AIM_COST     = 2;
+  const CANNON_FIRE_COST    = 3;
+  const CANNON_FIRE_ARC     = 32;  // deg either side of abeam a target must sit in to aim/fire
+  const CANNON_RANGE        = 210;
+  const CANNON_DAMAGE       = 1;
+  const CANNON_RECOIL_FORCE = 2.6; // sideways kick to vector.x, opposite the firing side
+
+  const HULL_INTEGRITY_MAX = 100;
+
+  // ---------------------------------------------------------------------
+  // Core engine state
+  // ---------------------------------------------------------------------
+  const climateEngine = {
+    vector: { x: 0.0, y: 0.0 }, // x = list (Port <-> Starboard), y = trim (Stern-down <-> Bow-down)
+    threshold: 15.0,
+    factions: {
+      bow:       { label: "Bow",       short:"Bow",       color: "var(--bow)",       hex:"#e8c547", pop: 50, weight: 1.0, dir: { x: 0,  y: 1  }, angle: 0   },
+      starboard: { label: "Starboard", short:"Starboard", color: "var(--starboard)", hex:"#4fe07f", pop: 50, weight: 1.1, dir: { x: 1,  y: 0  }, angle: 90  },
+      stern:     { label: "Stern",     short:"Stern",     color: "var(--stern)",     hex:"#63e0c7", pop: 50, weight: 0.9, dir: { x: 0,  y: -1 }, angle: 180 },
+      port:      { label: "Port",      short:"Port",      color: "var(--port)",      hex:"#e0574f", pop: 50, weight: 1.0, dir: { x: -1, y: 0  }, angle: 270 }
+    },
+    devotion: 0.0
+  };
+
+  let permanent = { gammaBonus: 0.0, noiseReduction: 0.0 };
+  let generation = 1;
+  let ticksSurvived = 0;
+  let miniTrail = [];
+  let paused = false;
+  let speedMultiplier = 1;
+  let crashed = false;
+  let pendingOrders = [];
+  let orderSeq = 0;
+
+  // Helm
+  let heading = 0;       // degrees, 0 = launch heading, clockwise
+  let rudder = 0;        // current easing rudder deflection, -1 (hard port) .. 1 (hard starboard)
+  let rudderInput = 0;   // held wheel input, -1 / 0 / 1
+
+  // Enemy raiders, in ship-relative polar coordinates (bearing 0 = dead ahead)
+  let enemies = [];
+  let enemySeq = 0;
+  let hullIntegrity = HULL_INTEGRITY_MAX;
+
+  // Cannon batteries
+  const cannons = {
+    port:      { dir: -1, broadsideBearing: 270, stage: "empty", ticksLeft: 0, targetId: null },
+    starboard: { dir:  1, broadsideBearing: 90,  stage: "empty", ticksLeft: 0, targetId: null }
+  };
+
+  function angularDist(a, b){
+    const d = Math.abs(a - b) % 360;
+    return d > 180 ? 360 - d : d;
+  }
+  function angularSignedDiff(target, from){
+    return ((target - from + 540) % 360) - 180;
+  }
+
+  // ---------------------------------------------------------------------
+  // Gaussian noise via Box-Muller
+  // ---------------------------------------------------------------------
+  function gaussianRandom(){
+    let u = 0, v = 0;
+    while(u === 0) u = Math.random();
+    while(v === 0) v = Math.random();
+    return Math.sqrt(-2.0 * Math.log(u)) * Math.cos(2.0 * Math.PI * v);
+  }
+
+  // ---------------------------------------------------------------------
+  // Ballast Trim orders: queue now, resolve (sloppily) a few ticks later
+  // ---------------------------------------------------------------------
+  function queueRally(targetKey){
+    if (crashed) return;
+    if (climateEngine.devotion < RALLY_COST) return;
+    climateEngine.devotion -= RALLY_COST;
+    pendingOrders.push({ id: orderSeq++, target: targetKey, ticksLeft: RALLY_LAG_TICKS });
+  }
+
+  function resolveRally(targetKey){
+    const f = climateEngine.factions;
+    const target = f[targetKey];
+    if (!target) return;
+    const totalWanted = RALLY_MIN + Math.random() * (RALLY_MAX - RALLY_MIN);
+    const sources = Object.keys(f).filter(k => k !== targetKey);
+    const weights = sources.map(() => Math.random());
+    const weightSum = weights.reduce((a, b) => a + b, 0) || 1;
+    let actualTotal = 0;
+    sources.forEach((key, i) => {
+      const desired = totalWanted * (weights[i] / weightSum);
+      const src = f[key];
+      const available = Math.max(0, src.pop - RALLY_MIN_LEFT);
+      const taken = Math.min(desired, available);
+      src.pop -= taken;
+      actualTotal += taken;
+    });
+    target.pop += actualTotal;
+  }
+
+  function resolvePendingOrders(){
+    const stillPending = [];
+    for (const order of pendingOrders){
+      order.ticksLeft--;
+      if (order.ticksLeft > 0){ stillPending.push(order); continue; }
+      resolveRally(order.target);
+    }
+    pendingOrders = stillPending;
+  }
+
+  // ---------------------------------------------------------------------
+  // Enemy raiders: close to engage range, hunt for a broadside angle on the
+  // player (abeam, 90 or 270 relative bearing), and fire on a timer once
+  // there. A hit is a hull-integrity chip plus a random-direction kick into
+  // the same tilt vector the storm pushes on — cannon fire rocks the ship
+  // same as a wave does, it just doesn't care whether that's convenient.
+  // ---------------------------------------------------------------------
+  function spawnEnemy(){
+    enemies.push({
+      id: enemySeq++,
+      relBearing: Math.random() * 360,
+      distance: SPAWN_DISTANCE,
+      hp: ENEMY_HP,
+      muzzleFlash: 0,
+      sinkTimer: 0
+    });
+  }
+
+  function enemyFire(e){
+    e.muzzleFlash = 6;
+    hullIntegrity = Math.max(0, hullIntegrity - ENEMY_HIT_DAMAGE);
+    const kickAngle = Math.random() * Math.PI * 2;
+    climateEngine.vector.x += Math.cos(kickAngle) * ENEMY_SHOCK_FORCE;
+    climateEngine.vector.y += Math.sin(kickAngle) * ENEMY_SHOCK_FORCE;
+    if (hullIntegrity <= 0 && !crashed) triggerSinking();
+  }
+
+  function updateEnemies(headingDelta){
+    if (!crashed && enemies.length < MAX_ENEMIES && Math.random() < SPAWN_CHANCE_PER_TICK){
+      spawnEnemy();
+    }
+    for (const e of enemies){
+      // the world sweeps opposite the ship's own turn — bearings are ship-relative
+      e.relBearing = (e.relBearing - headingDelta + 360) % 360;
+      if (e.muzzleFlash > 0) e.muzzleFlash--;
+
+      if (e.hp <= 0){ e.sinkTimer--; continue; }
+
+      const target = angularDist(e.relBearing, 90) <= angularDist(e.relBearing, 270) ? 90 : 270;
+      const diff = angularSignedDiff(target, e.relBearing);
+      const step = Math.sign(diff) * Math.min(Math.abs(diff), REPOSITION_DEG);
+      e.relBearing = (e.relBearing + step + 360) % 360;
+
+      if (e.distance > ENGAGE_DISTANCE) e.distance = Math.max(ENGAGE_DISTANCE, e.distance - APPROACH_SPEED);
+      else e.distance = Math.max(60, Math.min(SPAWN_DISTANCE, e.distance + (Math.random() - 0.5) * 1.2));
+
+      const inArc = angularDist(e.relBearing, target) <= ENEMY_FIRE_ARC;
+      if (!crashed && inArc && e.distance <= ENGAGE_DISTANCE + 40 && Math.random() < ENEMY_FIRE_CHANCE){
+        enemyFire(e);
+      }
+    }
+    enemies = enemies.filter(e => !(e.hp <= 0 && e.sinkTimer <= 0));
+  }
+
+  // ---------------------------------------------------------------------
+  // Cannon batteries: Reload -> Prime -> Aim -> Fire. Reload/Prime take a
+  // few ticks (same "the crew needs a moment" logic as Ballast Trim); Aim
+  // locks the nearest valid target in arc; Fire is instant and kicks the
+  // tilt vector sideways — the same trade the enemy makes when they hit you.
+  // ---------------------------------------------------------------------
+  function findTarget(key){
+    const c = cannons[key];
+    let best = null, bestDist = Infinity;
+    for (const e of enemies){
+      if (e.hp <= 0) continue;
+      if (e.distance > CANNON_RANGE) continue;
+      if (angularDist(e.relBearing, c.broadsideBearing) > CANNON_FIRE_ARC) continue;
+      if (e.distance < bestDist){ bestDist = e.distance; best = e; }
+    }
+    return best;
+  }
+
+  function reloadCannon(key){
+    const c = cannons[key];
+    if (crashed || c.stage !== "empty") return;
+    if (climateEngine.devotion < CANNON_RELOAD_COST) return;
+    climateEngine.devotion -= CANNON_RELOAD_COST;
+    c.stage = "loading"; c.ticksLeft = CANNON_RELOAD_TICKS;
+  }
+
+  function primeCannon(key){
+    const c = cannons[key];
+    if (crashed || c.stage !== "loaded") return;
+    if (climateEngine.devotion < CANNON_PRIME_COST) return;
+    climateEngine.devotion -= CANNON_PRIME_COST;
+    c.stage = "priming"; c.ticksLeft = CANNON_PRIME_TICKS;
+  }
+
+  function aimCannon(key){
+    const c = cannons[key];
+    if (crashed || c.stage !== "primed") return;
+    const target = findTarget(key);
+    if (!target) return;
+    if (climateEngine.devotion < CANNON_AIM_COST) return;
+    climateEngine.devotion -= CANNON_AIM_COST;
+    c.stage = "ready"; c.targetId = target.id;
+  }
+
+  function fireCannon(key){
+    const c = cannons[key];
+    if (crashed || c.stage !== "ready") return;
+    if (climateEngine.devotion < CANNON_FIRE_COST) return;
+    climateEngine.devotion -= CANNON_FIRE_COST;
+    const target = enemies.find(e => e.id === c.targetId && e.hp > 0);
+    if (target && target.distance <= CANNON_RANGE && angularDist(target.relBearing, c.broadsideBearing) <= CANNON_FIRE_ARC){
+      target.hp -= CANNON_DAMAGE;
+      if (target.hp <= 0) target.sinkTimer = ENEMY_SINK_TICKS;
+    }
+    climateEngine.vector.x += -c.dir * CANNON_RECOIL_FORCE;
+    c.stage = "empty"; c.targetId = null;
+  }
+
+  function updateCannons(){
+    for (const key in cannons){
+      const c = cannons[key];
+      if (c.stage === "loading" || c.stage === "priming"){
+        c.ticksLeft--;
+        if (c.ticksLeft <= 0) c.stage = (c.stage === "loading") ? "loaded" : "primed";
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------------
+  // Simulation tick: W_t+1 = W_t + sum(P_i * I_i * D_i) - gamma*W_t + Noise
+  //
+  // Growth loop changed from the weather prototype: instead of only two of
+  // four factions having a triggered growth path (an arbitrary asymmetry
+  // that fit "prayer" but not physics), every station here floods when the
+  // ship is currently leaning toward it — the low side takes on water and
+  // gets heavier, worsening the list. That's the textbook capsize feedback
+  // loop, it's symmetric across all four directions, and it needed less
+  // special-case code than the original, not more.
+  // ---------------------------------------------------------------------
+  function tick(){
+    if (crashed) return;
+
+    // Helm: rudder eases toward the held input, yaws the heading, and heels
+    // the ship while deflected — a sustained turn keeps leaning you, same as
+    // a real one under helm.
+    rudder += (rudderInput - rudder) * RUDDER_EASE_RATE;
+    const headingDelta = rudder * TURN_RATE_DEG;
+    heading = (heading + headingDelta + 360) % 360;
+
+    const f = climateEngine.factions;
+    const gamma = BASE_GAMMA + permanent.gammaBonus;
+
+    let fx = 0, fy = 0;
+    for (const key in f){
+      const fac = f[key];
+      fx += fac.pop * fac.weight * fac.dir.x;
+      fy += fac.pop * fac.weight * fac.dir.y;
+    }
+    fx *= FORCE_SCALE;
+    fy *= FORCE_SCALE;
+
+    fx -= rudder * TURN_HEEL_FORCE;
+
+    fx -= gamma * climateEngine.vector.x;
+    fy -= gamma * climateEngine.vector.y;
+
+    const noiseStd = Math.max(0.05, NOISE_STD - permanent.noiseReduction);
+    const nx = gaussianRandom() * noiseStd;
+    const ny = gaussianRandom() * noiseStd;
+
+    climateEngine.vector.x += fx + nx;
+    climateEngine.vector.y += fy + ny;
+
+    const W = climateEngine.vector;
+    for (const key in f){
+      const fac = f[key];
+      const alignment = (W.x * fac.dir.x + W.y * fac.dir.y) / climateEngine.threshold;
+      if (alignment > 0) fac.pop *= (1 + FLOOD_GROWTH * Math.min(alignment, 3));
+      else fac.pop *= (1 + BASELINE_GROWTH);
+    }
+
+    resolvePendingOrders();
+    updateCannons();
+    updateEnemies(headingDelta);
+    if (crashed) return;
+
+    climateEngine.devotion += DEVOTION_RATE;
+    ticksSurvived++;
+
+    miniTrail.push({ x: W.x, y: W.y });
+    if (miniTrail.length > 40) miniTrail.shift();
+
+    const mag = Math.hypot(W.x, W.y);
+    if (mag >= climateEngine.threshold){
+      triggerCataclysm(mag);
+    }
+  }
+
+  // ---------------------------------------------------------------------
+  // Capsize / next-hull transition
+  // ---------------------------------------------------------------------
+  function endVoyage(headline, detail){
+    crashed = true;
+    const upgradePoints = Math.floor(ticksSurvived / 50);
+    permanent.gammaBonus += upgradePoints * 0.0015;
+    permanent.noiseReduction += upgradePoints * 0.02;
+
+    document.getElementById("genBannerHeadline").textContent = headline;
+    document.getElementById("genBannerText").textContent =
+      `${detail} `+
+      `Voyage ${generation} stayed afloat for ${ticksSurvived} ticks, earning ${upgradePoints} shipwright insight point(s). `+
+      `The next hull launches +${(upgradePoints*0.0015).toFixed(4)} sturdier and -${(upgradePoints*0.02).toFixed(3)} more forgiving in the swell, permanently.`;
+    document.getElementById("genBanner").classList.add("show");
+  }
+
+  function triggerCataclysm(mag){
+    endVoyage("SHE'S GONE OVER", `The list hit |tilt| = ${mag.toFixed(2)} and she rolled past recovery.`);
+  }
+
+  function triggerSinking(){
+    endVoyage("SHE'S GONE DOWN", `Enemy fire opened her hull below the waterline and the sea took the rest.`);
+  }
+
+  function resetFactionPops(){
+    climateEngine.factions.bow.pop = 50;
+    climateEngine.factions.starboard.pop = 50;
+    climateEngine.factions.stern.pop = 50;
+    climateEngine.factions.port.pop = 50;
+  }
+
+  function resetCombat(){
+    heading = 0;
+    rudder = 0;
+    rudderInput = 0;
+    enemies = [];
+    hullIntegrity = HULL_INTEGRITY_MAX;
+    for (const key in cannons){
+      cannons[key].stage = "empty";
+      cannons[key].ticksLeft = 0;
+      cannons[key].targetId = null;
+    }
+  }
+
+  function beginNextGeneration(){
+    generation++;
+    ticksSurvived = 0;
+    miniTrail = [];
+    pendingOrders = [];
+    crashed = false;
+    climateEngine.vector.x = 0;
+    climateEngine.vector.y = 0;
+    climateEngine.devotion = 0;
+    resetFactionPops();
+    resetCombat();
+    document.getElementById("genBanner").classList.remove("show");
+  }
+
+  function resetRun(){
+    generation = 1;
+    ticksSurvived = 0;
+    miniTrail = [];
+    pendingOrders = [];
+    crashed = false;
+    permanent = { gammaBonus: 0.0, noiseReduction: 0.0 };
+    climateEngine.vector.x = 0;
+    climateEngine.vector.y = 0;
+    climateEngine.devotion = 0;
+    resetFactionPops();
+    resetCombat();
+    document.getElementById("genBanner").classList.remove("show");
+  }
+
+  // ---------------------------------------------------------------------
+  // UI wiring (side panel)
+  // ---------------------------------------------------------------------
+  const factionListEl = document.getElementById("factionList");
+  const pendingListEl = document.getElementById("pendingList");
+
+  function buildFactionUI(){
+    factionListEl.innerHTML = "";
+    for (const key in climateEngine.factions){
+      const fac = climateEngine.factions[key];
+      const card = document.createElement("div");
+      card.className = "faction-card";
+      card.id = `card-${key}`;
+      card.title = `Trim toward ${fac.short} (${RALLY_COST} stamina)`;
+      card.innerHTML = `
+        <div class="faction-head">
+          <span class="faction-name"><span class="dot" style="background:${fac.color}"></span>${fac.label}</span>
+          <span id="pop-${key}">${Math.round(fac.pop)}</span>
+        </div>
+        <div class="bar-track"><div class="bar-fill" id="bar-${key}" style="background:${fac.color}; width:0%;"></div></div>
+        <div class="faction-meta">
+          <span>weight ${fac.weight.toFixed(2)}</span>
+          <span>click to trim &middot; ${RALLY_COST} stamina</span>
+        </div>
+      `;
+      card.addEventListener("click", () => queueRally(key));
+      factionListEl.appendChild(card);
+    }
+  }
+
+  function updateFactionUI(){
+    let maxPop = 0;
+    for (const key in climateEngine.factions) maxPop = Math.max(maxPop, climateEngine.factions[key].pop);
+    maxPop = Math.max(maxPop, 50);
+
+    for (const key in climateEngine.factions){
+      const fac = climateEngine.factions[key];
+      const popEl = document.getElementById(`pop-${key}`);
+      const barEl = document.getElementById(`bar-${key}`);
+      if (popEl) popEl.textContent = Math.round(fac.pop);
+      if (barEl) barEl.style.width = Math.min(100, (fac.pop / maxPop) * 100) + "%";
+    }
+  }
+
+  function updateRallyUI(){
+    const affordable = !crashed && climateEngine.devotion >= RALLY_COST;
+    for (const key in climateEngine.factions){
+      const card = document.getElementById(`card-${key}`);
+      if (!card) continue;
+      if (affordable) card.classList.remove("disabled");
+      else card.classList.add("disabled");
+    }
+    if (pendingOrders.length === 0){
+      pendingListEl.innerHTML = "";
+    } else {
+      pendingListEl.innerHTML = pendingOrders.map(o => {
+        const fac = climateEngine.factions[o.target];
+        return `<div class="pending-item"><span>Trimming to <b>${fac.short}</b></span><span>${o.ticksLeft} tick${o.ticksLeft===1?'':'s'}</span></div>`;
+      }).join("");
+    }
+  }
+
+  // ---------------------------------------------------------------------
+  // UI wiring (cannon batteries)
+  // ---------------------------------------------------------------------
+  const batteryListEl = document.getElementById("batteryList");
+  const BATTERY_LABEL = { port: "Port", starboard: "Starboard" };
+  const STAGE_LABEL = {
+    empty: "Empty", loading: "Loading…", loaded: "Loaded",
+    priming: "Priming…", primed: "Primed", ready: "Ready"
+  };
+  const STAGE_ACTION = { empty: "reload", loaded: "prime", primed: "aim", ready: "fire" };
+  const ACTION_LABEL = { reload: "Reload", prime: "Prime", aim: "Aim", fire: "Fire" };
+  const ACTION_FN = { reload: reloadCannon, prime: primeCannon, aim: aimCannon, fire: fireCannon };
+
+  function buildBatteryUI(){
+    batteryListEl.innerHTML = "";
+    for (const key in cannons){
+      const div = document.createElement("div");
+      div.className = "battery";
+      div.id = `battery-${key}`;
+      div.innerHTML = `
+        <div class="battery-head">
+          <span>${BATTERY_LABEL[key]} Battery</span>
+          <span class="battery-stage" id="battery-stage-${key}">Empty</span>
+        </div>
+        <div class="battery-actions" id="battery-actions-${key}"></div>
+      `;
+      batteryListEl.appendChild(div);
+    }
+  }
+
+  function updateBatteryUI(){
+    for (const key in cannons){
+      const c = cannons[key];
+      const stageEl = document.getElementById(`battery-stage-${key}`);
+      const actionsEl = document.getElementById(`battery-actions-${key}`);
+      if (!stageEl || !actionsEl) continue;
+
+      let label = STAGE_LABEL[c.stage] || c.stage;
+      if (c.stage === "loading" || c.stage === "priming") label += ` ${c.ticksLeft}`;
+      stageEl.textContent = label;
+
+      const action = STAGE_ACTION[c.stage];
+      if (!action){ actionsEl.innerHTML = ""; continue; }
+
+      let enabled = !crashed;
+      let cost = 0;
+      if (action === "reload") cost = CANNON_RELOAD_COST;
+      else if (action === "prime") cost = CANNON_PRIME_COST;
+      else if (action === "aim"){ cost = CANNON_AIM_COST; if (!findTarget(key)) enabled = false; }
+      else if (action === "fire") cost = CANNON_FIRE_COST;
+      if (climateEngine.devotion < cost) enabled = false;
+
+      actionsEl.innerHTML = `<button id="battery-btn-${key}" ${enabled ? "" : "disabled"}>${ACTION_LABEL[action]} (${cost})</button>`;
+      const btn = document.getElementById(`battery-btn-${key}`);
+      if (btn) btn.addEventListener("click", () => ACTION_FN[action](key));
+    }
+  }
+
+  // ---------------------------------------------------------------------
+  // Ship scene rendering: top-down hull that visibly rolls & pitches with
+  // the live tilt vector, on an open, endless storm-tossed sea.
+  // ---------------------------------------------------------------------
+  const canvas = document.getElementById("radar");
+  const ctx = canvas.getContext("2d");
+  const W_CANVAS = canvas.width, H_CANVAS = canvas.height;
+  const shipCx = W_CANVAS / 2, shipCy = H_CANVAS / 2 + 10;
+  const HULL_HL = 132, HULL_HB = 58; // hull half-length (bow-stern), half-beam (port-starboard)
+  const MAX_ROLL_RAD = 0.42; // ~24 degrees of visible roll at full list
+
+  function seededRandom(seed){
+    let s = seed;
+    return function(){
+      s = (s * 9301 + 49297) % 233280;
+      return s / 233280;
+    };
+  }
+
+  // hull silhouette in local (unrotated, unpitched) coordinates — bow at top (-y)
+  const hullPointsLocal = [
+    { x: 0,               y: -HULL_HL,        t: -1    },
+    { x: HULL_HB * 0.55,  y: -HULL_HL * 0.55, t: -0.55 },
+    { x: HULL_HB,         y: -HULL_HL * 0.05, t: -0.05 },
+    { x: HULL_HB * 0.92,  y:  HULL_HL * 0.5,  t:  0.5  },
+    { x: HULL_HB * 0.6,   y:  HULL_HL * 0.92, t:  0.92 },
+    { x: 0,                y:  HULL_HL,        t:  1    },
+    { x: -HULL_HB * 0.6,  y:  HULL_HL * 0.92, t:  0.92 },
+    { x: -HULL_HB * 0.92, y:  HULL_HL * 0.5,  t:  0.5  },
+    { x: -HULL_HB,        y: -HULL_HL * 0.05, t: -0.05 },
+    { x: -HULL_HB * 0.55, y: -HULL_HL * 0.55, t: -0.55 }
+  ];
+
+  function pitchedHullPoints(pitch){
+    return hullPointsLocal.map(p => ({ x: p.x, y: p.y - p.t * pitch * 16 }));
+  }
+
+  function traceHullPath(pts, scaleMul){
+    ctx.beginPath();
+    ctx.moveTo(pts[0].x * scaleMul, pts[0].y * scaleMul);
+    for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x * scaleMul, pts[i].y * scaleMul);
+    ctx.closePath();
+  }
+
+  function polarLocal(angleDeg, radiusFrac){
+    const rad = angleDeg * Math.PI / 180;
+    return { x: Math.sin(rad) * HULL_HB * radiusFrac, y: -Math.cos(rad) * HULL_HL * radiusFrac };
+  }
+
+  // deterministic cargo-pile layout per station, generated once at boot
+  for (const key in climateEngine.factions){
+    const fac = climateEngine.factions[key];
+    const rng = seededRandom(fac.angle + 11);
+    const anchor = polarLocal(fac.angle, 0.62);
+    fac.points = [];
+    for (let i = 0; i < 14; i++){
+      fac.points.push({ x: anchor.x + (rng() - 0.5) * 34, y: anchor.y + (rng() - 0.5) * 22 });
+    }
+  }
+
+  // particle pools — ambient storm is always on, intensity scales with danger
+  const RAIN_POOL = 100, GUST_COUNT = 22, SPRAY_POOL = 26;
+  const rainDrops = Array.from({ length: RAIN_POOL }, () => ({
+    x: Math.random() * W_CANVAS,
+    y: Math.random() * H_CANVAS,
+    len: 10 + Math.random() * 10,
+    speed: 7 + Math.random() * 5,
+    threshold: Math.random() * 0.4 // most drops always fall; a minority need higher danger to appear
+  }));
+  const gustStreaks = Array.from({ length: GUST_COUNT }, () => ({
+    x: Math.random() * W_CANVAS * 1.4 - W_CANVAS * 0.2,
+    y: Math.random() * H_CANVAS,
+    len: 22 + Math.random() * 30,
+    speed: 7 + Math.random() * 6,
+    threshold: Math.random() * 0.5
+  }));
+  const sprayBits = Array.from({ length: SPRAY_POOL }, () => ({
+    a: Math.random() * Math.PI * 2,
+    dist: Math.random() * 30,
+    speed: 0.6 + Math.random() * 1.2,
+    life: Math.random()
+  }));
+
+  let lightningFlash = 0;
+  let lightningBolt = null;
+  let swellPhase = 0;
+
+  function computeDanger(){
+    const W = climateEngine.vector, thr = climateEngine.threshold;
+    const mag = Math.hypot(W.x, W.y);
+    return {
+      mag,
+      ratio: Math.min(mag / thr, 1),
+      roll: Math.max(-1, Math.min(1, W.x / thr)),
+      pitch: Math.max(-1, Math.min(1, W.y / thr))
+    };
+  }
+
+  function drawOcean(){
+    const grad = ctx.createLinearGradient(0, 0, 0, H_CANVAS);
+    grad.addColorStop(0, "#0c2233");
+    grad.addColorStop(1, "#05101a");
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, W_CANVAS, H_CANVAS);
+  }
+
+  function drawSwell(dt, danger){
+    swellPhase += 0.02 * dt * (1 + danger.ratio * 1.6);
+    ctx.save();
+    ctx.strokeStyle = "rgba(255,255,255,0.09)";
+    ctx.lineWidth = 1.3;
+    const rows = 6;
+    for (let r = 0; r < rows; r++){
+      const y = 26 + r * ((H_CANVAS - 52) / rows);
+      const amp = 3.5 + danger.ratio * 11;
+      ctx.beginPath();
+      for (let x = 0; x <= W_CANVAS; x += 14){
+        const yy = y + Math.sin(x * 0.03 + swellPhase + r * 1.3) * amp;
+        if (x === 0) ctx.moveTo(x, yy); else ctx.lineTo(x, yy);
+      }
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  function drawHull(dtFrames, danger){
+    const pitch = danger.pitch, roll = danger.roll * MAX_ROLL_RAD;
+    const pts = pitchedHullPoints(pitch);
+
+    ctx.save();
+    ctx.translate(shipCx, shipCy);
+    ctx.rotate(roll);
+
+    // shadow
+    ctx.save();
+    ctx.translate(6, 10);
+    traceHullPath(pts, 1.0);
+    ctx.fillStyle = "rgba(0,0,0,0.32)";
+    ctx.fill();
+    ctx.restore();
+
+    // hull
+    traceHullPath(pts, 1.0);
+    ctx.fillStyle = "#6b5641";
+    ctx.fill();
+    ctx.strokeStyle = "rgba(20,14,9,0.65)";
+    ctx.lineWidth = 2.6;
+    ctx.stroke();
+
+    // deck
+    traceHullPath(pts, 0.86);
+    ctx.fillStyle = "#8a7355";
+    ctx.fill();
+
+    // plank lines (static flavor)
+    ctx.strokeStyle = "rgba(60,46,32,0.35)";
+    ctx.lineWidth = 1;
+    for (let i = -3; i <= 3; i++){
+      ctx.beginPath();
+      ctx.moveTo(i * 14, -HULL_HL * 0.75);
+      ctx.lineTo(i * 14, HULL_HL * 0.75);
+      ctx.stroke();
+    }
+
+    // hatches
+    ctx.fillStyle = "rgba(40,32,24,0.55)";
+    ctx.fillRect(-16, -34, 32, 22);
+    ctx.fillRect(-14, 20, 28, 20);
+
+    // mast / wheelhouse
+    ctx.fillStyle = "#4a3d2e";
+    ctx.beginPath();
+    ctx.arc(0, -4, 9, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = "#2e2620";
+    ctx.fillRect(-2, -46, 4, 44);
+
+    // cargo / crew piles per station
+    for (const key in climateEngine.factions){
+      const fac = climateEngine.factions[key];
+      const count = Math.max(1, Math.min(14, Math.round(fac.pop / 12)));
+      ctx.fillStyle = fac.hex;
+      ctx.strokeStyle = "rgba(0,0,0,0.4)";
+      ctx.lineWidth = 1;
+      for (let i = 0; i < count; i++){
+        const p = fac.points[i];
+        ctx.beginPath();
+        ctx.rect(p.x - 3, p.y - 2.4, 6, 4.8);
+        ctx.fill();
+        ctx.stroke();
+      }
+    }
+
+    // waterline wash over the low rail
+    if (Math.abs(danger.roll) > 0.12){
+      const side = danger.roll > 0 ? 1 : -1;
+      ctx.save();
+      ctx.globalAlpha = Math.min(Math.abs(danger.roll) / 0.5, 1) * 0.55;
+      ctx.fillStyle = "rgba(150,205,235,0.85)";
+      ctx.beginPath();
+      ctx.moveTo(side * HULL_HB * 0.25, -HULL_HL * 0.6);
+      ctx.quadraticCurveTo(side * HULL_HB * 1.35, 0, side * HULL_HB * 0.25, HULL_HL * 0.6);
+      ctx.quadraticCurveTo(side * HULL_HB * 0.75, 0, side * HULL_HB * 0.25, -HULL_HL * 0.6);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+    }
+    // wave washing the bow under
+    if (pitch > 0.18){
+      ctx.save();
+      ctx.globalAlpha = Math.min(pitch / 0.5, 1) * 0.6;
+      ctx.fillStyle = "rgba(150,205,235,0.9)";
+      ctx.beginPath();
+      ctx.ellipse(0, -HULL_HL * 0.7, HULL_HB * 0.85, 24, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+
+      // bow spray
+      ctx.save();
+      ctx.fillStyle = "rgba(255,255,255,0.8)";
+      for (const s of sprayBits){
+        s.life += 0.03 * dtFrames;
+        if (s.life > 1) s.life = 0;
+        const d = s.dist + s.life * 26 * pitch;
+        const px = Math.cos(s.a) * d, py = -HULL_HL * 0.7 - s.life * 20 * pitch;
+        ctx.globalAlpha = Math.max(0, (1 - s.life)) * pitch;
+        ctx.beginPath();
+        ctx.arc(px, py, 1.6, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.restore();
+    }
+
+    ctx.restore();
+  }
+
+  function updateAndDrawRain(dtFrames, danger){
+    ctx.save();
+    ctx.strokeStyle = `rgba(150,205,245,${Math.min(0.35 + danger.ratio * 0.4, 0.75)})`;
+    ctx.lineWidth = 1.3;
+    for (const d of rainDrops){
+      if (danger.ratio < d.threshold) continue;
+      d.x += d.speed * 0.35 * dtFrames;
+      d.y += d.speed * dtFrames;
+      if (d.y > H_CANVAS){ d.y = -10; d.x = Math.random() * W_CANVAS; }
+      ctx.beginPath();
+      ctx.moveTo(d.x, d.y);
+      ctx.lineTo(d.x - d.len * 0.3, d.y - d.len);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  function updateAndDrawGusts(dtFrames, danger){
+    ctx.save();
+    ctx.strokeStyle = `rgba(220,225,235,${Math.min(0.14 + danger.ratio * 0.35, 0.5)})`;
+    ctx.lineWidth = 1.2;
+    for (const g of gustStreaks){
+      if (danger.ratio < g.threshold) continue;
+      g.x += g.speed * dtFrames * 2.2;
+      g.y += g.speed * dtFrames * 0.3;
+      if (g.x > W_CANVAS + 30){ g.x = -30; g.y = Math.random() * H_CANVAS; }
+      ctx.beginPath();
+      ctx.moveTo(g.x, g.y);
+      ctx.quadraticCurveTo(g.x + g.len * 0.5, g.y - 6, g.x + g.len, g.y);
+      ctx.stroke();
+    }
+    ctx.restore();
+
+    if (danger.ratio > 0.4 && !lightningBolt && Math.random() < danger.ratio * danger.ratio * 0.01 * dtFrames){
+      const sx = Math.random() * W_CANVAS;
+      const pts = [{ x: sx, y: 10 }];
+      let px = sx, py = 10;
+      while (py < shipCy - 40){
+        px += (Math.random() - 0.5) * 26;
+        py += 22 + Math.random() * 14;
+        pts.push({ x: px, y: py });
+      }
+      lightningBolt = { pts, life: 4 };
+      lightningFlash = 0.4;
+    }
+    if (lightningBolt){
+      ctx.save();
+      ctx.strokeStyle = "rgba(255,255,255,0.95)";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(lightningBolt.pts[0].x, lightningBolt.pts[0].y);
+      for (let i = 1; i < lightningBolt.pts.length; i++) ctx.lineTo(lightningBolt.pts[i].x, lightningBolt.pts[i].y);
+      ctx.stroke();
+      ctx.restore();
+      lightningBolt.life -= dtFrames;
+      if (lightningBolt.life <= 0) lightningBolt = null;
+    }
+    if (lightningFlash > 0.01){
+      ctx.save();
+      ctx.globalAlpha = lightningFlash;
+      ctx.fillStyle = "#fff";
+      ctx.fillRect(0, 0, W_CANVAS, H_CANVAS);
+      ctx.restore();
+      lightningFlash *= 0.75;
+    }
+  }
+
+  function drawDangerVignette(ratio){
+    if (ratio < 0.6) return;
+    const pulse = 0.5 + 0.5 * Math.sin(performance.now() * 0.006);
+    const t = Math.min((ratio - 0.6) / 0.4, 1);
+    ctx.save();
+    const grad = ctx.createRadialGradient(
+      W_CANVAS / 2, H_CANVAS / 2, Math.min(W_CANVAS, H_CANVAS) * 0.25,
+      W_CANVAS / 2, H_CANVAS / 2, Math.max(W_CANVAS, H_CANVAS) * 0.62
+    );
+    grad.addColorStop(0, "rgba(224,87,79,0)");
+    grad.addColorStop(1, `rgba(224,87,79,${(0.35 + 0.35 * t) * (0.6 + 0.4 * pulse)})`);
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, W_CANVAS, H_CANVAS);
+    ctx.restore();
+  }
+
+  // Enemy raiders render in ship-relative polar space (bearing 0 = bow),
+  // same angle convention as polarLocal — the ship always points "up" on
+  // screen and the world sweeps around it as the rudder turns.
+  const ENEMY_RENDER_SCALE = (Math.min(W_CANVAS, H_CANVAS) * 0.46) / SPAWN_DISTANCE;
+
+  function enemyScreenPos(e){
+    const rad = e.relBearing * Math.PI / 180;
+    const r = e.distance * ENEMY_RENDER_SCALE;
+    return { x: shipCx + Math.sin(rad) * r, y: shipCy - Math.cos(rad) * r };
+  }
+
+  function drawFiringArcs(){
+    for (const key in cannons){
+      const c = cannons[key];
+      if (c.stage !== "primed" && c.stage !== "ready") continue;
+      const centerRad = c.broadsideBearing * Math.PI / 180;
+      const halfArc = CANNON_FIRE_ARC * Math.PI / 180;
+      const r = CANNON_RANGE * ENEMY_RENDER_SCALE;
+      ctx.save();
+      ctx.beginPath();
+      ctx.moveTo(shipCx, shipCy);
+      ctx.arc(shipCx, shipCy, r, centerRad - halfArc - Math.PI / 2, centerRad + halfArc - Math.PI / 2);
+      ctx.closePath();
+      ctx.fillStyle = c.stage === "ready" ? "rgba(79,224,127,0.10)" : "rgba(224,197,79,0.08)";
+      ctx.fill();
+      ctx.strokeStyle = c.stage === "ready" ? "rgba(79,224,127,0.35)" : "rgba(224,197,79,0.3)";
+      ctx.lineWidth = 1;
+      ctx.stroke();
+      ctx.restore();
+    }
+  }
+
+  function drawEnemies(dtFrames){
+    for (const e of enemies){
+      const pos = enemyScreenPos(e);
+      const sinking = e.hp <= 0;
+      const alpha = sinking ? Math.max(0, e.sinkTimer / ENEMY_SINK_TICKS) : 1;
+
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      ctx.translate(pos.x, pos.y);
+      ctx.rotate(e.relBearing * Math.PI / 180);
+
+      ctx.beginPath();
+      ctx.moveTo(0, -9);
+      ctx.lineTo(5, 7);
+      ctx.lineTo(-5, 7);
+      ctx.closePath();
+      ctx.fillStyle = sinking ? "#3a2f2f" : "#8a4a4a";
+      ctx.fill();
+      ctx.strokeStyle = "rgba(0,0,0,0.5)";
+      ctx.lineWidth = 1;
+      ctx.stroke();
+
+      if (e.muzzleFlash > 0){
+        ctx.beginPath();
+        ctx.arc(0, 0, 7, 0, Math.PI * 2);
+        ctx.fillStyle = "rgba(255,210,120,0.85)";
+        ctx.fill();
+      }
+      ctx.restore();
+
+      if (!sinking){
+        ctx.save();
+        ctx.globalAlpha = alpha;
+        for (let i = 0; i < ENEMY_HP; i++){
+          ctx.beginPath();
+          ctx.arc(pos.x - 8 + i * 8, pos.y - 16, 2.2, 0, Math.PI * 2);
+          ctx.fillStyle = i < e.hp ? "#e0574f" : "rgba(224,87,79,0.25)";
+          ctx.fill();
+        }
+        ctx.restore();
+      }
+    }
+  }
+
+  function drawStationLabels(){
+    ctx.save();
+    ctx.font = "600 10px -apple-system, sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillStyle = "rgba(232,197,71,0.85)";
+    ctx.fillText("BOW", shipCx, shipCy - HULL_HL - 14);
+    ctx.fillStyle = "rgba(79,224,127,0.85)";
+    ctx.textAlign = "left";
+    ctx.fillText("STARBOARD", shipCx + HULL_HB + 14, shipCy + 4);
+    ctx.fillStyle = "rgba(99,224,199,0.85)";
+    ctx.textAlign = "center";
+    ctx.fillText("STERN", shipCx, shipCy + HULL_HL + 22);
+    ctx.fillStyle = "rgba(224,87,79,0.85)";
+    ctx.textAlign = "right";
+    ctx.fillText("PORT", shipCx - HULL_HB - 14, shipCy + 4);
+    ctx.restore();
+  }
+
+  function drawInclinometer(danger){
+    const size = 78, pad = 10;
+    const ix = W_CANVAS - size - pad, iy = H_CANVAS - size - pad;
+    const cx2 = ix + size / 2, cy2 = iy + size / 2;
+    const r = size / 2 - 8;
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.roundRect(ix, iy, size, size, 10);
+    ctx.fillStyle = "rgba(10,14,22,0.72)";
+    ctx.fill();
+    ctx.strokeStyle = "rgba(130,145,168,0.25)";
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.arc(cx2, cy2, r, 0, Math.PI * 2);
+    ctx.strokeStyle = "rgba(224,87,79,0.5)";
+    ctx.lineWidth = 1.4;
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.moveTo(cx2 - r, cy2); ctx.lineTo(cx2 + r, cy2);
+    ctx.moveTo(cx2, cy2 - r); ctx.lineTo(cx2, cy2 + r);
+    ctx.strokeStyle = "rgba(130,145,168,0.25)";
+    ctx.lineWidth = 1;
+    ctx.stroke();
+
+    const scale = r / climateEngine.threshold;
+    if (miniTrail.length > 1){
+      ctx.beginPath();
+      for (let i = 0; i < miniTrail.length; i++){
+        const px = cx2 + miniTrail[i].x * scale;
+        const py = cy2 - miniTrail[i].y * scale;
+        if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+      }
+      ctx.strokeStyle = "rgba(79,163,232,0.5)";
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    }
+
+    const px = cx2 + climateEngine.vector.x * scale;
+    const py = cy2 - climateEngine.vector.y * scale;
+    const dotColor = danger.ratio > 0.8 ? "#e0574f" : danger.ratio > 0.55 ? "#e0b84f" : "#4fe07f";
+    ctx.beginPath();
+    ctx.arc(px, py, 3.4, 0, Math.PI * 2);
+    ctx.fillStyle = dotColor;
+    ctx.fill();
+    ctx.restore();
+  }
+
+  let lastFrameTime = performance.now();
+
+  function draw(now){
+    let dtFrames = (now - lastFrameTime) / 16.67;
+    lastFrameTime = now;
+    dtFrames = Math.min(Math.max(dtFrames, 0), 4);
+
+    const danger = computeDanger();
+
+    drawOcean();
+    drawSwell(dtFrames, danger);
+    drawFiringArcs();
+    drawHull(dtFrames, danger);
+    drawEnemies(dtFrames);
+    drawStationLabels();
+    updateAndDrawRain(dtFrames, danger);
+    updateAndDrawGusts(dtFrames, danger);
+    drawDangerVignette(danger.ratio);
+    drawInclinometer(danger);
+
+    const W = climateEngine.vector;
+    document.getElementById("readX").textContent = W.x.toFixed(2);
+    document.getElementById("readY").textContent = W.y.toFixed(2);
+    document.getElementById("readMag").textContent = danger.mag.toFixed(2);
+    document.getElementById("readThreshold").textContent = climateEngine.threshold.toFixed(1);
+    document.getElementById("devotionVal").textContent = climateEngine.devotion.toFixed(1);
+
+    document.getElementById("headingVal").textContent = String(Math.round(heading)).padStart(3, "0");
+    document.getElementById("rudderVal").textContent = rudder.toFixed(2);
+    document.getElementById("wheelEl").style.transform = `rotate(${rudder * 80}deg)`;
+
+    const hullPct = Math.max(0, Math.min(100, (hullIntegrity / HULL_INTEGRITY_MAX) * 100));
+    document.getElementById("hullVal").textContent = Math.round(hullIntegrity);
+    document.getElementById("hullBar").style.width = hullPct + "%";
+
+    const statusEl = document.getElementById("statusLine");
+    if (crashed){
+      statusEl.textContent = hullIntegrity <= 0 ? "SUNK" : "CAPSIZED";
+      statusEl.className = "status-line status-danger";
+    } else if (danger.ratio > 0.8){
+      statusEl.textContent = "TAKING ON WATER";
+      statusEl.className = "status-line status-danger";
+    } else if (danger.ratio > 0.55){
+      statusEl.textContent = "LISTING HARD";
+      statusEl.className = "status-line status-warn";
+    } else {
+      statusEl.textContent = "STEADY";
+      statusEl.className = "status-line status-safe";
+    }
+
+    document.getElementById("genInfo").textContent =
+      `Voyage ${generation} · Ticks afloat: ${ticksSurvived} · Hull sturdiness: +${permanent.gammaBonus.toFixed(4)} · Sea-state dampening: -${permanent.noiseReduction.toFixed(3)}`;
+
+    updateFactionUI();
+    updateRallyUI();
+    updateBatteryUI();
+  }
+
+  // ---------------------------------------------------------------------
+  // Fixed-timestep game loop (simulation) decoupled from render loop
+  // ---------------------------------------------------------------------
+  let lastTime = performance.now();
+  let accumulator = 0;
+
+  function loop(now){
+    requestAnimationFrame(loop);
+    let delta = now - lastTime;
+    lastTime = now;
+    if (delta > 1000) delta = 1000;
+
+    if (!paused && !crashed){
+      accumulator += delta * speedMultiplier;
+      let ticksThisFrame = 0;
+      while (accumulator >= TICK_MS && ticksThisFrame < 20){
+        tick();
+        accumulator -= TICK_MS;
+        ticksThisFrame++;
+        if (crashed) { accumulator = 0; break; }
+      }
+    }
+    draw(now);
+  }
+
+  // ---------------------------------------------------------------------
+  // Event bindings
+  // ---------------------------------------------------------------------
+  document.getElementById("pauseBtn").addEventListener("click", (e) => {
+    paused = !paused;
+    e.target.textContent = paused ? "Resume" : "Pause";
+  });
+
+  document.getElementById("speedBtn").addEventListener("click", (e) => {
+    const speeds = [1, 2, 4, 0.5];
+    const idx = speeds.indexOf(speedMultiplier);
+    speedMultiplier = speeds[(idx + 1) % speeds.length];
+    e.target.textContent = `Speed: ${speedMultiplier}x`;
+  });
+
+  document.getElementById("resetBtn").addEventListener("click", resetRun);
+  document.getElementById("genContinueBtn").addEventListener("click", beginNextGeneration);
+
+  const rudderPortBtn = document.getElementById("rudderPortBtn");
+  const rudderStarBtn = document.getElementById("rudderStarBtn");
+  rudderPortBtn.addEventListener("mousedown", () => { rudderInput = -1; });
+  rudderStarBtn.addEventListener("mousedown", () => { rudderInput = 1; });
+  window.addEventListener("mouseup", () => { rudderInput = 0; });
+  rudderPortBtn.addEventListener("touchstart", (e) => { e.preventDefault(); rudderInput = -1; });
+  rudderStarBtn.addEventListener("touchstart", (e) => { e.preventDefault(); rudderInput = 1; });
+  window.addEventListener("touchend", () => { rudderInput = 0; });
+
+  // ---------------------------------------------------------------------
+  // Boot
+  // ---------------------------------------------------------------------
+  buildFactionUI();
+  buildBatteryUI();
+  requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>
