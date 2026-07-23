@@ -1,0 +1,1966 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>The Froudian Goblin Hovel</title>
+<style>
+  :root {
+    --parchment: #e6dfd3;
+    --parchment-dark: #d8cfbe;
+    --ink: #2c2a29;
+    --bog: #4a533c;
+    --bog-light: #6b7758;
+    --danger: #8a2e2e;
+    --glow: #d9a441;
+    --goblin-pressure: 0;
+    --wobble-speed: 2.0s;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+    background: var(--parchment);
+    color: var(--ink);
+    font-family: Georgia, 'Times New Roman', serif;
+    overflow: hidden;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+
+  body {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+  }
+
+  /* ---------- Header ---------- */
+  #header {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-around;
+    align-items: center;
+    padding: 8px 10px;
+    background: var(--parchment-dark);
+    border-bottom: 2px solid var(--ink);
+    flex: 0 0 auto;
+    gap: 4px 10px;
+  }
+
+  .stat-block {
+    text-align: center;
+    line-height: 1.1;
+    min-width: 72px;
+  }
+
+  .stat-label {
+    font-size: clamp(0.55rem, 2.2vw, 0.65rem);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--bog);
+    opacity: 0.85;
+    white-space: nowrap;
+  }
+
+  .stat-value {
+    font-size: clamp(1.05rem, 5vw, 1.5rem);
+    font-weight: bold;
+    font-variant-numeric: tabular-nums;
+    transition: color 0.3s ease;
+  }
+
+  .stat-value.warn { color: var(--danger); }
+
+  #glamour-block .stat-value { color: var(--glow); text-shadow: 0 0 6px rgba(217,164,65,0.4); }
+
+  #glamour-block, #density-block { cursor: pointer; }
+  .stat-hint {
+    font-size: clamp(0.5rem, 2vw, 0.6rem);
+    color: var(--glow);
+    opacity: 0.75;
+    letter-spacing: 0.05em;
+  }
+  #glamour-block:hover .stat-hint, #density-block:hover .stat-hint { opacity: 1; text-decoration: underline; }
+
+  /* ---------- Stage ---------- */
+  #stage {
+    flex: 1 1 auto;
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    background:
+      radial-gradient(ellipse at center 65%, rgba(74,83,60,0.12) 0%, rgba(74,83,60,0) 60%),
+      var(--parchment);
+  }
+
+  #hovel-container {
+    transition: filter 0.3s ease;
+    will-change: filter;
+    filter:
+      drop-shadow(0 6px 10px rgba(44,42,41,0.25))
+      hue-rotate(calc(var(--goblin-pressure) * 45deg))
+      saturate(calc(1 + var(--goblin-pressure) * 0.7));
+    width: min(70vmin, 480px);
+  }
+
+  #hovel-svg {
+    width: 100%;
+    height: auto;
+    overflow: visible;
+    display: block;
+  }
+
+  /* ambient always-on breathing layer, applied to each house in the colony */
+  .house-body {
+    transform-box: fill-box;
+    transform-origin: 50% 100%;
+    animation: hovel-breath var(--wobble-speed) ease-in-out infinite;
+  }
+
+  .house-body.spasm {
+    animation: hovel-spasm 0.22s steps(6) infinite;
+  }
+
+  @keyframes hovel-breath {
+    0%   { transform: scale3d(1, 1, 1); }
+    50%  { transform: scale3d(1.025, 0.975, 1); }
+    100% { transform: scale3d(1, 1, 1); }
+  }
+
+  @keyframes hovel-spasm {
+    0%   { transform: translate3d(1px, 1px, 0) rotate(0.5deg); }
+    20%  { transform: translate3d(-1px, -2px, 0) rotate(-0.5deg); }
+    40%  { transform: translate3d(-3px, 0px, 0) rotate(1deg); }
+    60%  { transform: translate3d(0px, 2px, 0) rotate(0deg); }
+    80%  { transform: translate3d(2px, 1px, 0) rotate(-1deg); }
+    100% { transform: translate3d(1px, -1px, 0) rotate(0.5deg); }
+  }
+
+  .smoke-puff {
+    animation: smoke-rise 3.2s ease-out infinite;
+    transform-box: fill-box;
+    transform-origin: center;
+  }
+  .smoke-puff:nth-child(2) { animation-delay: 1.1s; }
+  .smoke-puff:nth-child(3) { animation-delay: 2.2s; }
+
+  @keyframes smoke-rise {
+    0%   { transform: translateY(0) scale(0.4); opacity: 0; }
+    15%  { opacity: 0.5; }
+    100% { transform: translateY(-26px) scale(1.3); opacity: 0; }
+  }
+
+  .goblin-eye { animation: goblin-blink 4.5s ease-in-out infinite; transform-box: fill-box; transform-origin: center; }
+
+  @keyframes goblin-blink {
+    0%, 92%, 100% { transform: scaleY(1); }
+    95% { transform: scaleY(0.1); }
+  }
+
+  /* Articulated goblin rig: torso pivots at the waist, head pivots at the neck, each
+     independently wiggling to a slightly different beat for a loose dancing look. */
+  .goblin-torso-pivot, .goblin-head-pivot {
+    transform-box: fill-box;
+    transform-origin: 50% 100%;
+  }
+
+  @keyframes goblin-wiggle {
+    0%, 100% { rotate: calc(-1 * var(--wiggle-amp, 4deg)); }
+    50%      { rotate: var(--wiggle-amp, 4deg); }
+  }
+
+  #overflow-label {
+    font-size: 0.7rem;
+    fill: var(--ink);
+    opacity: 0.7;
+  }
+
+  /* precarious stacked subhouses: each pivots from its own base and sways independently */
+  .subhouse-unit {
+    transform-box: fill-box;
+    transform-origin: 50% 100%;
+  }
+
+  @keyframes subhouse-teeter {
+    0%, 100% { rotate: calc(-1 * var(--sway-amp, 2deg)); }
+    50%      { rotate: var(--sway-amp, 2deg); }
+  }
+
+  /* ---------- Upgrades bar ---------- */
+  #upgrades {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 6px 8px;
+    padding: 6px 10px;
+    flex: 0 0 auto;
+    background: var(--parchment);
+  }
+
+  .upgrade-btn {
+    flex: 1 1 28%;
+    min-width: 92px;
+    max-width: 220px;
+    background: var(--parchment-dark);
+    border: 1.5px solid var(--ink);
+    border-radius: 6px;
+    padding: 6px 8px;
+    font-family: inherit;
+    color: var(--ink);
+    cursor: pointer;
+    text-align: left;
+    transition: transform 0.08s ease, background 0.15s ease;
+    overflow: hidden;
+  }
+
+  .upgrade-btn:active { transform: scale(0.96); }
+  .upgrade-btn:hover:not(:disabled) { background: #cfc4ac; }
+  .upgrade-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+  .upgrade-name {
+    font-weight: bold;
+    font-size: clamp(0.62rem, 2.6vw, 0.78rem);
+    display: block;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .upgrade-info { font-size: clamp(0.58rem, 2.2vw, 0.68rem); color: var(--bog); display: flex; justify-content: space-between; gap: 4px; }
+
+  /* ---------- HUD Deck ---------- */
+  #hud {
+    display: flex;
+    gap: 12px;
+    padding: 12px 16px calc(14px + env(safe-area-inset-bottom));
+    background: var(--parchment-dark);
+    border-top: 2px solid var(--ink);
+    flex: 0 0 auto;
+  }
+
+  button { font-family: inherit; }
+
+  #summon-btn {
+    flex: 2;
+    background: var(--bog);
+    color: var(--parchment);
+    border: none;
+    border-radius: 10px;
+    font-size: 1.1rem;
+    font-weight: bold;
+    letter-spacing: 0.03em;
+    padding: 16px 10px;
+    cursor: pointer;
+    box-shadow: 0 3px 0 #333227, 0 4px 8px rgba(0,0,0,0.25);
+    transition: transform 0.06s ease, box-shadow 0.06s ease, background 0.2s ease;
+  }
+
+  #summon-btn:active {
+    transform: translateY(3px);
+    box-shadow: 0 0 0 #333227, 0 2px 4px rgba(0,0,0,0.25);
+  }
+
+  #rile-btn {
+    flex: 1.3;
+    background: var(--parchment-dark);
+    color: var(--ink);
+    border: 2px solid var(--bog);
+    border-radius: 10px;
+    font-size: 0.82rem;
+    font-weight: bold;
+    padding: 16px 6px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+  }
+
+  #rile-btn:hover:not(:disabled) { background: #cfc4ac; }
+  #rile-btn:active:not(:disabled) { transform: translateY(2px); }
+
+  #rile-btn.active {
+    background: linear-gradient(135deg, var(--glow), #b5372f);
+    color: #fff2d9;
+    border-color: var(--glow);
+    animation: disenchant-pulse 0.6s ease-in-out infinite;
+  }
+
+  #rile-btn:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+  }
+
+  #disenchant-btn {
+    flex: 1.4;
+    background: #7a7466;
+    color: rgba(230,223,211,0.6);
+    border: 2px solid #55503f;
+    border-radius: 10px;
+    font-size: 0.95rem;
+    font-weight: bold;
+    padding: 16px 8px;
+    cursor: not-allowed;
+    transition: all 0.25s ease;
+  }
+
+  #disenchant-btn.ready {
+    background: linear-gradient(135deg, #b5372f, #7a2e2e);
+    color: #fff2d9;
+    border-color: var(--glow);
+    cursor: pointer;
+    animation: disenchant-pulse 1.1s ease-in-out infinite;
+    box-shadow: 0 0 14px rgba(217,164,65,0.6);
+  }
+
+  @keyframes disenchant-pulse {
+    0%, 100% { box-shadow: 0 0 8px rgba(217,164,65,0.5); }
+    50% { box-shadow: 0 0 22px rgba(217,164,65,0.95); }
+  }
+
+  #disenchant-btn.ready:active { transform: scale(0.97); }
+
+  /* ---------- Whiteout overlay ---------- */
+  #whiteout {
+    position: fixed;
+    inset: 0;
+    background: #fff2d9;
+    opacity: 0;
+    pointer-events: none;
+    z-index: 50;
+  }
+
+  #whiteout.flash {
+    animation: whiteout-flash 0.7s ease-out forwards;
+  }
+
+  @keyframes whiteout-flash {
+    0%   { opacity: 0; }
+    12%  { opacity: 1; }
+    100% { opacity: 0; }
+  }
+
+  #float-layer {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    overflow: hidden;
+  }
+
+  .float-text {
+    position: absolute;
+    font-size: 0.85rem;
+    font-weight: bold;
+    color: var(--bog);
+    animation: float-up 0.9s ease-out forwards;
+    white-space: nowrap;
+  }
+
+  @keyframes float-up {
+    0%   { transform: translateY(0); opacity: 1; }
+    100% { transform: translateY(-38px); opacity: 0; }
+  }
+
+  /* ---------- Modal overlays (Glamour Shop, Colony Chronicle) ---------- */
+  .modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(44, 42, 41, 0.55);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 60;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.2s ease;
+    padding: 16px;
+  }
+
+  .modal-overlay.open {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .modal-panel {
+    background: var(--parchment);
+    border: 2px solid var(--ink);
+    border-radius: 10px;
+    width: min(94vw, 420px);
+    max-height: 84vh;
+    display: flex;
+    flex-direction: column;
+    box-shadow: 0 10px 30px rgba(0,0,0,0.4);
+    transform: translateY(8px) scale(0.98);
+    transition: transform 0.2s ease;
+  }
+
+  .modal-overlay.open .modal-panel {
+    transform: translateY(0) scale(1);
+  }
+
+  .shop-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 14px;
+    border-bottom: 2px solid var(--ink);
+    background: var(--parchment-dark);
+    border-radius: 8px 8px 0 0;
+    font-weight: bold;
+    color: var(--glow);
+    text-shadow: 0 0 4px rgba(217,164,65,0.35);
+  }
+
+  #shop-close {
+    background: none;
+    border: none;
+    color: var(--ink);
+    font-size: 1.3rem;
+    line-height: 1;
+    cursor: pointer;
+    padding: 2px 6px;
+  }
+
+  .shop-list {
+    overflow-y: auto;
+    padding: 10px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .perk-row {
+    border: 1.5px solid var(--ink);
+    border-radius: 8px;
+    padding: 8px 10px;
+    background: var(--parchment-dark);
+  }
+
+  .perk-top {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 6px;
+  }
+
+  .perk-name { font-weight: bold; font-size: 0.88rem; }
+  .perk-level { font-size: 0.7rem; color: var(--bog); white-space: nowrap; }
+
+  .perk-desc {
+    font-size: 0.72rem;
+    color: var(--bog);
+    margin: 3px 0 6px;
+    line-height: 1.25;
+  }
+
+  .perk-buy-btn {
+    width: 100%;
+    background: var(--bog);
+    color: var(--parchment);
+    border: none;
+    border-radius: 6px;
+    padding: 6px 8px;
+    font-family: inherit;
+    font-size: 0.78rem;
+    font-weight: bold;
+    cursor: pointer;
+    transition: background 0.15s ease, transform 0.08s ease;
+  }
+
+  .perk-buy-btn:active:not(:disabled) { transform: scale(0.97); }
+  .perk-buy-btn:disabled { background: #9c9484; cursor: not-allowed; opacity: 0.7; }
+  .perk-buy-btn.maxed { background: var(--glow); color: var(--ink); cursor: default; }
+</style>
+</head>
+<body>
+
+  <div id="header">
+    <div class="stat-block" id="resonance-block">
+      <div class="stat-label">Resonance</div>
+      <div class="stat-value" id="resonance-value">0</div>
+      <div class="stat-hint" id="resonance-rate">+0.0/s</div>
+    </div>
+    <div class="stat-block" id="density-block">
+      <div class="stat-label">Goblin Density</div>
+      <div class="stat-value" id="density-value">0%</div>
+      <div class="stat-hint">Chronicle &rsaquo;</div>
+    </div>
+    <div class="stat-block" id="glamour-block">
+      <div class="stat-label">Glamour</div>
+      <div class="stat-value" id="glamour-value">0</div>
+      <div class="stat-hint">Perks &rsaquo;</div>
+    </div>
+  </div>
+
+  <div id="stage">
+    <div id="float-layer"></div>
+    <div id="hovel-container">
+      <svg id="hovel-svg" viewBox="0 0 300 300" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <!-- Goblin face variants: same body silhouette, different eyes/mouth/ears for character variety -->
+          <symbol id="goblin-face-0" viewBox="-10 -10 20 20">
+            <path d="M -6 3 C -8 -4 -4 -9 0 -9 C 4 -9 8 -4 6 3 C 6 8 3 9 0 9 C -3 9 -6 8 -6 3 Z"
+                  fill="var(--goblin-skin, var(--bog))" stroke="var(--ink)" stroke-width="1"/>
+            <path d="M -6 -3 L -10 -8 L -4 -6 Z" fill="var(--goblin-skin, var(--bog))" stroke="var(--ink)" stroke-width="0.8"/>
+            <path d="M 6 -3 L 10 -8 L 4 -6 Z" fill="var(--goblin-skin, var(--bog))" stroke="var(--ink)" stroke-width="0.8"/>
+            <g class="goblin-eye">
+              <circle cx="-2.6" cy="-1" r="1.6" fill="#f4e9d6"/>
+              <circle cx="-2.4" cy="-1" r="0.7" fill="var(--ink)"/>
+            </g>
+            <g class="goblin-eye">
+              <circle cx="2.6" cy="-1" r="1.6" fill="#f4e9d6"/>
+              <circle cx="2.4" cy="-1" r="0.7" fill="var(--ink)"/>
+            </g>
+            <path d="M -2.5 3.5 Q 0 5.5 2.5 3.5" stroke="var(--ink)" stroke-width="0.9" fill="none" stroke-linecap="round"/>
+          </symbol>
+
+          <symbol id="goblin-face-1" viewBox="-10 -10 20 20">
+            <path d="M -6 3 C -8 -4 -4 -9 0 -9 C 4 -9 8 -4 6 3 C 6 8 3 9 0 9 C -3 9 -6 8 -6 3 Z"
+                  fill="var(--goblin-skin, var(--bog))" stroke="var(--ink)" stroke-width="1"/>
+            <path d="M -6 -3 L -10 -8 L -4 -6 Z" fill="var(--goblin-skin, var(--bog))" stroke="var(--ink)" stroke-width="0.8"/>
+            <path d="M 6 -3 L 10 -8 L 4 -6 Z" fill="var(--goblin-skin, var(--bog))" stroke="var(--ink)" stroke-width="0.8"/>
+            <g class="goblin-eye">
+              <circle cx="-2.7" cy="-1.2" r="1.9" fill="#f4e9d6"/>
+              <circle cx="-2.4" cy="-1" r="0.8" fill="var(--ink)"/>
+            </g>
+            <g class="goblin-eye">
+              <circle cx="2.6" cy="-0.8" r="1.2" fill="#f4e9d6"/>
+              <circle cx="2.5" cy="-0.7" r="0.5" fill="var(--ink)"/>
+            </g>
+            <path d="M -2.9 3 Q 0 6.4 2.9 3 Q 0 4.6 -2.9 3 Z" fill="#1c1b19"/>
+            <line x1="0" y1="3.4" x2="0" y2="5.6" stroke="#f4e9d6" stroke-width="0.7"/>
+          </symbol>
+
+          <symbol id="goblin-face-2" viewBox="-10 -10 20 20">
+            <path d="M -6 3 C -8 -4 -4 -9 0 -9 C 4 -9 8 -4 6 3 C 6 8 3 9 0 9 C -3 9 -6 8 -6 3 Z"
+                  fill="var(--goblin-skin, var(--bog))" stroke="var(--ink)" stroke-width="1"/>
+            <path d="M -6 -2 L -11 -4.5 L -5 -5.5 Z" fill="var(--goblin-skin, var(--bog))" stroke="var(--ink)" stroke-width="0.8"/>
+            <path d="M 6 -2 L 11 -4.5 L 5 -5.5 Z" fill="var(--goblin-skin, var(--bog))" stroke="var(--ink)" stroke-width="0.8"/>
+            <path d="M -3.6 -1 L -1.4 -1" stroke="var(--ink)" stroke-width="1" stroke-linecap="round"/>
+            <path d="M 1.4 -1 L 3.6 -1" stroke="var(--ink)" stroke-width="1" stroke-linecap="round"/>
+            <path d="M -2 3.6 Q 0.5 5.2 3 3.4" stroke="var(--ink)" stroke-width="0.9" fill="none" stroke-linecap="round"/>
+            <path d="M 1.7 3.5 L 2.4 3.5 L 2.0 5.6 Z" fill="#f4e9d6"/>
+          </symbol>
+
+          <symbol id="goblin-face-3" viewBox="-10 -10 20 20">
+            <path d="M -6 3 C -8 -4 -4 -9 0 -9 C 4 -9 8 -4 6 3 C 6 8 3 9 0 9 C -3 9 -6 8 -6 3 Z"
+                  fill="var(--goblin-skin, var(--bog))" stroke="var(--ink)" stroke-width="1"/>
+            <path d="M -6 -3 L -10 -8 L -4 -6 Z" fill="var(--goblin-skin, var(--bog))" stroke="var(--ink)" stroke-width="0.8"/>
+            <path d="M 6 -3 L 10 -8 L 4 -6 Z" fill="var(--goblin-skin, var(--bog))" stroke="var(--ink)" stroke-width="0.8"/>
+            <g class="goblin-eye">
+              <circle cx="-2.7" cy="-1.2" r="2.1" fill="#f4e9d6"/>
+              <circle cx="-2.7" cy="-1.2" r="0.6" fill="var(--ink)"/>
+            </g>
+            <g class="goblin-eye">
+              <circle cx="2.7" cy="-1.2" r="2.1" fill="#f4e9d6"/>
+              <circle cx="2.7" cy="-1.2" r="0.6" fill="var(--ink)"/>
+            </g>
+            <ellipse cx="0" cy="4" rx="1.6" ry="2.1" fill="#1c1b19"/>
+          </symbol>
+
+          <!-- Reusable mini goblin-house silhouette, echoing the main hovel's shape at a smaller scale -->
+          <symbol id="mini-hovel" viewBox="-45 -55 90 100">
+            <path d="M -26 18 C -32 2 -28 -12 -14 -16 C -15 -26 -6 -32 0 -32 C 6 -32 15 -26 14 -16
+                     C 28 -12 32 2 26 18 C 28 30 24 40 15 42 L -15 42 C -24 40 -28 30 -26 18 Z"
+                  fill="var(--sub-body, var(--parchment-dark))" stroke="var(--ink)" stroke-width="3" stroke-linejoin="round"/>
+            <path d="M -28 -12 L 2 -48 L 30 -12 L 24 -8 L 2 -36 L -22 -8 Z"
+                  fill="var(--sub-roof, var(--bog))" stroke="var(--ink)" stroke-width="3" stroke-linejoin="round"/>
+            <path d="M -7 42 L -7 25 C -7 17 7 17 7 25 L 7 42 Z" fill="#241f1c" stroke="var(--ink)" stroke-width="1.5"/>
+            <circle cx="15" cy="8" r="4" fill="#241f1c" stroke="var(--ink)" stroke-width="1.2"/>
+          </symbol>
+
+          <!-- Goblin body rig parts: hips/legs (static base), torso (arm-pose variants), pinned to a head. -->
+          <symbol id="goblin-legs-0" viewBox="-16 -8 32 30">
+            <path d="M -7 -3 Q 0 -6 7 -3 L 7 4 Q 0 7 -7 4 Z" fill="var(--goblin-skin, var(--bog))" stroke="var(--ink)" stroke-width="1.2"/>
+            <path d="M -3 4 L -7 20" stroke="var(--goblin-skin, var(--bog))" stroke-width="3.5" fill="none" stroke-linecap="round"/>
+            <path d="M 3 4 L 7 20" stroke="var(--goblin-skin, var(--bog))" stroke-width="3.5" fill="none" stroke-linecap="round"/>
+            <circle cx="-7" cy="21" r="1.8" fill="var(--ink)"/>
+            <circle cx="7" cy="21" r="1.8" fill="var(--ink)"/>
+          </symbol>
+
+          <symbol id="goblin-legs-1" viewBox="-16 -8 32 30">
+            <path d="M -7 -3 Q 0 -6 7 -3 L 7 4 Q 0 7 -7 4 Z" fill="var(--goblin-skin, var(--bog))" stroke="var(--ink)" stroke-width="1.2"/>
+            <path d="M -3 4 L -6 20" stroke="var(--goblin-skin, var(--bog))" stroke-width="3.5" fill="none" stroke-linecap="round"/>
+            <circle cx="-6" cy="21" r="1.8" fill="var(--ink)"/>
+            <path d="M 3 4 Q 12 6 14 14" stroke="var(--goblin-skin, var(--bog))" stroke-width="3.5" fill="none" stroke-linecap="round"/>
+            <circle cx="14" cy="14" r="1.8" fill="var(--ink)"/>
+          </symbol>
+
+          <symbol id="goblin-legs-2" viewBox="-16 -8 32 30">
+            <path d="M -8 -3 Q 0 -6 8 -3 L 8 5 Q 0 8 -8 5 Z" fill="var(--goblin-skin, var(--bog))" stroke="var(--ink)" stroke-width="1.2"/>
+            <path d="M -4 5 L -12 19" stroke="var(--goblin-skin, var(--bog))" stroke-width="3.5" fill="none" stroke-linecap="round"/>
+            <circle cx="-12" cy="20" r="1.8" fill="var(--ink)"/>
+            <path d="M 4 5 L 12 19" stroke="var(--goblin-skin, var(--bog))" stroke-width="3.5" fill="none" stroke-linecap="round"/>
+            <circle cx="12" cy="20" r="1.8" fill="var(--ink)"/>
+          </symbol>
+
+          <symbol id="goblin-torso-0" viewBox="-18 -24 36 28">
+            <path d="M -7 2 C -9 -8 -7 -16 0 -17 C 7 -16 9 -8 7 2 Q 0 5 -7 2 Z" fill="var(--goblin-skin, var(--bog))" stroke="var(--ink)" stroke-width="1.2"/>
+            <path d="M -6 -8 Q -11 -15 -8 -22" stroke="var(--goblin-skin, var(--bog))" stroke-width="3" fill="none" stroke-linecap="round"/>
+            <circle cx="-8" cy="-22" r="1.6" fill="var(--ink)"/>
+            <path d="M 6 -8 Q 11 -15 8 -22" stroke="var(--goblin-skin, var(--bog))" stroke-width="3" fill="none" stroke-linecap="round"/>
+            <circle cx="8" cy="-22" r="1.6" fill="var(--ink)"/>
+          </symbol>
+
+          <symbol id="goblin-torso-1" viewBox="-18 -24 36 28">
+            <path d="M -7 2 C -9 -8 -7 -16 0 -17 C 7 -16 9 -8 7 2 Q 0 5 -7 2 Z" fill="var(--goblin-skin, var(--bog))" stroke="var(--ink)" stroke-width="1.2"/>
+            <path d="M -7 -9 L -16 -6" stroke="var(--goblin-skin, var(--bog))" stroke-width="3" fill="none" stroke-linecap="round"/>
+            <circle cx="-16" cy="-6" r="1.6" fill="var(--ink)"/>
+            <path d="M 7 -9 L 16 -6" stroke="var(--goblin-skin, var(--bog))" stroke-width="3" fill="none" stroke-linecap="round"/>
+            <circle cx="16" cy="-6" r="1.6" fill="var(--ink)"/>
+          </symbol>
+
+          <symbol id="goblin-torso-2" viewBox="-18 -24 36 28">
+            <path d="M -7 2 C -9 -8 -7 -16 0 -17 C 7 -16 9 -8 7 2 Q 0 5 -7 2 Z" fill="var(--goblin-skin, var(--bog))" stroke="var(--ink)" stroke-width="1.2"/>
+            <path d="M -6 -8 Q -11 -15 -8 -22" stroke="var(--goblin-skin, var(--bog))" stroke-width="3" fill="none" stroke-linecap="round"/>
+            <circle cx="-8" cy="-22" r="1.6" fill="var(--ink)"/>
+            <path d="M 6 -6 Q 11 -2 8 4" stroke="var(--goblin-skin, var(--bog))" stroke-width="3" fill="none" stroke-linecap="round"/>
+            <circle cx="8" cy="4" r="1.6" fill="var(--ink)"/>
+          </symbol>
+
+          <symbol id="goblin-torso-3" viewBox="-18 -24 36 28">
+            <path d="M -7 2 C -9 -8 -7 -16 0 -17 C 7 -16 9 -8 7 2 Q 0 5 -7 2 Z" fill="var(--goblin-skin, var(--bog))" stroke="var(--ink)" stroke-width="1.2"/>
+            <path d="M -6 -8 Q -13 -6 -9 2" stroke="var(--goblin-skin, var(--bog))" stroke-width="3" fill="none" stroke-linecap="round"/>
+            <circle cx="-9" cy="2" r="1.6" fill="var(--ink)"/>
+            <path d="M 6 -8 Q 13 -6 9 2" stroke="var(--goblin-skin, var(--bog))" stroke-width="3" fill="none" stroke-linecap="round"/>
+            <circle cx="9" cy="2" r="1.6" fill="var(--ink)"/>
+          </symbol>
+
+          <!-- Reusable full-size main hovel: instantiated once per house in the colony (see #house-colony). -->
+          <symbol id="main-hovel" viewBox="0 0 300 300">
+            <ellipse cx="150" cy="272" rx="118" ry="14" fill="var(--ink)" opacity="0.12"/>
+
+            <path d="M 60 190 C 40 150 45 90 90 78 C 85 55 105 40 150 40
+                     C 195 40 215 55 210 78 C 255 90 260 150 240 190
+                     C 250 220 245 250 220 258 L 80 258 C 55 250 50 220 60 190 Z"
+                  fill="var(--house-body, var(--parchment))" stroke="var(--ink)" stroke-width="4" stroke-linejoin="round"/>
+
+            <path d="M 55 100 L 150 30 L 245 100 L 224 108 L 150 52 L 76 108 Z"
+                  fill="var(--house-roof, var(--bog))" stroke="var(--ink)" stroke-width="4" stroke-linejoin="round"/>
+            <path d="M 68 96 L 78 90 L 86 98 L 96 90 L 104 99 L 114 90 L 122 99
+                      L 132 89 L 141 99 L 150 88 L 159 99 L 168 89 L 178 99
+                      L 186 90 L 196 99 L 204 90 L 214 98 L 222 90 L 232 96"
+                  fill="none" stroke="var(--ink)" stroke-width="2.5" stroke-linecap="round" opacity="0.55"/>
+
+            <rect x="196" y="34" width="16" height="34" fill="var(--bog-light)" stroke="var(--ink)" stroke-width="3"/>
+            <g class="smoke-puff"><circle cx="204" cy="26" r="6" fill="#cfc4ac" opacity="0.6"/></g>
+            <g class="smoke-puff"><circle cx="204" cy="26" r="6" fill="#cfc4ac" opacity="0.6"/></g>
+            <g class="smoke-puff"><circle cx="204" cy="26" r="6" fill="#cfc4ac" opacity="0.6"/></g>
+
+            <path d="M 128 258 L 128 190 C 128 172 172 172 172 190 L 172 258 Z"
+                  fill="var(--ink)" stroke="var(--ink)" stroke-width="3"/>
+            <path d="M 128 258 L 128 195 C 128 178 172 178 172 195 L 172 258"
+                  fill="none" stroke="#161514" stroke-width="1"/>
+
+            <circle cx="96" cy="150" r="15" fill="#3a4230" stroke="var(--ink)" stroke-width="3"/>
+            <circle cx="96" cy="150" r="6" fill="#1c1b19"/>
+            <circle cx="204" cy="150" r="15" fill="#3a4230" stroke="var(--ink)" stroke-width="3"/>
+            <circle cx="204" cy="150" r="6" fill="#1c1b19"/>
+          </symbol>
+
+          <!-- Hanging signs marking special village buildings -->
+          <symbol id="sign-blacksmith" viewBox="-12 -12 24 24">
+            <circle cx="0" cy="0" r="11" fill="#3a332c" stroke="var(--ink)" stroke-width="1.5"/>
+            <path d="M -7 3 L -7 0 L -3 -3 L 5 -3 L 8 0 L 8 3 L 5 3 L 5 1 L -4 1 L -4 3 Z" fill="#c9b896" stroke="var(--ink)" stroke-width="0.8"/>
+            <path d="M 8 0 L 11 -1 L 11 1 L 8 1 Z" fill="#c9b896" stroke="var(--ink)" stroke-width="0.6"/>
+          </symbol>
+
+          <symbol id="sign-alchemist" viewBox="-12 -12 24 24">
+            <circle cx="0" cy="0" r="11" fill="#4a3a5c" stroke="var(--ink)" stroke-width="1.5"/>
+            <path d="M -2 -7 L -2 -2 L -6 5 Q -6 8 -2 8 L 2 8 Q 6 8 6 5 L 2 -2 L 2 -7 Z" fill="#a888c2" stroke="var(--ink)" stroke-width="0.8"/>
+            <rect x="-3" y="-8" width="6" height="2" fill="#a888c2" stroke="var(--ink)" stroke-width="0.6"/>
+            <circle cx="-1" cy="4" r="1.3" fill="#4a3a5c"/>
+          </symbol>
+
+          <symbol id="sign-tradingpost" viewBox="-12 -12 24 24">
+            <circle cx="0" cy="0" r="11" fill="#6b4a2a" stroke="var(--ink)" stroke-width="1.5"/>
+            <path d="M -5 -1 Q -6 -6 0 -7 Q 6 -6 5 -1 Q 7 3 4 7 L -4 7 Q -7 3 -5 -1 Z" fill="#d9a441" stroke="var(--ink)" stroke-width="0.8"/>
+            <path d="M -2 -6 Q 0 -8 2 -6" fill="none" stroke="var(--ink)" stroke-width="0.8" stroke-linecap="round"/>
+          </symbol>
+        </defs>
+
+        <g id="house-colony"></g>
+
+        <text id="overflow-label" x="150" y="245" text-anchor="middle"></text>
+      </svg>
+    </div>
+  </div>
+
+  <div id="upgrades">
+    <button class="upgrade-btn" id="upg-wall" data-key="wallStrength">
+      <span class="upgrade-name">Reinforce Walls</span>
+      <span class="upgrade-info"><span id="upg-wall-lvl">Lv 0</span><span id="upg-wall-cost">10</span></span>
+    </button>
+    <button class="upgrade-btn" id="upg-spore" data-key="sporeSpawners">
+      <span class="upgrade-name">Spore Spawners</span>
+      <span class="upgrade-info"><span id="upg-spore-lvl">Lv 0</span><span id="upg-spore-cost">15</span></span>
+    </button>
+    <button class="upgrade-btn" id="upg-lunk" data-key="lunkGenes">
+      <span class="upgrade-name">Lunk Genes</span>
+      <span class="upgrade-info"><span id="upg-lunk-lvl">Lv 0</span><span id="upg-lunk-cost">25</span></span>
+    </button>
+    <button class="upgrade-btn" id="upg-fertility" data-key="goblinFertility">
+      <span class="upgrade-name">Fertile Spores</span>
+      <span class="upgrade-info"><span id="upg-fertility-lvl">Lv 0</span><span id="upg-fertility-cost">20</span></span>
+    </button>
+    <button class="upgrade-btn" id="upg-echo" data-key="echoChambers">
+      <span class="upgrade-name">Echo Chambers</span>
+      <span class="upgrade-info"><span id="upg-echo-lvl">Lv 0</span><span id="upg-echo-cost">18</span></span>
+    </button>
+  </div>
+
+  <div id="hud">
+    <button id="summon-btn">Summon Fae</button>
+    <button id="rile-btn">Rile the Swarm</button>
+    <button id="disenchant-btn" disabled>Initiate Disenchantment</button>
+  </div>
+
+  <div id="whiteout"></div>
+
+  <div id="glamour-shop-overlay" class="modal-overlay">
+    <div class="modal-panel">
+      <div class="shop-header">
+        <span>Chaos-Wrought Perks</span>
+        <button id="shop-close" aria-label="Close perks panel">&times;</button>
+      </div>
+      <div id="shop-list" class="shop-list"></div>
+    </div>
+  </div>
+
+  <div id="stats-overlay" class="modal-overlay">
+    <div class="modal-panel">
+      <div class="shop-header">
+        <span>Colony Chronicle</span>
+        <button id="stats-close" aria-label="Close chronicle panel">&times;</button>
+      </div>
+      <div id="stats-list" class="shop-list"></div>
+    </div>
+  </div>
+
+<script>
+(() => {
+  'use strict';
+
+  const BASE_CAPACITY = 100;
+  const LOGIC_HZ = 12;
+  const LOGIC_DT = 1 / LOGIC_HZ;
+  const SAVE_KEY = 'goblinHovelSave_v1';
+  const MAX_OFFLINE_SECONDS = 8 * 3600;
+
+  const gameState = {
+    goblins: 0,
+    capacity: BASE_CAPACITY,
+    pressure: 0.0,
+    resonance: 0.0,
+    glamour: 0.0,
+    spawnRate: 1.0,
+    upgrades: {
+      wallStrength: 0,
+      sporeSpawners: 0,
+      lunkGenes: 0,
+      goblinFertility: 0,
+      echoChambers: 0
+    },
+    permanentUpgrades: {
+      bogBlood: 0,
+      feralVigor: 0,
+      sturdyBones: 0,
+      quickFingers: 0,
+      chaosHoarder: 0,
+      squattersAdditions: 0,
+      idleDreaming: 0,
+      goldenFaeBlood: 0,
+      riledInstincts: 0
+    },
+    lifetime: {
+      totalGoblinsSummoned: 0,
+      totalDisenchantments: 0,
+      totalResonanceEarned: 0,
+      peakPressure: 0,
+      playtimeSeconds: 0
+    },
+    specialBuildings: {
+      blacksmith: 0,
+      alchemist: 0,
+      tradingPost: 0
+    },
+    spawnAccumulator: 0,
+    subhousesEarned: 0,
+    currentSubhouseCount: 0
+  };
+
+  const UPGRADE_DEFS = {
+    wallStrength: { baseCost: 10, growth: 1.16, apply: () => {} },
+    sporeSpawners: { baseCost: 15, growth: 1.18, apply: () => {} },
+    lunkGenes: { baseCost: 25, growth: 1.2, apply: () => {} },
+    goblinFertility: { baseCost: 20, growth: 1.22, apply: () => {} },
+    echoChambers: { baseCost: 18, growth: 1.2, apply: () => {} }
+  };
+
+  // Permanent, Glamour-funded perks: survive Disenchantment and persist across sessions.
+  const PERMANENT_UPGRADE_DEFS = {
+    bogBlood: {
+      name: 'Ancestral Bog-Blood', baseCost: 6, growth: 1.55, max: Infinity,
+      desc: () => `+15% Resonance from every goblin (currently +${(gameState.permanentUpgrades.bogBlood * 15)}%).`
+    },
+    feralVigor: {
+      name: 'Feral Vigor', baseCost: 6, growth: 1.55, max: Infinity,
+      desc: () => `+12% automatic spawn rate (currently +${(gameState.permanentUpgrades.feralVigor * 12)}%).`
+    },
+    sturdyBones: {
+      name: 'Sturdier Bones', baseCost: 8, growth: 1.6, max: Infinity,
+      desc: () => `+10% structural capacity (currently +${(gameState.permanentUpgrades.sturdyBones * 10)}%).`
+    },
+    quickFingers: {
+      name: 'Quicker Fae Fingers', baseCost: 5, growth: 1.5, max: Infinity,
+      desc: () => `+25% Resonance per Summon click (currently +${(gameState.permanentUpgrades.quickFingers * 25)}%).`
+    },
+    chaosHoarder: {
+      name: 'Chaos Hoarder', baseCost: 12, growth: 1.75, max: Infinity,
+      desc: () => `+10% Glamour gained per Disenchantment (currently +${(gameState.permanentUpgrades.chaosHoarder * 10)}%).`
+    },
+    squattersAdditions: {
+      name: "Squatters' Additions", baseCost: 20, growth: 2.2, max: 4,
+      desc: () => `+1 permanent goblin-house on the roof, always present (currently ${gameState.permanentUpgrades.squattersAdditions}).`
+    },
+    idleDreaming: {
+      name: 'Idle Dreaming', baseCost: 15, growth: 1.6, max: Infinity,
+      desc: () => `+20% simulated time while the tab is hidden or reloaded (currently +${(gameState.permanentUpgrades.idleDreaming * 20)}%).`
+    },
+    goldenFaeBlood: {
+      name: 'Golden Fae Blood', baseCost: 14, growth: 1.65, max: Infinity,
+      desc: () => `+8% chance a Summon click crits for double goblins & Resonance (currently ${(gameState.permanentUpgrades.goldenFaeBlood * 8)}%).`
+    },
+    riledInstincts: {
+      name: 'Riled Instincts', baseCost: 18, growth: 1.7, max: Infinity,
+      desc: () => `+15% strength of the Rile the Swarm burst (currently +${(gameState.permanentUpgrades.riledInstincts * 15)}%).`
+    }
+  };
+
+  function upgradeCost(key) {
+    const def = UPGRADE_DEFS[key];
+    const lvl = gameState.upgrades[key];
+    return Math.ceil(def.baseCost * Math.pow(def.growth, lvl));
+  }
+
+  function permanentUpgradeCost(key) {
+    const def = PERMANENT_UPGRADE_DEFS[key];
+    const lvl = gameState.permanentUpgrades[key];
+    return Math.ceil(def.baseCost * Math.pow(def.growth, lvl));
+  }
+
+  function recomputeDerivedStats() {
+    const perm = gameState.permanentUpgrades;
+    const subhouseCapacityMult = 1 + (gameState.currentSubhouseCount || 0) * 0.05;
+    const houseCountMult = 1 + Math.max(0, houses.length - 1) * 0.35;
+    const tradingPostMult = specialBuildingBonus('tradingPost');
+    gameState.capacity = BASE_CAPACITY
+      * (1 + gameState.upgrades.wallStrength * 0.5)
+      * (1 + perm.sturdyBones * 0.10)
+      * subhouseCapacityMult
+      * houseCountMult
+      * tradingPostMult;
+    gameState.spawnRate = (1.0 + gameState.upgrades.sporeSpawners * 0.6) * (1 + perm.feralVigor * 0.12);
+  }
+
+  // ---------- DOM refs ----------
+  const root = document.documentElement;
+  const resonanceValueEl = document.getElementById('resonance-value');
+  const resonanceRateEl = document.getElementById('resonance-rate');
+  const densityValueEl = document.getElementById('density-value');
+  const glamourValueEl = document.getElementById('glamour-value');
+  const densityBlockValue = document.getElementById('density-value');
+  const densityBlock = document.getElementById('density-block');
+  const hovelSvg = document.getElementById('hovel-svg');
+  const houseColonyGroup = document.getElementById('house-colony');
+  const overflowLabel = document.getElementById('overflow-label');
+  const summonBtn = document.getElementById('summon-btn');
+  const rileBtn = document.getElementById('rile-btn');
+  const disenchantBtn = document.getElementById('disenchant-btn');
+  const whiteout = document.getElementById('whiteout');
+  const floatLayer = document.getElementById('float-layer');
+  const stageEl = document.getElementById('stage');
+  const glamourBlock = document.getElementById('glamour-block');
+  const shopOverlay = document.getElementById('glamour-shop-overlay');
+  const shopCloseBtn = document.getElementById('shop-close');
+  const shopList = document.getElementById('shop-list');
+  const statsOverlay = document.getElementById('stats-overlay');
+  const statsCloseBtn = document.getElementById('stats-close');
+  const statsList = document.getElementById('stats-list');
+
+  const SVG_NS = 'http://www.w3.org/2000/svg';
+
+  const upgradeButtons = {
+    wallStrength: document.getElementById('upg-wall'),
+    sporeSpawners: document.getElementById('upg-spore'),
+    lunkGenes: document.getElementById('upg-lunk'),
+    goblinFertility: document.getElementById('upg-fertility'),
+    echoChambers: document.getElementById('upg-echo')
+  };
+  const upgradeLvlEls = {
+    wallStrength: document.getElementById('upg-wall-lvl'),
+    sporeSpawners: document.getElementById('upg-spore-lvl'),
+    lunkGenes: document.getElementById('upg-lunk-lvl'),
+    goblinFertility: document.getElementById('upg-fertility-lvl'),
+    echoChambers: document.getElementById('upg-echo-lvl')
+  };
+  const upgradeCostEls = {
+    wallStrength: document.getElementById('upg-wall-cost'),
+    sporeSpawners: document.getElementById('upg-spore-cost'),
+    lunkGenes: document.getElementById('upg-lunk-cost'),
+    goblinFertility: document.getElementById('upg-fertility-cost'),
+    echoChambers: document.getElementById('upg-echo-cost')
+  };
+
+  // ---------- Number formatting ----------
+  function formatNumber(n) {
+    if (n < 1000) return n.toFixed(n < 10 ? 1 : 0);
+    const units = ['k', 'M', 'B', 'T', 'Qa', 'Qi'];
+    let u = -1;
+    let val = n;
+    while (val >= 1000 && u < units.length - 1) {
+      val /= 1000;
+      u++;
+    }
+    return val.toFixed(2) + units[u];
+  }
+
+  // ---------- Goblin swarm visuals ----------
+  // "Rooms" are the fillable interior pockets goblins render into: the base hovel plus
+  // one per subhouse stacked on top. New arrivals fill the emptiest room first, so the
+  // swarm visibly spills upward into new construction as the colony grows.
+  const GOBLIN_FACE_COUNT = 4;
+  const GOBLIN_LEGS_COUNT = 3;
+  const GOBLIN_TORSO_COUNT = 4;
+  const GOBLIN_SKIN_PALETTE = ['#4a533c', '#5b6b3f', '#45605a', '#5c5636', '#55584c'];
+
+  // Shared rig coordinate convention: legs' hip-top sits at local (0,0); the torso symbol
+  // is drawn so its own waist (bottom) also sits at its local (0,0), so placing both parts
+  // with identity x/y/width/height mapping pins them at the same point automatically. The
+  // head is nested inside the torso's pivot and shifted up to the torso's neck point.
+  const LEGS_VB = { minX: -16, minY: -8, w: 32, h: 30 };
+  const TORSO_VB = { minX: -18, minY: -24, w: 36, h: 28 };
+  const HEAD_VB = { minX: -10, minY: -10, w: 20, h: 20 };
+  const TORSO_NECK_Y = -17;
+  const HEAD_CHIN_OFFSET = 8; // head symbol's chin sits ~8 units below its own local center
+  const HEAD_ANCHOR_Y = TORSO_NECK_Y - HEAD_CHIN_OFFSET;
+  const RIG_GROUND_Y = 20; // approximate feet position in the rig's local space
+
+  const goblinNodes = [];
+  const rooms = [];
+
+  function totalRoomCapacity() {
+    return rooms.reduce((sum, r) => sum + r.capacity, 0);
+  }
+
+  function pickRoomForNewGoblin() {
+    for (let i = 0; i < rooms.length; i++) {
+      if (rooms[i].occupants < rooms[i].capacity) return i;
+    }
+    return rooms.length - 1;
+  }
+
+  function randomPointInRoom(room) {
+    for (let i = 0; i < 8; i++) {
+      const rx = (Math.random() * 2 - 1);
+      const ry = (Math.random() * 2 - 1);
+      if (rx * rx + ry * ry <= 1) {
+        return { x: room.cx + rx * room.rx, y: room.cy + ry * room.ry };
+      }
+    }
+    return { x: room.cx, y: room.cy };
+  }
+
+  function buildGoblinRig() {
+    const rig = document.createElementNS(SVG_NS, 'g');
+    rig.classList.add('goblin-rig');
+
+    const legsUse = document.createElementNS(SVG_NS, 'use');
+    legsUse.setAttribute('href', `#goblin-legs-${Math.floor(Math.random() * GOBLIN_LEGS_COUNT)}`);
+    legsUse.setAttribute('x', LEGS_VB.minX);
+    legsUse.setAttribute('y', LEGS_VB.minY);
+    legsUse.setAttribute('width', LEGS_VB.w);
+    legsUse.setAttribute('height', LEGS_VB.h);
+    rig.appendChild(legsUse);
+
+    const torsoPivot = document.createElementNS(SVG_NS, 'g');
+    torsoPivot.classList.add('goblin-torso-pivot');
+    const torsoUse = document.createElementNS(SVG_NS, 'use');
+    torsoUse.setAttribute('href', `#goblin-torso-${Math.floor(Math.random() * GOBLIN_TORSO_COUNT)}`);
+    torsoUse.setAttribute('x', TORSO_VB.minX);
+    torsoUse.setAttribute('y', TORSO_VB.minY);
+    torsoUse.setAttribute('width', TORSO_VB.w);
+    torsoUse.setAttribute('height', TORSO_VB.h);
+    torsoPivot.appendChild(torsoUse);
+
+    const headAnchor = document.createElementNS(SVG_NS, 'g');
+    headAnchor.setAttribute('transform', `translate(0, ${HEAD_ANCHOR_Y})`);
+    const headPivot = document.createElementNS(SVG_NS, 'g');
+    headPivot.classList.add('goblin-head-pivot');
+    const headUse = document.createElementNS(SVG_NS, 'use');
+    headUse.setAttribute('href', `#goblin-face-${Math.floor(Math.random() * GOBLIN_FACE_COUNT)}`);
+    headUse.setAttribute('x', HEAD_VB.minX);
+    headUse.setAttribute('y', HEAD_VB.minY);
+    headUse.setAttribute('width', HEAD_VB.w);
+    headUse.setAttribute('height', HEAD_VB.h);
+    headPivot.appendChild(headUse);
+    headAnchor.appendChild(headPivot);
+    torsoPivot.appendChild(headAnchor);
+
+    rig.appendChild(torsoPivot);
+
+    const torsoAmp = (7 + Math.random() * 6).toFixed(2);
+    const torsoDur = (0.3 + Math.random() * 0.25).toFixed(2);
+    const torsoDelay = (Math.random() * 1).toFixed(2);
+    torsoPivot.style.setProperty('--wiggle-amp', torsoAmp + 'deg');
+    torsoPivot.style.animation = `goblin-wiggle ${torsoDur}s ease-in-out ${torsoDelay}s infinite`;
+
+    const headAmp = (12 + Math.random() * 10).toFixed(2);
+    const headDur = (0.22 + Math.random() * 0.22).toFixed(2);
+    const headDelay = (Math.random() * 1).toFixed(2);
+    headPivot.style.setProperty('--wiggle-amp', headAmp + 'deg');
+    headPivot.style.animation = `goblin-wiggle ${headDur}s ease-in-out ${headDelay}s infinite`;
+
+    return rig;
+  }
+
+  function spawnGoblinVisual() {
+    if (goblinNodes.length >= totalRoomCapacity()) return;
+    const roomIndex = pickRoomForNewGoblin();
+    const room = rooms[roomIndex];
+    room.occupants += 1;
+
+    const p = randomPointInRoom(room);
+    const iconScale = (0.48 + Math.random() * 0.2) * (room.scale || 1);
+    const rot = (Math.random() * 16 - 8).toFixed(1);
+    const skin = GOBLIN_SKIN_PALETTE[Math.floor(Math.random() * GOBLIN_SKIN_PALETTE.length)];
+
+    const rig = buildGoblinRig();
+    rig.style.setProperty('--goblin-skin', skin);
+    // fill-box + bottom-center origin: without this, rotate()/scale() in the transform below
+    // would pivot around the shared SVG viewport's center instead of this goblin's own feet.
+    rig.style.transformBox = 'fill-box';
+    rig.style.transformOrigin = '50% 100%';
+    // The fill-box origin point itself lands at (origin + translate) regardless of scale
+    // (scaling/rotating an element never moves its own pivot), so this offset must stay in
+    // raw local units, not be pre-multiplied by iconScale.
+    const groundX = p.x;
+    const groundY = p.y - RIG_GROUND_Y;
+    rig.style.transform = `translate(${groundX.toFixed(1)}px, ${groundY.toFixed(1)}px) rotate(${rot}deg) scale(${iconScale.toFixed(3)})`;
+    const bobDuration = (0.55 + Math.random() * 0.5).toFixed(2);
+    const bobDelay = (Math.random() * 1).toFixed(2);
+    rig.style.animation = `goblin-bob ${bobDuration}s ease-in-out ${bobDelay}s infinite`;
+
+    room.groupEl.appendChild(rig);
+    rig._roomIndex = roomIndex;
+    goblinNodes.push(rig);
+  }
+
+  function removeGoblinVisual() {
+    const node = goblinNodes.pop();
+    if (!node) return;
+    const room = rooms[node._roomIndex];
+    if (room) room.occupants = Math.max(0, room.occupants - 1);
+    node.remove();
+  }
+
+  function syncGoblinVisuals() {
+    const cap = totalRoomCapacity();
+    const target = Math.min(gameState.goblins, cap);
+    while (goblinNodes.length < target) spawnGoblinVisual();
+    while (goblinNodes.length > target) removeGoblinVisual();
+    const overflow = gameState.goblins - cap;
+    overflowLabel.textContent = overflow > 0 ? `+${Math.floor(overflow)} crammed beyond sight` : '';
+  }
+
+  function clearAllGoblinVisuals() {
+    for (const house of houses) house.goblinGroupEl.innerHTML = '';
+    goblinNodes.length = 0;
+    rooms.forEach((r) => { r.occupants = 0; });
+    overflowLabel.textContent = '';
+  }
+
+  // inject goblin-bob keyframes once (kept out of the static stylesheet since duration/delay are randomized)
+  const styleSheet = document.createElement('style');
+  styleSheet.textContent = `
+    @keyframes goblin-bob {
+      0%, 100% { translate: 0 0; }
+      50% { translate: 0 -4px; }
+    }
+  `;
+  document.head.appendChild(styleSheet);
+
+  // ---------- House Colony ----------
+  // The colony starts with one full hovel. Each Disenchantment permanently bolts on another
+  // full-size house (up to a cap). Houses fill up in rows of 5; once a row is full, the next
+  // house starts a new row alternating behind and in front of the original (smaller/further
+  // back, bigger/closer up), so the compound grows into a 2D village instead of one long
+  // horizontal line. The first house of every row beyond the original is a unique specialty
+  // building (Blacksmith, Alchemist, Trading Post, cycling), each with its own passive bonus.
+  // Every house gets its own floor room the swarm can fill, plus its own set of subhouse
+  // growth points feeding a single shared slot pool — so wings spread across whichever houses
+  // have room, not just the first one.
+  const MAX_MAIN_HOUSES = 20;
+  const HOUSES_PER_ROW = 5;
+  const HOUSE_SPACING = 185;
+  const ROW_DEPTH_STEP = 140;
+  const ROW_SCALE_STEP = 0.12;
+  const ROOF_APEX_Y = 30;
+  // Visual-only shrink applied to every house's rendered size (and everything scaled off of
+  // it: rooms, subhouses, signage). Goblin icon size is tuned up separately in spawnGoblinVisual
+  // so a smaller, denser house still reads as "packed" with fewer actual goblin sprites.
+  const HOUSE_SIZE_MULT = 0.72;
+
+  const SPECIAL_BUILDING_TYPES = [
+    {
+      key: 'blacksmith', name: 'Blacksmith', sign: 'sign-blacksmith',
+      body: '#4a4238', roof: '#2e2a24', bonusPerBuilding: 0.10,
+      desc: 'Each Blacksmith adds +10% Resonance production.'
+    },
+    {
+      key: 'alchemist', name: 'Alchemist', sign: 'sign-alchemist',
+      body: '#8a7a9c', roof: '#4a3a5c', bonusPerBuilding: 0.10,
+      desc: 'Each Alchemist adds +10% Glamour gained per Disenchantment.'
+    },
+    {
+      key: 'tradingPost', name: 'Trading Post', sign: 'sign-tradingpost',
+      body: '#c9a86b', roof: '#6b4a2a', bonusPerBuilding: 0.12,
+      desc: 'Each Trading Post adds +12% structural capacity.'
+    }
+  ];
+
+  // Growth points relative to a house's own center; gx/gy is the direction later subhouses
+  // in that slot climb away in, and tiltBias leans them outward accordingly.
+  const SUBHOUSE_SLOT_TEMPLATE = [
+    { dx: 0,   y: ROOF_APEX_Y + 4, gx: 0,     gy: -1,    tiltBias: 0 },   // roof peak, climbs straight up
+    { dx: -55, y: 82,              gx: -0.55, gy: -0.85, tiltBias: -5 },  // left roof slope
+    { dx: 55,  y: 82,              gx: 0.55,  gy: -0.85, tiltBias: 5 },   // right roof slope
+    { dx: -94, y: 150,             gx: -0.95, gy: -0.3,  tiltBias: -11 }, // left wall, climbs outward
+    { dx: 94,  y: 150,             gx: 0.95,  gy: -0.3,  tiltBias: 11 }   // right wall, climbs outward
+  ];
+
+  const SUBHOUSE_PALETTE = [
+    { body: '#d8cfbe', roof: '#4a533c' },
+    { body: '#c9b896', roof: '#6b4a3a' },
+    { body: '#a8b5a0', roof: '#5c6b7a' },
+    { body: '#b8a888', roof: '#7a4a3a' },
+    { body: '#9c9484', roof: '#4a4438' },
+    { body: '#c2b280', roof: '#5b6b3f' }
+  ];
+  const PRESSURE_SUBHOUSE_THRESHOLDS = [0.35, 0.5, 0.65, 0.8, 0.95, 1.1, 1.25, 1.4, 1.55, 1.7, 1.85, 2.0, 2.2, 2.4];
+
+  function seededRand(seed) {
+    const x = Math.sin(seed * 12.9898) * 43758.5453;
+    return x - Math.floor(x);
+  }
+
+  const houses = [];
+  const subhousePool = [];
+  let subhouseCount = 0;
+  let boundsMinX = 0, boundsMaxX = 300, boundsMinY = 0, boundsMaxY = 300;
+
+  function growViewBoxBounds(x, y, w, h) {
+    boundsMinX = Math.min(boundsMinX, x - 8);
+    boundsMaxX = Math.max(boundsMaxX, x + w + 8);
+    boundsMinY = Math.min(boundsMinY, y - 8);
+    boundsMaxY = Math.max(boundsMaxY, y + h + 8);
+    hovelSvg.setAttribute('viewBox',
+      `${boundsMinX.toFixed(1)} ${boundsMinY.toFixed(1)} ${(boundsMaxX - boundsMinX).toFixed(1)} ${(boundsMaxY - boundsMinY).toFixed(1)}`);
+  }
+
+  // Row layout: row 0 is the original baseline; rows alternate behind (smaller, further up)
+  // and in front (bigger, further down) as the village fills out sideways within each row.
+  function getHouseLayout(index) {
+    const positionInRow = index % HOUSES_PER_ROW;
+    const rowNumber = Math.floor(index / HOUSES_PER_ROW);
+    const rowSide = rowNumber === 0 ? 0 : (rowNumber % 2 === 1 ? Math.ceil(rowNumber / 2) : -Math.ceil(rowNumber / 2));
+
+    const sideInRow = positionInRow % 2 === 1 ? 1 : -1;
+    const ringInRow = Math.ceil(positionInRow / 2);
+    const xOffset = sideInRow * ringInRow * HOUSE_SPACING;
+
+    const scale = Math.max(0.5, 1 - rowSide * ROW_SCALE_STEP);
+    const groundTargetY = 258 - rowSide * ROW_DEPTH_STEP;
+
+    return { cx: 150 + xOffset, groundTargetY, scale, rowSide };
+  }
+
+  // Keeps the SVG paint order matching visual depth: houses further back (higher rowSide)
+  // must be painted before houses further forward (lower rowSide) so overlapping houses
+  // occlude each other correctly, regardless of the order they were actually built in.
+  function insertHouseInDom(unit, rowSide) {
+    unit._rowSide = rowSide;
+    for (const child of houseColonyGroup.children) {
+      if (child._rowSide !== undefined && child._rowSide < rowSide) {
+        houseColonyGroup.insertBefore(unit, child);
+        return;
+      }
+    }
+    houseColonyGroup.appendChild(unit);
+  }
+
+  // Converts a point in the "standard" house frame (0-300 viewBox, ground at y=258) into
+  // this house's actual position, given its own row scale/depth offset.
+  function localToHouseSpace(house, lx, ly) {
+    return {
+      x: house.cx + (lx - 150) * house.scale,
+      y: house.groundTargetY + (ly - 258) * house.scale
+    };
+  }
+
+  function getSpecialBuildingForIndex(index) {
+    if (index === 0 || index % HOUSES_PER_ROW !== 0) return null;
+    const rowNumber = Math.floor(index / HOUSES_PER_ROW);
+    return SPECIAL_BUILDING_TYPES[(rowNumber - 1) % SPECIAL_BUILDING_TYPES.length];
+  }
+
+  function pushSlotsForHouse(house) {
+    for (const slot of SUBHOUSE_SLOT_TEMPLATE) {
+      const p = localToHouseSpace(house, 150 + slot.dx, slot.y);
+      subhousePool.push({
+        x: p.x, y: p.y,
+        gx: slot.gx, gy: slot.gy, tiltBias: slot.tiltBias,
+        gen: 0,
+        baseScale: house.scale,
+        groupEl: house.subhouseGroupEl
+      });
+    }
+  }
+
+  function createMainHouse(index) {
+    const { cx: houseCx, groundTargetY, scale: layoutScale, rowSide } = getHouseLayout(index);
+    const scale = layoutScale * HOUSE_SIZE_MULT;
+    const special = getSpecialBuildingForIndex(index);
+
+    const unit = document.createElementNS(SVG_NS, 'g');
+    unit.classList.add('house-unit');
+    // Pin this house's own pivot to its own foundation point, so the shared pressure-driven
+    // scale/rotate/skew (applied per house in applyHouseTransforms) rocks each hut around its
+    // own base rather than the whole colony warping around one shared point.
+    unit.style.transformOrigin = `${houseCx.toFixed(1)}px ${groundTargetY.toFixed(1)}px`;
+
+    const bodyUse = document.createElementNS(SVG_NS, 'use');
+    bodyUse.setAttribute('href', '#main-hovel');
+    bodyUse.setAttribute('x', (houseCx - 150 * scale).toFixed(1));
+    bodyUse.setAttribute('y', (groundTargetY - 258 * scale).toFixed(1));
+    bodyUse.setAttribute('width', (300 * scale).toFixed(1));
+    bodyUse.setAttribute('height', (300 * scale).toFixed(1));
+    bodyUse.classList.add('house-body');
+    bodyUse.style.animationDelay = (seededRand(index * 3 + 2) * 2).toFixed(2) + 's';
+    if (special) {
+      bodyUse.style.setProperty('--house-body', special.body);
+      bodyUse.style.setProperty('--house-roof', special.roof);
+    }
+    unit.appendChild(bodyUse);
+
+    const house = {
+      cx: houseCx, groundTargetY, scale, rowSide, unit, bodyUse, special,
+      // Independent jitter so houses don't all shake in lockstep: own frequency/phase/amplitude.
+      jitterAmp: 1.4 + seededRand(index * 11 + 1) * 1.6,
+      jitterFreq: 2.2 + seededRand(index * 11 + 2) * 2.4,
+      jitterPhase: seededRand(index * 11 + 3) * Math.PI * 2
+    };
+
+    if (special) {
+      const signUse = document.createElementNS(SVG_NS, 'use');
+      signUse.setAttribute('href', `#${special.sign}`);
+      const signSize = 34 * scale;
+      const signPos = localToHouseSpace(house, 150 - 70, 118);
+      signUse.setAttribute('x', (signPos.x - signSize / 2).toFixed(1));
+      signUse.setAttribute('y', (signPos.y - signSize / 2).toFixed(1));
+      signUse.setAttribute('width', signSize.toFixed(1));
+      signUse.setAttribute('height', signSize.toFixed(1));
+      unit.appendChild(signUse);
+    }
+
+    const goblinGroup = document.createElementNS(SVG_NS, 'g');
+    unit.appendChild(goblinGroup);
+    house.goblinGroupEl = goblinGroup;
+
+    const subhouseGroup = document.createElementNS(SVG_NS, 'g');
+    unit.appendChild(subhouseGroup);
+    house.subhouseGroupEl = subhouseGroup;
+
+    insertHouseInDom(unit, rowSide);
+
+    const roomCenter = localToHouseSpace(house, 150, 195);
+    const baseCapacity = special ? 8 : (index === 0 ? 24 : 20);
+    rooms.push({
+      cx: roomCenter.x, cy: roomCenter.y, rx: 78 * scale, ry: 55 * scale,
+      capacity: Math.max(4, Math.round(baseCapacity * scale)),
+      occupants: 0, scale,
+      groupEl: goblinGroup
+    });
+
+    houses.push(house);
+    pushSlotsForHouse(house);
+    if (special) gameState.specialBuildings[special.key] += 1;
+
+    growViewBoxBounds(houseCx - 115 * scale, groundTargetY - 238 * scale, 230 * scale, 250 * scale);
+
+    return house;
+  }
+
+  function growColonyIfEligible() {
+    if (houses.length < MAX_MAIN_HOUSES) {
+      return createMainHouse(houses.length);
+    }
+    return null;
+  }
+
+  function specialBuildingBonus(key) {
+    const def = SPECIAL_BUILDING_TYPES.find((t) => t.key === key);
+    return 1 + gameState.specialBuildings[key] * def.bonusPerBuilding;
+  }
+
+  function addSubhouse(poolIndex) {
+    const entry = subhousePool[poolIndex % subhousePool.length];
+    const gen = entry.gen;
+
+    const scale = 0.62 * Math.pow(0.85, gen) * entry.baseScale;
+    const jitterX = (seededRand(poolIndex * 7 + 1) * 2 - 1) * 8;
+    const tilt = entry.tiltBias + (seededRand(poolIndex * 7 + 2) * 2 - 1) * 7;
+    const palette = SUBHOUSE_PALETTE[poolIndex % SUBHOUSE_PALETTE.length];
+
+    const centerX = entry.x + jitterX;
+    const groundY = entry.y;
+    const y = groundY - 99 * scale;
+    const x = centerX - 45 * scale;
+    const w = 90 * scale;
+    const h = 100 * scale;
+
+    const g = document.createElementNS(SVG_NS, 'g');
+    g.classList.add('subhouse-unit');
+    g.style.setProperty('--sway-amp', (1 + gen * 0.6).toFixed(2) + 'deg');
+    const dur = (3.6 + seededRand(poolIndex * 5 + 3) * 2.2).toFixed(2);
+    const delay = (seededRand(poolIndex * 5 + 4) * 2).toFixed(2);
+    g.style.animation = `subhouse-teeter ${dur}s ease-in-out ${delay}s infinite`;
+    g.style.transform = `rotate(${tilt.toFixed(1)}deg)`;
+
+    const use = document.createElementNS(SVG_NS, 'use');
+    use.setAttribute('href', '#mini-hovel');
+    use.setAttribute('x', x.toFixed(2));
+    use.setAttribute('y', y.toFixed(2));
+    use.setAttribute('width', w.toFixed(2));
+    use.setAttribute('height', h.toFixed(2));
+    use.style.setProperty('--sub-body', palette.body);
+    use.style.setProperty('--sub-roof', palette.roof);
+    g.appendChild(use);
+
+    // Goblins for this room live inside the same swaying group as their house, so they
+    // inherit its lean and teeter instead of drifting away from it.
+    const roomGroup = document.createElementNS(SVG_NS, 'g');
+    roomGroup.classList.add('room-goblins');
+    g.appendChild(roomGroup);
+
+    entry.groupEl.appendChild(g);
+
+    rooms.push({
+      cx: centerX,
+      cy: groundY - 16 * scale,
+      rx: 20 * scale,
+      ry: 13 * scale,
+      capacity: Math.max(3, Math.round(6 - gen * 0.8)),
+      occupants: 0,
+      scale: Math.max(0.4, scale * 1.3),
+      groupEl: roomGroup
+    });
+
+    // Advance this slot's own cursor outward/upward so the next house placed here
+    // continues sprawling away from its house rather than overlapping.
+    const step = 60 * scale;
+    entry.x = centerX + entry.gx * step;
+    entry.y = groundY + entry.gy * step;
+    entry.gen += 1;
+
+    subhouseCount += 1;
+    growViewBoxBounds(x, y, w, h);
+  }
+
+  function resetSubhouses() {
+    for (const house of houses) house.subhouseGroupEl.innerHTML = '';
+    rooms.length = houses.length;
+    subhouseCount = 0;
+    subhousePool.length = 0;
+    boundsMinX = 0;
+    boundsMaxX = 300;
+    boundsMinY = 0;
+    boundsMaxY = 300;
+    for (const house of houses) {
+      pushSlotsForHouse(house);
+      growViewBoxBounds(
+        house.cx - 115 * house.scale, house.groundTargetY - 238 * house.scale,
+        230 * house.scale, 250 * house.scale
+      );
+    }
+    gameState.subhousesEarned = 0;
+  }
+
+  function updateSubhouses() {
+    const tierCount = PRESSURE_SUBHOUSE_THRESHOLDS.reduce((acc, t) => gameState.pressure >= t ? acc + 1 : acc, 0);
+    gameState.subhousesEarned = Math.max(gameState.subhousesEarned, tierCount);
+    const maxSubhouses = subhousePool.length * 3;
+    const target = Math.min(maxSubhouses, gameState.subhousesEarned + gameState.permanentUpgrades.squattersAdditions);
+    while (subhouseCount < target) {
+      addSubhouse(subhouseCount);
+    }
+    return subhouseCount;
+  }
+
+  // ---------- Floating text feedback ----------
+  function spawnFloatText(text, xPct, color) {
+    const el = document.createElement('div');
+    el.className = 'float-text';
+    el.textContent = text;
+    el.style.left = xPct + '%';
+    el.style.top = '55%';
+    if (color) el.style.color = color;
+    floatLayer.appendChild(el);
+    el.addEventListener('animationend', () => el.remove());
+  }
+
+  // ---------- Pressure-driven transform (non-linear scale + shake) ----------
+  let animPhaseTime = 0;
+
+  function computeHovelTransform(pressure, t) {
+    let scale = 1.0;
+    let rotate = 0;
+    let skew = 0;
+
+    const clampedP = Math.min(pressure, 1.6);
+
+    if (pressure <= 0.5) {
+      // Breathing state: low frequency, soft scale changes
+      scale = 1.0 + 0.04 * Math.sin(t * 2.5);
+    } else if (pressure <= 0.85) {
+      // Straining state: linear expansion + light rotational wobble
+      const strain = pressure - 0.5;
+      scale = 1.0 + strain * 0.3;
+      rotate = Math.sin(t * 4.0) * strain * 9;
+    } else {
+      // Critical mass: continued expansion + chaotic jitter + shearing
+      const strain = pressure - 0.5;
+      scale = 1.0 + strain * 0.3;
+      rotate = Math.sin(t * 4.0) * strain * 9;
+      const p2 = clampedP * clampedP;
+      skew = (Math.random() * 4 - 2) * p2;
+    }
+
+    return { scale, rotate, skew };
+  }
+
+  function applyHovelState(pressure) {
+    let stateClass;
+    if (pressure <= 0.5) stateClass = 'breathing';
+    else if (pressure <= 0.85) stateClass = 'straining';
+    else stateClass = 'critical';
+
+    const critical = stateClass === 'critical';
+    for (const house of houses) {
+      house.bodyUse.classList.toggle('spasm', critical);
+    }
+
+    const wobbleSpeed = Math.max(0.4, 2.0 - pressure * 1.3);
+    root.style.setProperty('--wobble-speed', wobbleSpeed.toFixed(2) + 's');
+    root.style.setProperty('--goblin-pressure', pressure.toFixed(3));
+  }
+
+  // Each house reacts to the shared pressure (scale/rotate/skew) around its OWN foundation
+  // point (house.unit's transform-origin is pinned to that house's own ground coordinate at
+  // creation time), rather than the whole colony pivoting around one shared point. On top of
+  // that, each house shakes on its own smooth, desynced wave so the swarm reads as many
+  // independent huts straining rather than one rigid block warping in unison.
+  function applyHouseTransforms(pressure, t) {
+    const { scale, rotate, skew } = computeHovelTransform(pressure, t);
+    const strain = Math.max(0, Math.min(pressure, 1.6) - 0.5);
+    const intensity = strain * strain;
+    for (const house of houses) {
+      let jx = 0, jy = 0;
+      if (intensity > 0) {
+        const amp = intensity * house.jitterAmp * house.scale;
+        jx = Math.sin(t * house.jitterFreq + house.jitterPhase) * amp;
+        jy = Math.cos(t * house.jitterFreq * 1.3 + house.jitterPhase) * amp * 0.7;
+      }
+      house.unit.style.transform =
+        `translate(${jx.toFixed(2)}px, ${jy.toFixed(2)}px) ` +
+        `rotate(${rotate.toFixed(2)}deg) ` +
+        `skewX(${skew.toFixed(2)}deg) ` +
+        `scale(${scale.toFixed(4)})`;
+    }
+  }
+
+  // ---------- Display loop (rAF, 60fps) ----------
+  let rafHandle = null;
+  let lastFrameTime = performance.now();
+
+  function displayTick(now) {
+    rafHandle = requestAnimationFrame(displayTick);
+    const dt = Math.min((now - lastFrameTime) / 1000, 0.1);
+    lastFrameTime = now;
+    animPhaseTime += dt;
+
+    applyHovelState(gameState.pressure);
+    applyHouseTransforms(gameState.pressure, animPhaseTime);
+  }
+
+  function startDisplayLoop() {
+    if (rafHandle !== null) return;
+    lastFrameTime = performance.now();
+    rafHandle = requestAnimationFrame(displayTick);
+  }
+
+  function stopDisplayLoop() {
+    if (rafHandle !== null) {
+      cancelAnimationFrame(rafHandle);
+      rafHandle = null;
+    }
+  }
+
+  // ---------- Rile the Swarm (temporary power-up) ----------
+  const RILE_DURATION_MS = 8000;
+  const RILE_COOLDOWN_MS = 30000;
+  const RILE_SPAWN_MULT = 3;
+  const RILE_RESONANCE_MULT = 2;
+  let rileActiveUntil = 0;
+  let rileReadyAt = 0;
+
+  function riledInstinctsBonusMult() {
+    return 1 + gameState.permanentUpgrades.riledInstincts * 0.15;
+  }
+
+  function currentRileSpawnMult() {
+    if (Date.now() >= rileActiveUntil) return 1;
+    return 1 + (RILE_SPAWN_MULT - 1) * riledInstinctsBonusMult();
+  }
+
+  function currentRileResonanceMult() {
+    if (Date.now() >= rileActiveUntil) return 1;
+    return 1 + (RILE_RESONANCE_MULT - 1) * riledInstinctsBonusMult();
+  }
+
+  function updateRileButton() {
+    const now = Date.now();
+    if (now < rileActiveUntil) {
+      rileBtn.disabled = true;
+      rileBtn.classList.add('active');
+      rileBtn.textContent = `Riled! ${Math.ceil((rileActiveUntil - now) / 1000)}s`;
+    } else if (now < rileReadyAt) {
+      rileBtn.disabled = true;
+      rileBtn.classList.remove('active');
+      rileBtn.textContent = `Recovering ${Math.ceil((rileReadyAt - now) / 1000)}s`;
+    } else {
+      rileBtn.disabled = false;
+      rileBtn.classList.remove('active');
+      rileBtn.textContent = 'Rile the Swarm';
+    }
+  }
+
+  rileBtn.addEventListener('click', () => {
+    const now = Date.now();
+    if (now < rileReadyAt) return;
+    rileActiveUntil = now + RILE_DURATION_MS;
+    rileReadyAt = now + RILE_DURATION_MS + RILE_COOLDOWN_MS;
+    updateRileButton();
+    spawnFloatText('Riled up!', 50, 'var(--danger)');
+  });
+
+  // ---------- Logic loop (setInterval, ~12Hz) ----------
+  let logicHandle = null;
+
+  function runLogicStep(dt) {
+    recomputeDerivedStats();
+
+    const effectiveSpawnRate = gameState.spawnRate * currentRileSpawnMult();
+    gameState.spawnAccumulator += effectiveSpawnRate * dt;
+    while (gameState.spawnAccumulator >= 1) {
+      gameState.goblins += 1;
+      gameState.spawnAccumulator -= 1;
+      gameState.lifetime.totalGoblinsSummoned += 1;
+      spawnGoblinVisual();
+    }
+
+    const glamourMult = 1 + gameState.glamour * 0.1;
+    const lunkMult = 1 + gameState.upgrades.lunkGenes * 0.25;
+    const bogBloodMult = 1 + gameState.permanentUpgrades.bogBlood * 0.15;
+    const echoMult = 1 + gameState.upgrades.echoChambers * 0.15;
+    const blacksmithMult = specialBuildingBonus('blacksmith');
+    const resonanceGain = gameState.goblins * 0.12 * lunkMult * glamourMult * bogBloodMult
+      * echoMult * blacksmithMult * currentRileResonanceMult() * dt;
+    gameState.resonance += resonanceGain;
+    gameState.lifetime.totalResonanceEarned += resonanceGain;
+
+    gameState.pressure = gameState.goblins / gameState.capacity;
+    gameState.lifetime.peakPressure = Math.max(gameState.lifetime.peakPressure, gameState.pressure);
+    gameState.currentSubhouseCount = updateSubhouses();
+    gameState.lifetime.playtimeSeconds += dt;
+
+    updateHUD();
+  }
+
+  function logicTick() {
+    runLogicStep(LOGIC_DT);
+  }
+
+  function startLogicLoop() {
+    if (logicHandle !== null) return;
+    logicHandle = setInterval(logicTick, LOGIC_DT * 1000);
+  }
+
+  function currentResonancePerSecond() {
+    const glamourMult = 1 + gameState.glamour * 0.1;
+    const lunkMult = 1 + gameState.upgrades.lunkGenes * 0.25;
+    const bogBloodMult = 1 + gameState.permanentUpgrades.bogBlood * 0.15;
+    const echoMult = 1 + gameState.upgrades.echoChambers * 0.15;
+    const blacksmithMult = specialBuildingBonus('blacksmith');
+    return gameState.goblins * 0.12 * lunkMult * glamourMult * bogBloodMult * echoMult * blacksmithMult * currentRileResonanceMult();
+  }
+
+  // ---------- HUD updates ----------
+  function updateHUD() {
+    resonanceValueEl.textContent = formatNumber(gameState.resonance);
+    resonanceRateEl.textContent = `+${formatNumber(currentResonancePerSecond())}/s`;
+    glamourValueEl.textContent = formatNumber(gameState.glamour);
+
+    const densityPct = gameState.pressure * 100;
+    densityValueEl.textContent = densityPct.toFixed(0) + '%';
+    densityBlockValue.classList.toggle('warn', gameState.pressure >= 0.85);
+
+    syncGoblinVisuals();
+    updateRileButton();
+
+    const ready = gameState.pressure >= 1.0;
+    disenchantBtn.classList.toggle('ready', ready);
+    disenchantBtn.disabled = !ready;
+
+    for (const key of Object.keys(UPGRADE_DEFS)) {
+      const cost = upgradeCost(key);
+      const affordable = gameState.resonance >= cost;
+      upgradeButtons[key].disabled = !affordable;
+      upgradeLvlEls[key].textContent = 'Lv ' + gameState.upgrades[key];
+      upgradeCostEls[key].textContent = formatNumber(cost);
+    }
+  }
+
+  // ---------- Interactions ----------
+  summonBtn.addEventListener('click', (e) => {
+    const lunkMult = 1 + gameState.upgrades.lunkGenes * 0.25;
+    const quickFingersMult = 1 + gameState.permanentUpgrades.quickFingers * 0.25;
+    const critChance = gameState.permanentUpgrades.goldenFaeBlood * 0.08;
+    const isCrit = Math.random() < critChance;
+    const critMult = isCrit ? 2 : 1;
+
+    const goblinsGained = (1 + gameState.upgrades.goblinFertility) * critMult;
+    gameState.goblins += goblinsGained;
+    gameState.lifetime.totalGoblinsSummoned += goblinsGained;
+    for (let i = 0; i < goblinsGained; i++) spawnGoblinVisual();
+
+    const resonanceGained = 0.5 * lunkMult * quickFingersMult * critMult;
+    gameState.resonance += resonanceGained;
+    gameState.lifetime.totalResonanceEarned += resonanceGained;
+
+    gameState.pressure = gameState.goblins / gameState.capacity;
+    updateHUD();
+
+    const rect = summonBtn.getBoundingClientRect();
+    const stageRect = stageEl.getBoundingClientRect();
+    const xPct = ((rect.left + rect.width / 2 - stageRect.left) / stageRect.width) * 100;
+    if (isCrit) {
+      spawnFloatText(`CRIT! +${goblinsGained} goblins`, Math.max(5, Math.min(95, xPct)), 'var(--glow)');
+    } else {
+      spawnFloatText(`+${goblinsGained} goblin${goblinsGained > 1 ? 's' : ''}`, Math.max(5, Math.min(95, xPct)), 'var(--bog)');
+    }
+  });
+
+  disenchantBtn.addEventListener('click', () => {
+    if (gameState.pressure < 1.0) return;
+
+    const chaosHoarderMult = 1 + gameState.permanentUpgrades.chaosHoarder * 0.10;
+    const alchemistMult = specialBuildingBonus('alchemist');
+    const glamourGain = Math.max(1, Math.floor(
+      Math.sqrt(gameState.goblins) * (1 + gameState.upgrades.wallStrength * 0.1) * chaosHoarderMult * alchemistMult
+    ));
+    gameState.glamour += glamourGain;
+    gameState.lifetime.totalDisenchantments += 1;
+
+    whiteout.classList.remove('flash');
+    void whiteout.offsetWidth;
+    whiteout.classList.add('flash');
+
+    spawnFloatText(`+${glamourGain} Glamour`, 50, 'var(--glow)');
+
+    gameState.goblins = 0;
+    gameState.spawnAccumulator = 0;
+    gameState.pressure = 0;
+    clearAllGoblinVisuals();
+    resetSubhouses();
+
+    const housesBefore = houses.length;
+    const newHouse = growColonyIfEligible();
+    if (houses.length > housesBefore) {
+      const msg = newHouse.special ? `The ${newHouse.special.name} opens!` : 'A new house rises!';
+      spawnFloatText(msg, 50, 'var(--danger)');
+    }
+
+    recomputeDerivedStats();
+    gameState.currentSubhouseCount = updateSubhouses();
+    updateHUD();
+  });
+
+  for (const key of Object.keys(UPGRADE_DEFS)) {
+    upgradeButtons[key].addEventListener('click', () => {
+      const cost = upgradeCost(key);
+      if (gameState.resonance < cost) return;
+      gameState.resonance -= cost;
+      gameState.upgrades[key] += 1;
+      recomputeDerivedStats();
+      updateHUD();
+    });
+  }
+
+  // ---------- Glamour Shop (permanent perks) ----------
+  function renderShop() {
+    shopList.innerHTML = '';
+    for (const key of Object.keys(PERMANENT_UPGRADE_DEFS)) {
+      const def = PERMANENT_UPGRADE_DEFS[key];
+      const row = document.createElement('div');
+      row.className = 'perk-row';
+
+      const top = document.createElement('div');
+      top.className = 'perk-top';
+      const name = document.createElement('span');
+      name.className = 'perk-name';
+      name.textContent = def.name;
+      const level = document.createElement('span');
+      level.className = 'perk-level';
+      level.id = `perk-lvl-${key}`;
+      top.appendChild(name);
+      top.appendChild(level);
+
+      const desc = document.createElement('div');
+      desc.className = 'perk-desc';
+      desc.id = `perk-desc-${key}`;
+
+      const buyBtn = document.createElement('button');
+      buyBtn.className = 'perk-buy-btn';
+      buyBtn.id = `perk-buy-${key}`;
+      buyBtn.addEventListener('click', () => buyPermanentUpgrade(key));
+
+      row.appendChild(top);
+      row.appendChild(desc);
+      row.appendChild(buyBtn);
+      shopList.appendChild(row);
+    }
+    updateShop();
+  }
+
+  function updateShop() {
+    for (const key of Object.keys(PERMANENT_UPGRADE_DEFS)) {
+      const def = PERMANENT_UPGRADE_DEFS[key];
+      const lvl = gameState.permanentUpgrades[key];
+      const maxed = lvl >= def.max;
+      const cost = permanentUpgradeCost(key);
+
+      const levelEl = document.getElementById(`perk-lvl-${key}`);
+      const descEl = document.getElementById(`perk-desc-${key}`);
+      const buyEl = document.getElementById(`perk-buy-${key}`);
+      if (!levelEl || !descEl || !buyEl) continue;
+
+      levelEl.textContent = maxed ? `Lv ${lvl} (max)` : `Lv ${lvl}`;
+      descEl.textContent = def.desc();
+
+      if (maxed) {
+        buyEl.textContent = 'Mastered';
+        buyEl.disabled = true;
+        buyEl.classList.add('maxed');
+      } else {
+        buyEl.textContent = `Buy — ${formatNumber(cost)} Glamour`;
+        buyEl.disabled = gameState.glamour < cost;
+        buyEl.classList.remove('maxed');
+      }
+    }
+  }
+
+  function buyPermanentUpgrade(key) {
+    const def = PERMANENT_UPGRADE_DEFS[key];
+    const lvl = gameState.permanentUpgrades[key];
+    if (lvl >= def.max) return;
+    const cost = permanentUpgradeCost(key);
+    if (gameState.glamour < cost) return;
+
+    gameState.glamour -= cost;
+    gameState.permanentUpgrades[key] += 1;
+    recomputeDerivedStats();
+    gameState.currentSubhouseCount = updateSubhouses();
+    updateHUD();
+    updateShop();
+  }
+
+  function openShop() {
+    shopOverlay.classList.add('open');
+    updateShop();
+  }
+
+  function closeShop() {
+    shopOverlay.classList.remove('open');
+  }
+
+  glamourBlock.addEventListener('click', openShop);
+  shopCloseBtn.addEventListener('click', closeShop);
+  shopOverlay.addEventListener('click', (e) => {
+    if (e.target === shopOverlay) closeShop();
+  });
+
+  // ---------- Colony Chronicle (lifetime stats) ----------
+  function formatDuration(totalSeconds) {
+    const s = Math.floor(totalSeconds);
+    const hh = Math.floor(s / 3600);
+    const mm = Math.floor((s % 3600) / 60);
+    const ss = s % 60;
+    if (hh > 0) return `${hh}h ${mm}m ${ss}s`;
+    if (mm > 0) return `${mm}m ${ss}s`;
+    return `${ss}s`;
+  }
+
+  function statRow(label, value) {
+    const row = document.createElement('div');
+    row.className = 'perk-row';
+    const top = document.createElement('div');
+    top.className = 'perk-top';
+    const name = document.createElement('span');
+    name.className = 'perk-name';
+    name.textContent = label;
+    const val = document.createElement('span');
+    val.className = 'perk-level';
+    val.textContent = value;
+    top.appendChild(name);
+    top.appendChild(val);
+    row.appendChild(top);
+    return row;
+  }
+
+  function renderStats() {
+    statsList.innerHTML = '';
+    const lt = gameState.lifetime;
+    statsList.appendChild(statRow('Colony Age', formatDuration(lt.playtimeSeconds)));
+    statsList.appendChild(statRow('Goblins Summoned (lifetime)', formatNumber(lt.totalGoblinsSummoned)));
+    statsList.appendChild(statRow('Resonance Earned (lifetime)', formatNumber(lt.totalResonanceEarned)));
+    statsList.appendChild(statRow('Disenchantments', formatNumber(lt.totalDisenchantments)));
+    statsList.appendChild(statRow('Peak Density Reached', (lt.peakPressure * 100).toFixed(0) + '%'));
+    statsList.appendChild(statRow('Goblins in Colony (now)', formatNumber(gameState.goblins)));
+    statsList.appendChild(statRow('Main Houses Built (now)', formatNumber(houses.length)));
+    statsList.appendChild(statRow('Goblin-Houses Built (now)', formatNumber(gameState.currentSubhouseCount)));
+    statsList.appendChild(statRow('Structural Capacity (now)', formatNumber(gameState.capacity)));
+    const sb = gameState.specialBuildings;
+    if (sb.blacksmith + sb.alchemist + sb.tradingPost > 0) {
+      statsList.appendChild(statRow('Blacksmiths', formatNumber(sb.blacksmith)));
+      statsList.appendChild(statRow('Alchemists', formatNumber(sb.alchemist)));
+      statsList.appendChild(statRow('Trading Posts', formatNumber(sb.tradingPost)));
+    }
+  }
+
+  function openStats() {
+    renderStats();
+    statsOverlay.classList.add('open');
+  }
+
+  function closeStats() {
+    statsOverlay.classList.remove('open');
+  }
+
+  densityBlock.addEventListener('click', openStats);
+  statsCloseBtn.addEventListener('click', closeStats);
+  statsOverlay.addEventListener('click', (e) => {
+    if (e.target === statsOverlay) closeStats();
+  });
+
+  // ---------- Visibility handling / offline progression ----------
+  let lastSeenTimestamp = Date.now();
+
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) {
+      lastSeenTimestamp = Date.now();
+      stopDisplayLoop();
+    } else {
+      const elapsedSeconds = Math.min((Date.now() - lastSeenTimestamp) / 1000, MAX_OFFLINE_SECONDS)
+        * (1 + gameState.permanentUpgrades.idleDreaming * 0.2);
+      if (elapsedSeconds > 1) {
+        runLogicStep(elapsedSeconds);
+      }
+      startDisplayLoop();
+    }
+  });
+
+  window.addEventListener('beforeunload', saveState);
+
+  // ---------- Persistence ----------
+  function saveState() {
+    try {
+      const payload = {
+        goblins: gameState.goblins,
+        resonance: gameState.resonance,
+        glamour: gameState.glamour,
+        upgrades: gameState.upgrades,
+        permanentUpgrades: gameState.permanentUpgrades,
+        lifetime: gameState.lifetime,
+        spawnAccumulator: gameState.spawnAccumulator,
+        subhousesEarned: gameState.subhousesEarned,
+        houseCount: houses.length,
+        savedAt: Date.now()
+      };
+      localStorage.setItem(SAVE_KEY, JSON.stringify(payload));
+    } catch (err) { /* storage unavailable, ignore */ }
+  }
+
+  function loadState() {
+    try {
+      const raw = localStorage.getItem(SAVE_KEY);
+      if (!raw) return;
+      const payload = JSON.parse(raw);
+      gameState.goblins = payload.goblins || 0;
+      gameState.resonance = payload.resonance || 0;
+      gameState.glamour = payload.glamour || 0;
+      gameState.spawnAccumulator = payload.spawnAccumulator || 0;
+      gameState.subhousesEarned = payload.subhousesEarned || 0;
+      Object.assign(gameState.upgrades, payload.upgrades || {});
+      Object.assign(gameState.permanentUpgrades, payload.permanentUpgrades || {});
+      Object.assign(gameState.lifetime, payload.lifetime || {});
+
+      const savedHouseCount = Math.min(MAX_MAIN_HOUSES, payload.houseCount || 1);
+      while (houses.length < savedHouseCount) {
+        createMainHouse(houses.length);
+      }
+
+      gameState.currentSubhouseCount = Math.min(
+        subhousePool.length * 3, gameState.subhousesEarned + gameState.permanentUpgrades.squattersAdditions
+      );
+      recomputeDerivedStats();
+      gameState.pressure = gameState.goblins / gameState.capacity;
+
+      const offlineSeconds = Math.min((Date.now() - (payload.savedAt || Date.now())) / 1000, MAX_OFFLINE_SECONDS)
+        * (1 + gameState.permanentUpgrades.idleDreaming * 0.2);
+      if (offlineSeconds > 1) {
+        runLogicStep(offlineSeconds);
+      }
+
+      for (let i = 0; i < Math.min(gameState.goblins, totalRoomCapacity()); i++) {
+        spawnGoblinVisual();
+      }
+    } catch (err) { /* corrupt or missing save, start fresh */ }
+  }
+
+  setInterval(saveState, 15000);
+
+  // ---------- Init ----------
+  createMainHouse(0);
+  loadState();
+  recomputeDerivedStats();
+  gameState.currentSubhouseCount = updateSubhouses();
+  renderShop();
+  updateHUD();
+  startLogicLoop();
+  startDisplayLoop();
+})();
+</script>
+</body>
+</html>

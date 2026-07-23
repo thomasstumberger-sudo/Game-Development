@@ -1,0 +1,221 @@
+{
+  "shortsword": {
+    "name": "Shortsword",
+    "slot": "weapon",
+    "tier": 1,
+    "attack": 2,
+    "value": 20,
+    "sprite": "eq_weapon_basic",
+    "description": "A simple blade. +2 Attack."
+  },
+  "longsword": {
+    "name": "Longsword",
+    "slot": "weapon",
+    "tier": 2,
+    "attack": 4,
+    "value": 55,
+    "sprite": "eq_weapon",
+    "description": "A well-balanced longsword. +4 Attack."
+  },
+  "greatsword": {
+    "name": "Greatsword",
+    "slot": "weapon",
+    "tier": 3,
+    "attack": 7,
+    "value": 140,
+    "sprite": "eq_weapon_masterwork",
+    "description": "A masterfully forged greatsword. +7 Attack."
+  },
+  "buckler": {
+    "name": "Buckler",
+    "slot": "shield",
+    "tier": 1,
+    "defense": 1,
+    "value": 15,
+    "sprite": "eq_shield_basic",
+    "description": "A small wooden shield. +1 Defense."
+  },
+  "kite_shield": {
+    "name": "Kite Shield",
+    "slot": "shield",
+    "tier": 2,
+    "defense": 2,
+    "value": 40,
+    "sprite": "eq_shield",
+    "description": "A sturdy kite shield. +2 Defense."
+  },
+  "tower_shield": {
+    "name": "Tower Shield",
+    "slot": "shield",
+    "tier": 3,
+    "defense": 4,
+    "value": 100,
+    "sprite": "eq_shield_masterwork",
+    "description": "A massive tower shield. +4 Defense."
+  },
+  "leather_cap": {
+    "name": "Leather Cap",
+    "slot": "helmet",
+    "tier": 1,
+    "defense": 1,
+    "value": 12,
+    "sprite": "eq_helmet_basic",
+    "description": "Boiled leather headgear. +1 Defense."
+  },
+  "iron_helm": {
+    "name": "Iron Helm",
+    "slot": "helmet",
+    "tier": 2,
+    "defense": 2,
+    "value": 32,
+    "sprite": "eq_helmet",
+    "description": "A solid iron helm. +2 Defense."
+  },
+  "great_helm": {
+    "name": "Great Helm",
+    "slot": "helmet",
+    "tier": 3,
+    "defense": 3,
+    "value": 80,
+    "sprite": "eq_helmet_masterwork",
+    "description": "A masterwork great helm. +3 Defense."
+  },
+  "leather_armor": {
+    "name": "Leather Armor",
+    "slot": "armor",
+    "tier": 1,
+    "defense": 2,
+    "value": 25,
+    "sprite": "eq_armor_basic",
+    "description": "Simple hardened leather. +2 Defense."
+  },
+  "chainmail": {
+    "name": "Chainmail",
+    "slot": "armor",
+    "tier": 2,
+    "defense": 4,
+    "value": 65,
+    "sprite": "eq_armor",
+    "description": "Interlocking steel rings. +4 Defense."
+  },
+  "plate_armor": {
+    "name": "Plate Armor",
+    "slot": "armor",
+    "tier": 3,
+    "defense": 7,
+    "value": 150,
+    "sprite": "eq_armor_masterwork",
+    "description": "Full plate, masterfully fitted. +7 Defense."
+  },
+  "worn_boots": {
+    "name": "Worn Boots",
+    "slot": "boots",
+    "tier": 1,
+    "defense": 1,
+    "value": 10,
+    "sprite": "eq_boots_basic",
+    "description": "Scuffed old boots. +1 Defense."
+  },
+  "leather_boots": {
+    "name": "Leather Boots",
+    "slot": "boots",
+    "tier": 2,
+    "defense": 2,
+    "value": 28,
+    "sprite": "eq_boots",
+    "description": "Supple leather boots. +2 Defense."
+  },
+  "steel_greaves": {
+    "name": "Steel Greaves",
+    "slot": "boots",
+    "tier": 3,
+    "defense": 3,
+    "value": 70,
+    "sprite": "eq_boots_masterwork",
+    "description": "Reinforced steel greaves. +3 Defense."
+  },
+  "ring_might_basic": {
+    "name": "Ring of Might",
+    "slot": "ring1",
+    "tier": 1,
+    "attack": 2,
+    "value": 18,
+    "sprite": "eq_ring_might_basic",
+    "description": "A plain band set with a dull red stone. +2 Attack."
+  },
+  "ring_might_fine": {
+    "name": "Ring of Greater Might",
+    "slot": "ring1",
+    "tier": 2,
+    "attack": 4,
+    "value": 50,
+    "sprite": "eq_ring_might_fine",
+    "description": "A gilt ring set with a glowing ruby. +4 Attack."
+  },
+  "ring_might_masterwork": {
+    "name": "Ring of Supreme Might",
+    "slot": "ring1",
+    "tier": 3,
+    "attack": 7,
+    "value": 130,
+    "sprite": "eq_ring_might_masterwork",
+    "description": "A masterwork ring crowned with fire. +7 Attack."
+  },
+  "ring_warding_basic": {
+    "name": "Ring of Warding",
+    "slot": "ring2",
+    "tier": 1,
+    "defense": 2,
+    "value": 18,
+    "sprite": "eq_ring_warding_basic",
+    "description": "A plain band set with a pale sapphire. +2 Defense."
+  },
+  "ring_warding_fine": {
+    "name": "Ring of Greater Warding",
+    "slot": "ring2",
+    "tier": 2,
+    "defense": 4,
+    "value": 50,
+    "sprite": "eq_ring_warding_fine",
+    "description": "A silver ring set with a bright emerald. +4 Defense."
+  },
+  "ring_warding_masterwork": {
+    "name": "Ring of Supreme Warding",
+    "slot": "ring2",
+    "tier": 3,
+    "defense": 7,
+    "value": 130,
+    "sprite": "eq_ring_warding_masterwork",
+    "description": "A masterwork ring wreathed in gold. +7 Defense."
+  },
+  "amulet_resist_basic": {
+    "name": "Amulet of Resistance",
+    "slot": "amulet",
+    "tier": 1,
+    "resist_elemental": 15,
+    "resist_undead": 15,
+    "value": 22,
+    "sprite": "eq_amulet_basic",
+    "description": "A plain pendant, cool to the touch. Resist 15% elemental damage and 15% undead mana drain."
+  },
+  "amulet_resist_fine": {
+    "name": "Amulet of Greater Resistance",
+    "slot": "amulet",
+    "tier": 2,
+    "resist_elemental": 30,
+    "resist_undead": 30,
+    "value": 60,
+    "sprite": "eq_amulet_fine",
+    "description": "A gold-trimmed pendant that turns aside flame, frost, and the touch of the dead alike. Resist 30% elemental damage and 30% undead mana drain."
+  },
+  "amulet_resist_masterwork": {
+    "name": "Amulet of Supreme Resistance",
+    "slot": "amulet",
+    "tier": 3,
+    "resist_elemental": 45,
+    "resist_undead": 45,
+    "value": 155,
+    "sprite": "eq_amulet_masterwork",
+    "description": "A masterwork pendant warded against every element and the hungry dead. Resist 45% elemental damage and 45% undead mana drain."
+  }
+}

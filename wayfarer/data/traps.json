@@ -1,0 +1,28 @@
+{
+  "dart_trap": {
+    "name": "Dart Trap",
+    "damage_min": 3,
+    "damage_max": 7,
+    "trigger_message": "A dart trap fires from the wall!",
+    "disarm_chance": 0.65,
+    "disarm_xp": 4
+  },
+  "pit_trap": {
+    "name": "Pit Trap",
+    "damage_min": 6,
+    "damage_max": 12,
+    "trigger_message": "The floor gives way beneath you -- a pit trap!",
+    "disarm_chance": 0.5,
+    "disarm_xp": 8
+  },
+  "poison_gas_trap": {
+    "name": "Poison Gas Trap",
+    "damage_min": 2,
+    "damage_max": 4,
+    "poison_damage": 2,
+    "poison_duration": 6,
+    "trigger_message": "A hidden vent hisses -- poison gas trap!",
+    "disarm_chance": 0.4,
+    "disarm_xp": 12
+  }
+}

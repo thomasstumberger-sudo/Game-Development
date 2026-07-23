@@ -1,0 +1,257 @@
+row,col,index,name,description
+0,0,0,floor_pink_diamond,mauve/pink floor tile with diamond quilted pattern
+0,1,1,wall_pink_brick,pink brick wall tile
+0,2,2,floor_gray_hex,light blue-gray hexagonal cobblestone floor tile
+0,3,3,enemy_icon_skull_orange_wide,round dark mob icon, two wide-set orange glowing eyes
+0,4,4,enemy_icon_skull_plain,round dark mob icon, plain skull face
+0,5,5,enemy_icon_skull_orange_wide2,round dark mob icon, two wide-set orange eyes variant
+0,6,6,enemy_icon_skull_orange_narrow,round dark mob icon, three small orange eyes
+0,7,7,icon_skull_crossbones,white skull-and-crossbones icon
+0,8,8,icon_tiny_figure,small dark hooded humanoid figure icon
+0,9,9,icon_blood_splatter,red blood splatter decal
+0,10,10,ui_slot_gray_item,white inventory slot containing small gray block icon
+0,11,11,ui_panel_edge_top_blank,blank white UI panel segment
+0,12,12,ui_slot_purple_dot,white inventory slot containing tiny purple dot icon
+0,13,13,ui_panel_border_topleft,white bordered panel, top-left corner with pink brick trim
+0,14,14,ui_panel_border_top,white bordered panel, top edge with pink brick trim
+0,15,15,ui_panel_border_topright,white bordered panel, top-right corner with pink brick trim
+1,0,16,vault_ceiling_corner_tl,purple stone vaulted ceiling, top-left corner pillar
+1,1,17,vault_ceiling_top_left,purple stone vaulted ceiling, upper wall left of window
+1,2,18,vault_window_frame_left,purple stone vault wall, left side of central window
+1,3,19,vault_window_center,large paned window set in purple stone vault, center
+1,4,20,vault_window_frame_right,purple stone vault wall, right side of central window
+1,5,21,vault_ceiling_top_right,purple stone vaulted ceiling, upper wall right of window
+1,6,22,vault_ceiling_corner_tr,purple stone vaulted ceiling, top-right corner pillar
+1,7,23,blank_01,blank white tile
+1,8,24,blank_02,blank white tile
+1,9,25,blank_03,blank white tile
+1,10,26,ui_slot_crate,white inventory slot containing small gray crate icon
+1,11,27,ui_panel_border_left,white bordered panel, left edge with pink brick trim
+1,12,28,ui_panel_border_fill,white bordered panel interior fill
+1,13,29,ui_panel_border_right,white bordered panel, right edge with pink brick trim
+1,14,30,ui_slot_armchair,white inventory slot containing orange cushioned armchair icon
+1,15,31,ui_panel_border_right2,white bordered panel, right edge continued
+2,0,32,vault_wall_left_mid,purple stone vault wall, left side middle
+2,1,33,icon_shield_skull_v1,white-backed shield icon with skull emblem, angled left
+2,2,34,icon_shield_skull_v2,white-backed shield icon with skull emblem, front-facing
+2,3,35,icon_shield_skull_v3,white-backed shield icon with skull emblem, angled right
+2,4,36,vault_pillar_pair,purple stone vault wall, twin support pillars
+2,5,37,vault_wall_right_mid,purple stone vault wall, right side middle
+2,6,38,vault_window_dual_top,twin-paned window set in purple stone vault wall, upper half
+2,7,39,blank_04,blank white tile
+2,8,40,blank_05,blank white tile
+2,9,41,blank_06,blank white tile
+2,10,42,blank_07,blank white tile
+2,11,43,ui_panel_pink_border_topleft,pink Greek-key patterned panel border, top-left corner
+2,12,44,ui_panel_pink_border_top,pink Greek-key patterned panel border, top edge
+2,13,45,ui_panel_pink_border_top2,pink Greek-key patterned panel border, top edge continued
+2,14,46,ui_panel_pink_border_topright,pink Greek-key patterned panel border, top-right corner
+2,15,47,blank_08,blank white tile
+3,0,48,vault_wall_left_lower,purple stone vault wall, left side lower
+3,1,49,icon_skull_crossed_swords,white-backed icon: skull over crossed swords
+3,2,50,icon_crossed_swords_v1,white-backed icon: crossed swords, silver blades
+3,3,51,icon_crossed_swords_v2,white-backed icon: crossed swords, purple hilts
+3,4,52,vault_pillar_pair2,purple stone vault wall, twin support pillars continued
+3,5,53,vault_wall_right_lower,purple stone vault wall, right side lower
+3,6,54,vault_window_dual_bottom,twin-paned window set in purple stone vault wall, lower half
+3,7,55,blank_09,blank white tile
+3,8,56,blank_10,blank white tile
+3,9,57,blank_11,blank white tile
+3,10,58,blank_12,blank white tile
+3,11,59,ui_panel_pink_border_left,pink Greek-key patterned panel border, left edge
+3,12,60,ui_panel_pink_corner_small,small pink Greek-key patterned corner fragment
+3,13,61,blank_13,blank white tile
+3,14,62,ui_panel_pink_border_topright2,pink Greek-key patterned panel border, top-right corner variant
+3,15,63,blank_14,blank white tile
+4,0,64,rubble_wall_top,gray stone wall with rubble debris at base, top section
+4,1,65,icon_shield_skull_round,white-backed round shield icon with skull emblem
+4,2,66,icon_crossed_swords_v3,white-backed icon: crossed swords, gray blades crossed low
+4,3,67,icon_crossed_swords_v4,white-backed icon: crossed swords, purple hilts crossed high
+4,4,68,rubble_wall_top2,gray stone wall with rubble debris at base, continued
+4,5,69,vault_ceiling_arch_left,dark purple stone arched wall panel, left
+4,6,70,vault_ceiling_arch_center,dark purple stone arched wall panel, center peak
+4,7,71,vault_ceiling_arch_right,dark purple stone arched wall panel, right
+4,8,72,blank_15,blank white tile
+4,9,73,blank_16,blank white tile
+4,10,74,blank_17,blank white tile
+4,11,75,ui_panel_pink_border_left2,pink Greek-key patterned panel border, left edge continued
+4,12,76,ui_slot_orange_cushion,white inventory slot containing orange cushioned seat icon on gray base
+4,13,77,ui_panel_pink_border_right,pink Greek-key patterned panel border, right edge
+4,14,78,blank_18,blank white tile
+4,15,79,ui_panel_pink_border_right2,pink Greek-key patterned panel border, right edge continued
+5,0,80,rubble_wall_bottom,gray stone wall with rubble debris pile, bottom section
+5,1,81,rubble_pile,loose gray stone rubble pile, standalone
+5,2,82,icon_crossed_swords_v5,white-backed icon: crossed swords, gray blades crossed wide
+5,3,83,icon_crossed_swords_v6,white-backed icon: crossed swords, purple hilts crossed wide
+5,4,84,rubble_wall_bottom2,gray stone wall with rubble debris, continued
+5,5,85,stone_wall_pale_edge,pale gray stone wall edge panel
+5,6,86,stone_wall_dark_mid,dark purple-gray stone wall, mid section
+5,7,87,stone_wall_pale_light,pale gray stone wall with light banding
+5,8,88,ui_slot_cushion_pale,white inventory slot containing pale cushion/pillow icon
+5,9,89,blank_19,blank white tile
+5,10,90,blank_20,blank white tile
+5,11,91,blank_21,blank white tile
+5,12,92,blank_22,blank white tile (solid white, no border)
+5,13,93,ui_panel_pink_border_bottomleft,pink Greek-key patterned panel border, bottom-left corner
+5,14,94,ui_panel_pink_border_bottom,pink Greek-key patterned panel border, bottom edge
+5,15,95,ui_panel_pink_border_bottomright,pink Greek-key patterned panel border, bottom-right corner
+6,0,96,vault_wall_left_alcove,purple stone vault wall, alcove left edge with pink trim
+6,1,97,vault_wall_stair_left,purple stone vault wall, staircase recess left slope
+6,2,98,vault_wall_stair_left2,purple stone vault wall, staircase recess left continued
+6,3,99,vault_wall_stair_center,purple stone vault wall, staircase recess center landing
+6,4,100,vault_wall_stair_right,purple stone vault wall, staircase recess right continued
+6,5,101,vault_wall_stair_right2,purple stone vault wall, staircase recess right slope
+6,6,102,vault_wall_right_alcove,purple stone vault wall, alcove right edge with pink trim
+6,7,103,stone_wall_pale_edge2,pale gray stone wall edge panel, narrow
+6,8,104,stone_wall_rough_left,rough gray stone wall texture, left
+6,9,105,stone_rubble_wall,gray stone wall packed with loose rubble
+6,10,106,stone_wall_rough_right,rough gray stone wall texture, right, pink-trimmed
+6,11,107,altar_recess_top,gray stone recessed altar/basin, top rim
+6,12,108,grass_diagonal,solid green grass tile with diagonal shading
+6,13,109,grass_ornate_border_tl,ornate green tile, diamond lattice border, top-left
+6,14,110,grass_ornate_border_t,ornate green tile, diamond lattice border, top edge
+6,15,111,grass_ornate_border_tr,ornate green tile, diamond lattice border, top-right corner
+7,0,112,vault_stair_base_left,purple stone stepped base, left riser with gray cap
+7,1,113,vault_stair_step,purple stone staircase steps, ascending
+7,2,114,vault_stair_step2,purple stone staircase steps, continued
+7,3,115,vault_stair_landing,purple stone staircase, mid landing with gray cap
+7,4,116,vault_stair_step3,purple stone staircase steps, continued
+7,5,117,vault_stair_step4,purple stone staircase steps, continued
+7,6,118,vault_stair_base_right,purple stone stepped base, right riser with gray cap
+7,7,119,stone_wall_layered_left,gray-purple layered stone wall block, left
+7,8,120,stone_wall_layered_mid,gray-purple layered stone wall block, mid
+7,9,121,stone_wall_layered_right,gray-purple layered stone wall block, thin right strip
+7,10,122,void_arch_vignette,dark arched doorway with faint purple glow vignette
+7,11,123,blank_23,blank white tile
+7,12,124,grass_ornate_border_l,ornate green tile, diamond lattice border, left edge
+7,13,125,grass_solid_mottled,solid green grass tile with mottled texture
+7,14,126,grass_solid_mottled2,solid green grass tile with mottled texture, variant
+7,15,127,grass_ornate_border_r,ornate green tile, diamond lattice border, right edge
+8,0,128,altar_top_long_left,long gray stone altar/bench top, left section with gray cap
+8,1,129,altar_top_long_mid,long gray stone altar/bench top, middle section
+8,2,130,altar_top_long_right,long gray stone altar/bench top, right section with gray cap
+8,3,131,double_door_frame_left,ornate stone doorway frame, left jamb with metal bracket
+8,4,132,double_door_panel_left,ornate double door, left leaf closed
+8,5,133,double_door_panel_right,ornate double door, right leaf closed
+8,6,134,double_door_frame_right,ornate stone doorway frame, right jamb with metal bracket
+8,7,135,stone_wall_banded_left,gray-purple stone wall with horizontal light band, left
+8,8,136,stone_wall_banded_right,gray-purple stone wall with horizontal light band, right
+8,9,137,stone_wall_narrow_pale,narrow pale gray stone wall strip
+8,10,138,blank_24,blank white tile
+8,11,139,void_black_corner,solid black tile, rounded vignette corner
+8,12,140,blank_25,blank white tile
+8,13,141,grass_ornate_border_bl,ornate green tile, diamond lattice border, bottom-left corner
+8,14,142,grass_ornate_border_b,ornate green tile, diamond lattice border, bottom edge
+8,15,143,grass_ornate_border_br,ornate green tile, diamond lattice border, bottom-right corner
+9,0,144,vault_pillar_base_left,stone pillar base, left, gray cap on dark shaft
+9,1,145,void_black_solid,solid black tile
+9,2,146,vault_pillar_base_right,stone pillar base, right, gray cap on dark shaft
+9,3,147,stone_wall_thin_strip,thin vertical gray-purple stone wall strip
+9,4,148,void_black_solid2,solid black tile, continued
+9,5,149,void_black_solid3,solid black tile, continued
+9,6,150,bench_top_pale,pale gray bench/altar top surface, wide
+9,7,151,bench_top_pale2,pale gray bench/altar top surface, continued
+9,8,152,bench_top_pale3,pale gray bench/altar top surface, right end
+9,9,153,blank_26,blank white tile
+9,10,154,throne_top_left,ornate throne backrest top, left post with gray cap
+9,11,155,throne_top_mid,ornate throne backrest top, center cushion
+9,12,156,throne_top_right,ornate throne backrest top, right post with gray cap
+9,13,157,blank_27,blank white tile
+9,14,158,dark_corridor_ceiling,dark purple stone corridor ceiling, deep perspective
+9,15,159,dark_corridor_ceiling2,dark purple stone corridor ceiling, continued
+10,0,160,vault_pillar_shaft_left,stone pillar shaft, left, gray cap over dark column
+10,1,161,void_black_solid4,solid black tile, doorway gap
+10,2,162,vault_pillar_shaft_right,stone pillar shaft, right, gray cap over dark column
+10,3,163,double_door_arch_left,dark ornate double door, left leaf, tall arched
+10,4,164,double_door_arch_leftmid,dark ornate double door, left-center leaf, tall arched
+10,5,165,double_door_arch_rightmid,dark ornate double door, right-center leaf, tall arched
+10,6,166,double_door_arch_right,dark ornate double door, right leaf, tall arched
+10,7,167,throne_side_left,ornate throne/bench side detail, left with key motif
+10,8,168,blank_28,blank white tile
+10,9,169,throne_side_right,ornate throne/bench side detail, right with key motif
+10,10,170,bench_seat_top,pale gray bench seat surface, top with tri-bar pattern
+10,11,171,bench_seat_top2,pale gray bench seat surface, continued
+10,12,172,bench_seat_top3,pale gray bench seat surface, right end
+10,13,173,dark_corridor_wall,dark purple stone corridor side wall
+10,14,174,dark_corridor_wall2,dark purple stone corridor side wall, continued
+10,15,175,dark_corridor_wall3,dark purple stone corridor side wall, continued
+11,0,176,bench_front_panel,pale gray bench front panel with gold trim line
+11,1,177,bench_front_panel2,pale gray bench front panel, continued
+11,2,178,bench_front_panel3,pale gray bench front panel, continued
+11,3,179,bench_leg_left,dark angled bench/table leg, left
+11,4,180,bench_leg_right,dark angled bench/table leg, right
+11,5,181,pillow_stack_top,pale cushion/pillow stack, top
+11,6,182,shadow_wisp_faint,faint pale wispy shadow smudge on white
+11,7,183,shadow_arc_faint,faint pale arched shadow smudge on white
+11,8,184,blank_29,blank white tile
+11,9,185,shadow_wisp_faint2,faint pale wispy shadow smudge on white, variant
+11,10,186,bench_step_top,stone bench/step, top with gray corner caps
+11,11,187,bench_step_mid,stone bench/step, middle riser
+11,12,188,bench_step_bottom,stone bench/step, bottom riser
+11,13,189,dark_corridor_deep,dark purple stone corridor, deep recess
+11,14,190,dark_corridor_deep2,dark purple stone corridor, deep recess continued
+11,15,191,dark_corridor_deep3,dark purple stone corridor, deep recess continued
+12,0,192,chest_green_locked_top,green metal-banded treasure chest, top-down view, closed lock
+12,1,193,blank_30,blank white tile
+12,2,194,blank_31,blank white tile
+12,3,195,chest_green_locked_side,green metal-banded treasure chest, angled view, closed lock
+12,4,196,chest_green_windowed,green treasure chest beside paned window, closed
+12,5,197,window_paned_gray_small,small gray-framed paned window, closed shutters
+12,6,198,window_paned_gray_small2,small gray-framed paned window, closed shutters variant
+12,7,199,blank_32,blank white tile
+12,8,200,blank_33,blank white tile
+12,9,201,blank_34,blank white tile
+12,10,202,throne_bench_seat_left,upholstered bench/throne seat, left arm with gray cap
+12,11,203,throne_bench_seat_mid,upholstered bench/throne seat, center cushion
+12,12,204,throne_bench_seat_right,upholstered bench/throne seat, right arm with gray cap
+12,13,205,torch_wall_mount,wooden torch mounted on wall bracket
+12,14,206,curtain_purple_scallop_left,purple scalloped curtain/drape, left fold
+12,15,207,curtain_purple_scallop_right,purple scalloped curtain/drape, right fold, dark edge
+13,0,208,blank_35,blank white tile
+13,1,209,chest_green_locked_open_top,green metal-banded treasure chest, top-down view, open/unlocked
+13,2,210,blank_36,blank white tile
+13,3,211,roof_peak_shadow_left,dark angled roof peak shadow, left slope
+13,4,212,blank_37,blank white tile
+13,5,213,roof_peak_shadow_right,dark angled roof peak shadow, right slope
+13,6,214,speckle_texture_faint,faint pale speckled dust/texture smudge on white
+13,7,215,window_shutter_dark_left,dark stone wall with shuttered window, left
+13,8,216,window_shutter_frame_left,recessed shuttered window frame, left, closed
+13,9,217,window_shutter_dark_right,dark stone wall with shuttered window, right
+13,10,218,window_shutter_frame_right,recessed shuttered window frame, right, closed
+13,11,219,bridge_railing_left,stone bridge railing, left descending section with gray cap
+13,12,220,bridge_railing_mid,stone bridge railing, center low span
+13,13,221,bridge_railing_right,stone bridge railing, right ascending section with gray cap
+13,14,222,curtain_purple_torn_left,purple curtain fragment, tattered left edge
+13,15,223,curtain_purple_torn_right,purple curtain fragment, tattered right edge
+14,0,224,chest_wood_dark_closed,dark wood treasure chest with green banding, closed
+14,1,225,chest_gray_metal_closed,gray metal-plated chest, closed, small
+14,2,226,chest_green_paneled_closed,green paneled chest with lattice lid, closed
+14,3,227,chest_ornate_framed,ornate gray-framed chest/panel, front view
+14,4,228,tower_wall_dark_narrow,dark purple narrow tower wall strip
+14,5,229,tower_window_arched,gray stone tower wall with tall arched paned window
+14,6,230,speckle_texture_faint2,faint pale speckled dust/texture smudge on white
+14,7,231,bench_seat_long_left,long pale gray bench/seat top, left
+14,8,232,bench_seat_long_mid,long pale gray bench/seat top, middle
+14,9,233,bench_seat_long_right,long pale gray bench/seat top, right
+14,10,234,wall_stripe_purple_1,vertical striped purple-gray wall panel, variant 1
+14,11,235,wall_stripe_purple_2,vertical striped purple-gray wall panel, variant 2
+14,12,236,wall_stripe_purple_3,vertical striped purple-gray wall panel, variant 3
+14,13,237,wall_stripe_purple_4,vertical striped purple-gray wall panel, variant 4
+14,14,238,blank_38,blank white tile
+14,15,239,curtain_purple_flowing,purple flowing curtain/banner, full drape with highlight
+15,0,240,chest_wood_dark_locked,dark wood treasure chest with green banding, front view with lock
+15,1,241,panel_gray_screwed,gray metal panel with rivets, plain
+15,2,242,tile_green_key_pattern,green tile with Greek-key border pattern
+15,3,243,blank_39,blank white tile
+15,4,244,tower_wall_narrow_dark,dark purple narrow tower wall strip, continued
+15,5,245,tower_window_arched_full,gray stone tower wall with full tall arched paned window
+15,6,246,chest_green_metal_closed,green metal-plated chest, closed, small variant
+15,7,247,gem_orb_green_1,round green gem/orb icon, glossy highlight
+15,8,248,gem_orb_green_2,round green gem/orb icon, glossy highlight variant
+15,9,249,torch_handle_wood_small,small wooden torch or mallet handle
+15,10,250,bridge_arch_left,stone bridge arch span, left support with gray cap
+15,11,251,bridge_arch_mid_left,stone bridge arch span, left-center curve
+15,12,252,bridge_arch_mid_right,stone bridge arch span, right-center curve with post
+15,13,253,bridge_arch_right,stone bridge arch span, right support with gray cap
+15,14,254,curtain_purple_flowing2,purple flowing curtain/banner, continued fold
+15,15,255,curtain_purple_flowing3,purple flowing curtain/banner, edge fold, dark trim

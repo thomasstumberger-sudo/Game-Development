@@ -1,0 +1,37 @@
+[
+  {
+    "id": "cull_1",
+    "description": "Clear 5 foes from the Depths.",
+    "target": 5,
+    "reward_type": "item",
+    "reward_item": "potion_greater"
+  },
+  {
+    "id": "cull_2",
+    "description": "Clear 15 foes from the Depths.",
+    "target": 15,
+    "reward_type": "item",
+    "reward_item": "whetstone_greater"
+  },
+  {
+    "id": "cull_3",
+    "description": "Clear 30 foes from the Depths.",
+    "target": 30,
+    "reward_type": "item",
+    "reward_item": "shield_greater"
+  },
+  {
+    "id": "cull_4",
+    "description": "Clear 50 foes from the Depths.",
+    "target": 50,
+    "reward_type": "xp",
+    "reward_xp": 100
+  },
+  {
+    "id": "cull_5",
+    "description": "Clear 75 foes from the Depths.",
+    "target": 75,
+    "reward_type": "xp",
+    "reward_xp": 200
+  }
+]

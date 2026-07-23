@@ -1,0 +1,1053 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>The Weather Balance Engine</title>
+<style>
+  :root{
+    --bg:#0b0e14; --panel:#131822; --panel-2:#0f131b; --border:#232b3a;
+    --text:#dfe6f0; --muted:#8291a8;
+    --sun:#e8c547; --rain:#4fa3e8; --storm:#9b6fe0; --snow:#63e0c7;
+    --danger:#e0574f; --safe:#4fe07f;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0; min-height:100vh; background:radial-gradient(ellipse at 50% 0%, #161d2b, var(--bg) 65%);
+    color:var(--text); font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    display:flex; flex-direction:column; align-items:center; padding:24px 16px 60px;
+  }
+  h1{font-size:20px; font-weight:600; letter-spacing:.03em; margin:0 0 2px;}
+  .subtitle{color:var(--muted); font-size:13px; margin-bottom:18px;}
+  .layout{display:flex; gap:20px; flex-wrap:wrap; justify-content:center; max-width:1160px; width:100%;}
+  .panel{
+    background:linear-gradient(180deg,var(--panel),var(--panel-2));
+    border:1px solid var(--border); border-radius:14px; padding:16px;
+  }
+  .radar-panel{display:flex; flex-direction:column; align-items:center; gap:10px;}
+  canvas{border-radius:10px; background:#060a12;}
+  .readout-row{display:flex; gap:18px; font-size:12px; color:var(--muted); font-variant-numeric:tabular-nums;}
+  .readout-row b{color:var(--text); font-weight:600;}
+  .status-line{font-size:13px; font-weight:600; text-align:center; min-height:18px;}
+  .status-safe{color:var(--safe);}
+  .status-warn{color:#e0b84f;}
+  .status-danger{color:var(--danger);}
+
+  .side{display:flex; flex-direction:column; gap:14px; width:340px;}
+  .factions{display:flex; flex-direction:column; gap:10px;}
+  .faction-card{
+    border:1px solid var(--border); border-radius:10px; padding:10px 12px;
+    background:rgba(255,255,255,0.02); cursor:pointer; user-select:none;
+    transition:background .15s ease, transform .1s ease, opacity .15s ease;
+  }
+  .faction-card:hover:not(.disabled){background:rgba(255,255,255,0.06); border-color:#2c3648;}
+  .faction-card:active:not(.disabled){transform:scale(0.98);}
+  .faction-card.disabled{opacity:.45; cursor:not-allowed;}
+  .faction-head{display:flex; justify-content:space-between; align-items:center; font-size:13px; margin-bottom:6px;}
+  .faction-name{display:flex; align-items:center; gap:8px; font-weight:600;}
+  .dot{width:10px; height:10px; border-radius:50%; display:inline-block; flex-shrink:0;}
+  .bar-track{height:7px; border-radius:4px; background:#1c2330; overflow:hidden;}
+  .bar-fill{height:100%; border-radius:4px; transition:width .25s ease;}
+  .faction-meta{display:flex; justify-content:space-between; font-size:11px; color:var(--muted); margin-top:4px;}
+
+  .convert-box{display:flex; flex-direction:column; gap:6px;}
+  .convert-hint{font-size:11px; color:var(--muted); line-height:1.4; margin:0;}
+  .pending-list{display:flex; flex-direction:column; gap:4px; margin-top:2px; min-height:6px;}
+  .pending-item{
+    display:flex; justify-content:space-between; align-items:center; font-size:11px; color:var(--muted);
+    background:rgba(255,255,255,0.03); border:1px solid var(--border); border-radius:6px; padding:4px 8px;
+  }
+  .pending-item b{color:var(--text); font-weight:600;}
+
+  select{
+    flex:1; background:#0f141d; color:var(--text); border:1px solid var(--border);
+    border-radius:6px; padding:6px 6px; font-size:12px;
+  }
+  button{
+    background:#1b2433; color:var(--text); border:1px solid var(--border);
+    border-radius:6px; padding:7px 12px; font-size:12px; cursor:pointer; font-weight:600;
+    transition:background .15s ease, transform .1s ease;
+  }
+  button:hover:not(:disabled){background:#243149;}
+  button:active:not(:disabled){transform:scale(0.97);}
+  button:disabled{opacity:.35; cursor:not-allowed;}
+  button.primary{background:linear-gradient(180deg,#2c5fb0,#1f4a8c); border-color:#3a6cc4;}
+  button.primary:hover:not(:disabled){background:linear-gradient(180deg,#3468bd,#254f96);}
+
+  .resource-row{display:flex; justify-content:space-between; align-items:center; font-size:13px;}
+  .resource-row b{font-variant-numeric:tabular-nums;}
+
+  .legend{display:flex; flex-wrap:wrap; gap:10px; font-size:11px; color:var(--muted); justify-content:center;}
+  .legend span{display:flex; align-items:center; gap:5px;}
+
+  .controls-row{display:flex; gap:8px; justify-content:center;}
+  .controls-row button{flex:1;}
+
+  .gen-banner{
+    position:fixed; inset:0; background:rgba(5,7,12,0.88); display:none;
+    align-items:center; justify-content:center; z-index:50; flex-direction:column; gap:10px; text-align:center; padding:20px;
+  }
+  .gen-banner.show{display:flex;}
+  .gen-banner h2{color:var(--danger); font-size:28px; margin:0; letter-spacing:.05em;}
+  .gen-banner p{color:var(--text); font-size:14px; max-width:420px; margin:0;}
+  .gen-banner button{margin-top:12px; padding:10px 22px; font-size:13px;}
+
+  .upgrades{font-size:11px; color:var(--muted); text-align:center;}
+</style>
+</head>
+<body>
+
+<h1>The Weather Balance Engine</h1>
+<div class="subtitle">Control the wobble. Do not stop it.</div>
+
+<div class="layout">
+
+  <div class="panel radar-panel">
+    <canvas id="radar" width="480" height="380"></canvas>
+    <div class="status-line" id="statusLine">STABLE</div>
+    <div class="readout-row">
+      <span>X: <b id="readX">0.00</b></span>
+      <span>Y: <b id="readY">0.00</b></span>
+      <span>|W|: <b id="readMag">0.00</b></span>
+      <span>Threshold: <b id="readThreshold">15.0</b></span>
+    </div>
+    <div class="legend">
+      <span><span class="dot" style="background:var(--sun)"></span>N: Sunshine (Drought)</span>
+      <span><span class="dot" style="background:var(--rain)"></span>E: Deluge (Rain)</span>
+      <span><span class="dot" style="background:var(--storm)"></span>S: Maelstrom (Storm)</span>
+      <span><span class="dot" style="background:var(--snow)"></span>W: Blizzard (Snow)</span>
+    </div>
+    <div class="controls-row">
+      <button id="pauseBtn">Pause</button>
+      <button id="speedBtn">Speed: 1x</button>
+      <button id="resetBtn">Reset Run</button>
+    </div>
+    <div class="upgrades" id="genInfo">Generation 1 &middot; Ticks survived: 0 &middot; Permanent stability bonus: +0.000</div>
+  </div>
+
+  <div class="side">
+    <div class="panel">
+      <div class="resource-row">
+        <span>Devotion (intervention resource)</span>
+        <b id="devotionVal">0.0</b>
+      </div>
+    </div>
+
+    <div class="panel factions" id="factionList"></div>
+
+    <div class="panel convert-box">
+      <div style="font-size:13px; font-weight:600; margin-bottom:2px;">Demographic Modulation</div>
+      <p class="convert-hint">Click a faction's population bar to rally toward it. Rallying isn't surgical — it costs devotion up front, lands a few ticks later, and pulls a rough, variable headcount from whichever factions have people to spare.</p>
+      <div class="pending-list" id="pendingList"></div>
+    </div>
+  </div>
+
+</div>
+
+<div class="gen-banner" id="genBanner">
+  <h2>THE CATACLYSM</h2>
+  <p id="genBannerText"></p>
+  <button id="genContinueBtn">Begin Next Generation</button>
+</div>
+
+<script>
+(function(){
+  "use strict";
+
+  // ---------------------------------------------------------------------
+  // Tunable simulation constants
+  // ---------------------------------------------------------------------
+  const FORCE_SCALE    = 0.0045; // scales raw population*weight force into vector-space units
+  const NOISE_STD       = 1.1;   // std-dev of gaussian environmental noise per axis, per tick
+  const BASE_GAMMA      = 0.05;  // restorative friction toward center
+  const RAIN_GROWTH     = 0.020; // deluge exponential growth rate scalar (triggered by +Y)
+  const SUN_GROWTH      = 0.020; // sunshine exponential growth rate scalar (triggered by -X)
+  const BASELINE_GROWTH = 0.0012;// tiny organic drift for the two non-triggered factions
+  const DEVOTION_RATE   = 0.6;   // devotion gained per tick
+  const TICK_MS          = 150;  // simulation ms per fixed tick
+
+  // Rally (demographic modulation) — deliberately sloppy & delayed
+  const RALLY_COST       = 8;    // devotion cost to queue an order
+  const RALLY_LAG_TICKS  = 3;    // ticks before the order resolves
+  const RALLY_MIN        = 8;    // min headcount an order tries to move
+  const RALLY_MAX        = 20;   // max headcount an order tries to move
+  const RALLY_MIN_LEFT   = 5;    // a source faction is never drained below this
+
+  // ---------------------------------------------------------------------
+  // Core engine state (mirrors the spec's climateEngine shape)
+  // ---------------------------------------------------------------------
+  const climateEngine = {
+    vector: { x: 0.0, y: 0.0 },
+    threshold: 15.0,
+    factions: {
+      sun:   { label: "Sunshine (Drought)",  short:"Sunshine",  color: "var(--sun)",   hex:"#e8c547", pop: 50, weight: 1.0, dir: { x: 0,  y: 1  }, angle: 0   },
+      rain:  { label: "Deluge (Rain)",       short:"Deluge",    color: "var(--rain)",  hex:"#4fa3e8", pop: 50, weight: 1.1, dir: { x: 1,  y: 0  }, angle: 90  },
+      storm: { label: "Maelstrom (Storm)",   short:"Maelstrom", color: "var(--storm)", hex:"#9b6fe0", pop: 50, weight: 0.9, dir: { x: 0,  y: -1 }, angle: 180 },
+      snow:  { label: "Blizzard (Snow)",     short:"Blizzard",  color: "var(--snow)",  hex:"#63e0c7", pop: 50, weight: 1.0, dir: { x: -1, y: 0  }, angle: 270 }
+    },
+    devotion: 0.0
+  };
+
+  let permanent = { gammaBonus: 0.0, noiseReduction: 0.0 };
+  let generation = 1;
+  let ticksSurvived = 0;
+  let miniTrail = [];
+  let paused = false;
+  let speedMultiplier = 1;
+  let crashed = false;
+  let pendingOrders = [];
+  let orderSeq = 0;
+
+  // ---------------------------------------------------------------------
+  // Gaussian noise via Box-Muller
+  // ---------------------------------------------------------------------
+  function gaussianRandom(){
+    let u = 0, v = 0;
+    while(u === 0) u = Math.random();
+    while(v === 0) v = Math.random();
+    return Math.sqrt(-2.0 * Math.log(u)) * Math.cos(2.0 * Math.PI * v);
+  }
+
+  // ---------------------------------------------------------------------
+  // Rally orders: queue now, resolve (sloppily) a few ticks later
+  // ---------------------------------------------------------------------
+  function queueRally(targetKey){
+    if (crashed) return;
+    if (climateEngine.devotion < RALLY_COST) return;
+    climateEngine.devotion -= RALLY_COST;
+    pendingOrders.push({ id: orderSeq++, target: targetKey, ticksLeft: RALLY_LAG_TICKS });
+  }
+
+  function resolveRally(targetKey){
+    const f = climateEngine.factions;
+    const target = f[targetKey];
+    if (!target) return;
+    const totalWanted = RALLY_MIN + Math.random() * (RALLY_MAX - RALLY_MIN);
+    const sources = Object.keys(f).filter(k => k !== targetKey);
+    const weights = sources.map(() => Math.random());
+    const weightSum = weights.reduce((a, b) => a + b, 0) || 1;
+    let actualTotal = 0;
+    sources.forEach((key, i) => {
+      const desired = totalWanted * (weights[i] / weightSum);
+      const src = f[key];
+      const available = Math.max(0, src.pop - RALLY_MIN_LEFT);
+      const taken = Math.min(desired, available);
+      src.pop -= taken;
+      actualTotal += taken;
+    });
+    target.pop += actualTotal;
+  }
+
+  function resolvePendingOrders(){
+    const stillPending = [];
+    for (const order of pendingOrders){
+      order.ticksLeft--;
+      if (order.ticksLeft > 0){ stillPending.push(order); continue; }
+      resolveRally(order.target);
+    }
+    pendingOrders = stillPending;
+  }
+
+  // ---------------------------------------------------------------------
+  // Simulation tick: W_t+1 = W_t + sum(P_i * I_i * D_i) - gamma*W_t + Noise
+  // ---------------------------------------------------------------------
+  function tick(){
+    if (crashed) return;
+
+    const f = climateEngine.factions;
+    const gamma = BASE_GAMMA + permanent.gammaBonus;
+
+    let fx = 0, fy = 0;
+    for (const key in f){
+      const fac = f[key];
+      fx += fac.pop * fac.weight * fac.dir.x;
+      fy += fac.pop * fac.weight * fac.dir.y;
+    }
+    fx *= FORCE_SCALE;
+    fy *= FORCE_SCALE;
+
+    fx -= gamma * climateEngine.vector.x;
+    fy -= gamma * climateEngine.vector.y;
+
+    const noiseStd = Math.max(0.05, NOISE_STD - permanent.noiseReduction);
+    const nx = gaussianRandom() * noiseStd;
+    const ny = gaussianRandom() * noiseStd;
+
+    climateEngine.vector.x += fx + nx;
+    climateEngine.vector.y += fy + ny;
+
+    // Asymmetric faction growth feedback loops
+    const W = climateEngine.vector;
+    if (W.y > 0) {
+      const intensity = Math.min(W.y / climateEngine.threshold, 3);
+      f.rain.pop *= (1 + RAIN_GROWTH * intensity);
+    }
+    if (W.x < 0) {
+      const intensity = Math.min(-W.x / climateEngine.threshold, 3);
+      f.sun.pop *= (1 + SUN_GROWTH * intensity);
+    }
+    if (!(W.y > 0)) f.rain.pop *= (1 + BASELINE_GROWTH);
+    if (!(W.x < 0)) f.sun.pop *= (1 + BASELINE_GROWTH);
+    f.storm.pop *= (1 + BASELINE_GROWTH);
+    f.snow.pop  *= (1 + BASELINE_GROWTH);
+
+    resolvePendingOrders();
+
+    climateEngine.devotion += DEVOTION_RATE;
+    ticksSurvived++;
+
+    miniTrail.push({ x: W.x, y: W.y });
+    if (miniTrail.length > 40) miniTrail.shift();
+
+    const mag = Math.hypot(W.x, W.y);
+    if (mag >= climateEngine.threshold){
+      triggerCataclysm(mag);
+    }
+  }
+
+  // ---------------------------------------------------------------------
+  // Cataclysm / prestige transition
+  // ---------------------------------------------------------------------
+  function triggerCataclysm(mag){
+    crashed = true;
+    const upgradePoints = Math.floor(ticksSurvived / 50);
+    permanent.gammaBonus += upgradePoints * 0.0015;
+    permanent.noiseReduction += upgradePoints * 0.02;
+
+    document.getElementById("genBannerText").textContent =
+      `The climate spiraled to |W| = ${mag.toFixed(2)} and the island was scoured clean. `+
+      `Generation ${generation} survived ${ticksSurvived} ticks, earning ${upgradePoints} genetic upgrade point(s). `+
+      `The next generation inherits +${(upgradePoints*0.0015).toFixed(4)} friction and -${(upgradePoints*0.02).toFixed(3)} noise, permanently.`;
+    document.getElementById("genBanner").classList.add("show");
+  }
+
+  function resetFactionPops(){
+    climateEngine.factions.sun.pop = 50;
+    climateEngine.factions.rain.pop = 50;
+    climateEngine.factions.storm.pop = 50;
+    climateEngine.factions.snow.pop = 50;
+  }
+
+  function beginNextGeneration(){
+    generation++;
+    ticksSurvived = 0;
+    miniTrail = [];
+    pendingOrders = [];
+    crashed = false;
+    climateEngine.vector.x = 0;
+    climateEngine.vector.y = 0;
+    climateEngine.devotion = 0;
+    resetFactionPops();
+    document.getElementById("genBanner").classList.remove("show");
+  }
+
+  function resetRun(){
+    generation = 1;
+    ticksSurvived = 0;
+    miniTrail = [];
+    pendingOrders = [];
+    crashed = false;
+    permanent = { gammaBonus: 0.0, noiseReduction: 0.0 };
+    climateEngine.vector.x = 0;
+    climateEngine.vector.y = 0;
+    climateEngine.devotion = 0;
+    resetFactionPops();
+    document.getElementById("genBanner").classList.remove("show");
+  }
+
+  // ---------------------------------------------------------------------
+  // UI wiring (side panel)
+  // ---------------------------------------------------------------------
+  const factionListEl = document.getElementById("factionList");
+  const pendingListEl = document.getElementById("pendingList");
+
+  function buildFactionUI(){
+    factionListEl.innerHTML = "";
+    for (const key in climateEngine.factions){
+      const fac = climateEngine.factions[key];
+      const card = document.createElement("div");
+      card.className = "faction-card";
+      card.id = `card-${key}`;
+      card.title = `Rally ${fac.short} (${RALLY_COST} devotion)`;
+      card.innerHTML = `
+        <div class="faction-head">
+          <span class="faction-name"><span class="dot" style="background:${fac.color}"></span>${fac.label}</span>
+          <span id="pop-${key}">${Math.round(fac.pop)}</span>
+        </div>
+        <div class="bar-track"><div class="bar-fill" id="bar-${key}" style="background:${fac.color}; width:0%;"></div></div>
+        <div class="faction-meta">
+          <span>weight ${fac.weight.toFixed(2)}</span>
+          <span>click to rally &middot; ${RALLY_COST} devotion</span>
+        </div>
+      `;
+      card.addEventListener("click", () => queueRally(key));
+      factionListEl.appendChild(card);
+    }
+  }
+
+  function updateFactionUI(){
+    let maxPop = 0;
+    for (const key in climateEngine.factions) maxPop = Math.max(maxPop, climateEngine.factions[key].pop);
+    maxPop = Math.max(maxPop, 50);
+
+    for (const key in climateEngine.factions){
+      const fac = climateEngine.factions[key];
+      const popEl = document.getElementById(`pop-${key}`);
+      const barEl = document.getElementById(`bar-${key}`);
+      if (popEl) popEl.textContent = Math.round(fac.pop);
+      if (barEl) barEl.style.width = Math.min(100, (fac.pop / maxPop) * 100) + "%";
+    }
+  }
+
+  function updateRallyUI(){
+    const affordable = !crashed && climateEngine.devotion >= RALLY_COST;
+    for (const key in climateEngine.factions){
+      const card = document.getElementById(`card-${key}`);
+      if (!card) continue;
+      if (affordable) card.classList.remove("disabled");
+      else card.classList.add("disabled");
+    }
+    if (pendingOrders.length === 0){
+      pendingListEl.innerHTML = "";
+    } else {
+      pendingListEl.innerHTML = pendingOrders.map(o => {
+        const fac = climateEngine.factions[o.target];
+        return `<div class="pending-item"><span>Rallying <b>${fac.short}</b></span><span>${o.ticksLeft} tick${o.ticksLeft===1?'':'s'}</span></div>`;
+      }).join("");
+    }
+  }
+
+  // ---------------------------------------------------------------------
+  // Island scene rendering: 2.5D tilted overhead island with live weather
+  // ---------------------------------------------------------------------
+  const canvas = document.getElementById("radar");
+  const ctx = canvas.getContext("2d");
+  const W_CANVAS = canvas.width, H_CANVAS = canvas.height;
+  const islandCx = W_CANVAS / 2, islandCy = H_CANVAS / 2 + 26;
+  const islandRx = 196, islandRy = 132; // gentler squash = a softer, slower tilt
+
+  const COLOR_CALM  = [56, 104, 62];
+  const COLOR_SUN   = [199, 160, 45];
+  const COLOR_RAIN  = [45, 88, 118];
+  const COLOR_STORM = [52, 46, 68];
+  const COLOR_SNOW  = [221, 233, 238];
+
+  function seededRandom(seed){
+    let s = seed;
+    return function(){
+      s = (s * 9301 + 49297) % 233280;
+      return s / 233280;
+    };
+  }
+
+  function polarToIsland(angleDeg, radiusFrac){
+    const rad = angleDeg * Math.PI / 180;
+    return {
+      x: islandCx + Math.sin(rad) * islandRx * radiusFrac,
+      y: islandCy - Math.cos(rad) * islandRy * radiusFrac
+    };
+  }
+
+  // --- organic island outline (a wobbly blob instead of a clean ellipse) ---
+  const OUTLINE_POINTS = 26;
+  const outlineRng = seededRandom(2024);
+  const ph1 = outlineRng() * Math.PI * 2;
+  const ph2 = outlineRng() * Math.PI * 2;
+  const ph3 = outlineRng() * Math.PI * 2;
+  const outlineFactors = [];
+  for (let i = 0; i < OUTLINE_POINTS; i++){
+    const angle = (i / OUTLINE_POINTS) * Math.PI * 2;
+    const n = Math.sin(angle * 3 + ph1) * 0.07 + Math.sin(angle * 5 + ph2) * 0.04 + Math.sin(angle * 2 + ph3) * 0.05;
+    outlineFactors.push(1 + n);
+  }
+
+  function islandPoint(i, scaleMul){
+    const angle = (i / OUTLINE_POINTS) * Math.PI * 2;
+    const rF = outlineFactors[i] * scaleMul;
+    return {
+      x: islandCx + Math.sin(angle) * islandRx * rF,
+      y: islandCy - Math.cos(angle) * islandRy * rF
+    };
+  }
+
+  function traceIslandPath(scaleMul){
+    const pts = [];
+    for (let i = 0; i < OUTLINE_POINTS; i++) pts.push(islandPoint(i, scaleMul));
+    const mid = (a, b) => ({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
+    ctx.beginPath();
+    const m0 = mid(pts[OUTLINE_POINTS - 1], pts[0]);
+    ctx.moveTo(m0.x, m0.y);
+    for (let i = 0; i < OUTLINE_POINTS; i++){
+      const cur = pts[i];
+      const next = pts[(i + 1) % OUTLINE_POINTS];
+      const m = mid(cur, next);
+      ctx.quadraticCurveTo(cur.x, cur.y, m.x, m.y);
+    }
+    ctx.closePath();
+  }
+
+  // deterministic settlement layout, generated once at boot
+  for (const key in climateEngine.factions){
+    const fac = climateEngine.factions[key];
+    const rng = seededRandom(fac.angle + 7);
+    fac.points = [];
+    for (let i = 0; i < 14; i++){
+      const angleOffset = (rng() - 0.5) * 70;
+      const radiusFrac = 0.24 + rng() * 0.52;
+      fac.points.push(polarToIsland(fac.angle + angleOffset, radiusFrac));
+    }
+  }
+
+  // drought cracks
+  const crackRng = seededRandom(1337);
+  const cracks = [];
+  for (let i = 0; i < 9; i++){
+    const angle = crackRng() * 360;
+    const radiusFrac = 0.12 + crackRng() * 0.62;
+    const base = polarToIsland(angle, radiusFrac);
+    const pts = [base];
+    let px = base.x, py = base.y;
+    for (let s = 0; s < 3; s++){
+      px += (crackRng() - 0.5) * 20;
+      py += (crackRng() - 0.5) * 13;
+      pts.push({ x: px, y: py });
+    }
+    cracks.push(pts);
+  }
+
+  // vegetation + coastal rocks (deterministic island texture)
+  const vegRng = seededRandom(5150);
+  const treePoints = [];
+  for (let i = 0; i < 17; i++){
+    treePoints.push(polarToIsland(vegRng() * 360, 0.1 + vegRng() * 0.58));
+  }
+  const rockPoints = [];
+  for (let i = 0; i < 11; i++){
+    rockPoints.push(polarToIsland(vegRng() * 360, 0.78 + vegRng() * 0.16));
+  }
+
+  // particle pools
+  const RAIN_POOL = 100, SNOW_POOL = 100, CLOUD_COUNT = 6, GUST_COUNT = 22;
+  const rainDrops = Array.from({ length: RAIN_POOL }, () => ({
+    x: Math.random() * W_CANVAS,
+    y: Math.random() * H_CANVAS,
+    len: 10 + Math.random() * 10,
+    speed: 6 + Math.random() * 4.5,
+    threshold: Math.random()
+  }));
+  const snowFlakes = Array.from({ length: SNOW_POOL }, () => ({
+    x: Math.random() * W_CANVAS,
+    y: Math.random() * H_CANVAS,
+    r: 1.6 + Math.random() * 2.2,
+    speed: 0.5 + Math.random() * 0.7,
+    sway: Math.random() * Math.PI * 2,
+    threshold: Math.random()
+  }));
+  const cloudBlobs = Array.from({ length: CLOUD_COUNT }, (_, i) => ({
+    x: (i / CLOUD_COUNT) * (W_CANVAS + 160) - 80,
+    y: 22 + Math.random() * 34,
+    r: 32 + Math.random() * 24,
+    speed: 0.14 + Math.random() * 0.1
+  }));
+  const gustStreaks = Array.from({ length: GUST_COUNT }, () => ({
+    x: Math.random() * W_CANVAS * 1.4 - W_CANVAS * 0.2,
+    y: Math.random() * H_CANVAS,
+    len: 22 + Math.random() * 30,
+    speed: 7 + Math.random() * 6,
+    threshold: Math.random()
+  }));
+
+  let sunRayAngle = 0;
+  let lightningFlash = 0;
+  let lightningBolt = null;
+
+  function computeWeights(){
+    const W = climateEngine.vector, thr = climateEngine.threshold;
+    return {
+      sunW: Math.min(Math.max(0, W.y) / thr, 1),
+      rainW: Math.min(Math.max(0, W.x) / thr, 1),
+      stormW: Math.min(Math.max(0, -W.y) / thr, 1),
+      snowW: Math.min(Math.max(0, -W.x) / thr, 1)
+    };
+  }
+
+  function blendTerrainColor(w){
+    const sum = w.sunW + w.rainW + w.stormW + w.snowW;
+    const norm = sum > 1 ? sum : 1;
+    const calmW = sum > 1 ? 0 : 1 - sum;
+    const parts = [
+      [COLOR_CALM, calmW],
+      [COLOR_SUN, w.sunW / norm],
+      [COLOR_RAIN, w.rainW / norm],
+      [COLOR_STORM, w.stormW / norm],
+      [COLOR_SNOW, w.snowW / norm]
+    ];
+    let r = 0, g = 0, b = 0;
+    for (const [c, wt] of parts){ r += c[0] * wt; g += c[1] * wt; b += c[2] * wt; }
+    return `rgb(${r | 0},${g | 0},${b | 0})`;
+  }
+
+  function drawOcean(){
+    const grad = ctx.createLinearGradient(0, 0, 0, H_CANVAS);
+    grad.addColorStop(0, "#0c2233");
+    grad.addColorStop(1, "#06131f");
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, W_CANVAS, H_CANVAS);
+  }
+
+  function drawWaveRings(){
+    ctx.save();
+    ctx.strokeStyle = "rgba(255,255,255,0.07)";
+    ctx.lineWidth = 1.4;
+    [1.16, 1.32, 1.5].forEach((mul) => {
+      ctx.beginPath();
+      for (let i = 0; i <= OUTLINE_POINTS; i++){
+        const p = islandPoint(i % OUTLINE_POINTS, mul);
+        if (i === 0) ctx.moveTo(p.x, p.y); else ctx.lineTo(p.x, p.y);
+      }
+      ctx.closePath();
+      ctx.stroke();
+    });
+    ctx.restore();
+  }
+
+  function drawIslandShadow(){
+    ctx.save();
+    ctx.translate(9, 14);
+    traceIslandPath(1.04);
+    ctx.fillStyle = "rgba(0,0,0,0.35)";
+    ctx.fill();
+    ctx.restore();
+  }
+
+  function drawIslandBase(w){
+    ctx.save();
+    traceIslandPath(1.0);
+    ctx.clip();
+
+    // sand base beneath everything else
+    ctx.fillStyle = "#d9c58c";
+    ctx.fillRect(islandCx - islandRx * 1.3, islandCy - islandRy * 1.3, islandRx * 2.6, islandRy * 2.6);
+
+    // grass/terrain blob inset from the coastline, leaving a beach ring
+    traceIslandPath(0.90);
+    ctx.fillStyle = blendTerrainColor(w);
+    ctx.fill();
+
+    // pseudo-3d highlight for the tilt
+    const hl = ctx.createRadialGradient(
+      islandCx - islandRx * 0.35, islandCy - islandRy * 0.55, 10,
+      islandCx, islandCy, islandRx * 1.3
+    );
+    hl.addColorStop(0, "rgba(255,255,255,0.15)");
+    hl.addColorStop(1, "rgba(255,255,255,0)");
+    ctx.fillStyle = hl;
+    ctx.fillRect(islandCx - islandRx, islandCy - islandRy, islandRx * 2, islandRy * 2);
+
+    // drought cracks, island-wide (fade in with sunW)
+    if (w.sunW > 0.02){
+      ctx.strokeStyle = `rgba(70,50,20,${Math.min(w.sunW * 0.85, 0.7)})`;
+      ctx.lineWidth = 1.2;
+      for (const crack of cracks){
+        ctx.beginPath();
+        ctx.moveTo(crack[0].x, crack[0].y);
+        for (let i = 1; i < crack.length; i++) ctx.lineTo(crack[i].x, crack[i].y);
+        ctx.stroke();
+      }
+    }
+
+    // vegetation texture
+    ctx.fillStyle = "#2d5a34";
+    for (const p of treePoints){
+      ctx.beginPath();
+      ctx.moveTo(p.x, p.y - 6);
+      ctx.lineTo(p.x - 4, p.y + 2);
+      ctx.lineTo(p.x + 4, p.y + 2);
+      ctx.closePath();
+      ctx.fill();
+    }
+    ctx.fillStyle = "rgba(125,122,132,0.85)";
+    for (const p of rockPoints){
+      ctx.beginPath();
+      ctx.ellipse(p.x, p.y, 3.6, 2.3, 0, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    ctx.restore();
+
+    // coastline stroke
+    traceIslandPath(1.0);
+    ctx.strokeStyle = "rgba(255,246,214,0.5)";
+    ctx.lineWidth = 2.6;
+    ctx.stroke();
+  }
+
+  function drawCompassLabels(){
+    ctx.save();
+    ctx.font = "600 10px -apple-system, sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillStyle = "rgba(232,197,71,0.85)";
+    ctx.fillText("N · SUNSHINE", islandCx, islandCy - islandRy - 12);
+    ctx.fillStyle = "rgba(79,163,232,0.85)";
+    ctx.textAlign = "left";
+    ctx.fillText("E · DELUGE", islandCx + islandRx + 6, islandCy + 4);
+    ctx.fillStyle = "rgba(155,111,224,0.85)";
+    ctx.textAlign = "center";
+    ctx.fillText("S · MAELSTROM", islandCx, islandCy + islandRy + 22);
+    ctx.fillStyle = "rgba(99,224,199,0.85)";
+    ctx.textAlign = "right";
+    ctx.fillText("W · BLIZZARD", islandCx - islandRx - 6, islandCy + 4);
+    ctx.restore();
+  }
+
+  function drawSettlements(){
+    ctx.save();
+    for (const key in climateEngine.factions){
+      const fac = climateEngine.factions[key];
+      const count = Math.max(1, Math.min(14, Math.round(fac.pop / 12)));
+      ctx.fillStyle = fac.hex;
+      ctx.strokeStyle = "rgba(0,0,0,0.4)";
+      ctx.lineWidth = 1;
+      for (let i = 0; i < count; i++){
+        const p = fac.points[i];
+        ctx.beginPath();
+        ctx.rect(p.x - 2.6, p.y - 2, 5.2, 4);
+        ctx.fill();
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(p.x - 3.4, p.y - 2);
+        ctx.lineTo(p.x, p.y - 6);
+        ctx.lineTo(p.x + 3.4, p.y - 2);
+        ctx.closePath();
+        ctx.fill();
+      }
+    }
+    ctx.restore();
+  }
+
+  function updateAndDrawRain(dt, w){
+    if (w.rainW < 0.01) return;
+    ctx.save();
+    ctx.strokeStyle = `rgba(150,205,245,${Math.min(0.4 + w.rainW * 0.4, 0.75)})`;
+    ctx.lineWidth = 1.4;
+    for (const d of rainDrops){
+      if (w.rainW < d.threshold) continue;
+      d.x += d.speed * 0.35 * dt;
+      d.y += d.speed * dt;
+      if (d.y > H_CANVAS){ d.y = -10; d.x = Math.random() * W_CANVAS; }
+      ctx.beginPath();
+      ctx.moveTo(d.x, d.y);
+      ctx.lineTo(d.x - d.len * 0.3, d.y - d.len);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  function updateAndDrawSnow(dt, w){
+    if (w.snowW < 0.01) return;
+    ctx.save();
+    ctx.fillStyle = "rgba(255,255,255,0.9)";
+    for (const f of snowFlakes){
+      if (w.snowW < f.threshold) continue;
+      f.y += f.speed * dt;
+      f.sway += 0.02 * dt;
+      f.x += Math.sin(f.sway) * 0.5;
+      if (f.y > H_CANVAS){ f.y = -6; f.x = Math.random() * W_CANVAS; }
+      ctx.beginPath();
+      ctx.arc(f.x, f.y, f.r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  function updateAndDrawGusts(dt, w){
+    // clouds always drift (invisible at zero storm weight)
+    for (const c of cloudBlobs){
+      c.x += c.speed * dt * (1 + w.stormW);
+      if (c.x - c.r > W_CANVAS + 40) c.x = -c.r - 40;
+    }
+    if (w.stormW < 0.02) return;
+
+    ctx.save();
+    ctx.globalAlpha = Math.min(w.stormW * 0.9, 0.85);
+    for (const c of cloudBlobs){
+      const grad = ctx.createRadialGradient(c.x, c.y, 2, c.x, c.y, c.r);
+      grad.addColorStop(0, "rgba(40,36,54,0.9)");
+      grad.addColorStop(1, "rgba(40,36,54,0)");
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.arc(c.x, c.y, c.r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+
+    // wind gust streaks sweeping across the scene
+    ctx.save();
+    ctx.strokeStyle = `rgba(220,225,235,${Math.min(0.15 + w.stormW * 0.35, 0.5)})`;
+    ctx.lineWidth = 1.2;
+    for (const g of gustStreaks){
+      if (w.stormW < g.threshold) continue;
+      g.x += g.speed * dt * 2.2;
+      g.y += g.speed * dt * 0.35;
+      if (g.x > W_CANVAS + 30){ g.x = -30; g.y = Math.random() * H_CANVAS; }
+      ctx.beginPath();
+      ctx.moveTo(g.x, g.y);
+      ctx.quadraticCurveTo(g.x + g.len * 0.5, g.y - 6, g.x + g.len, g.y);
+      ctx.stroke();
+    }
+    ctx.restore();
+
+    // lightning
+    if (w.stormW > 0.35 && !lightningBolt && Math.random() < w.stormW * w.stormW * 0.012 * dt){
+      const cloud = cloudBlobs[Math.floor(Math.random() * cloudBlobs.length)];
+      const pts = [{ x: cloud.x, y: cloud.y + 10 }];
+      let px = cloud.x, py = cloud.y + 10;
+      while (py < islandCy + 20){
+        px += (Math.random() - 0.5) * 26;
+        py += 22 + Math.random() * 14;
+        pts.push({ x: px, y: py });
+      }
+      lightningBolt = { pts, life: 4 };
+      lightningFlash = 0.45;
+    }
+    if (lightningBolt){
+      ctx.save();
+      ctx.strokeStyle = "rgba(255,255,255,0.95)";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(lightningBolt.pts[0].x, lightningBolt.pts[0].y);
+      for (let i = 1; i < lightningBolt.pts.length; i++) ctx.lineTo(lightningBolt.pts[i].x, lightningBolt.pts[i].y);
+      ctx.stroke();
+      ctx.restore();
+      lightningBolt.life -= dt;
+      if (lightningBolt.life <= 0) lightningBolt = null;
+    }
+    if (lightningFlash > 0.01){
+      ctx.save();
+      ctx.globalAlpha = lightningFlash;
+      ctx.fillStyle = "#fff";
+      ctx.fillRect(0, 0, W_CANVAS, H_CANVAS);
+      ctx.restore();
+      lightningFlash *= 0.75;
+    }
+  }
+
+  function drawBrightLight(dt, w){
+    sunRayAngle += 0.0005 * dt;
+    const alpha = w.sunW;
+    const sx = islandCx, sy = islandCy - islandRy - 50;
+
+    if (alpha > 0.03){
+      ctx.save();
+      ctx.globalCompositeOperation = "lighter";
+      const glowR = 130 + 90 * alpha;
+      const glow = ctx.createRadialGradient(sx, sy, 4, sx, sy, glowR);
+      glow.addColorStop(0, `rgba(255,244,200,${0.55 * alpha})`);
+      glow.addColorStop(1, "rgba(255,244,200,0)");
+      ctx.fillStyle = glow;
+      ctx.fillRect(sx - glowR, sy - glowR, glowR * 2, glowR * 2);
+
+      // soft bloom washing over the island itself
+      const islandGlow = ctx.createRadialGradient(islandCx, islandCy, 10, islandCx, islandCy, islandRx * 1.2);
+      islandGlow.addColorStop(0, `rgba(255,236,180,${0.28 * alpha})`);
+      islandGlow.addColorStop(1, "rgba(255,236,180,0)");
+      ctx.fillStyle = islandGlow;
+      ctx.fillRect(islandCx - islandRx, islandCy - islandRy, islandRx * 2, islandRy * 2);
+      ctx.restore();
+    }
+
+    ctx.save();
+    ctx.globalAlpha = Math.max(0.15, alpha);
+    for (let i = 0; i < 10; i++){
+      const a = sunRayAngle + (i / 10) * Math.PI * 2;
+      ctx.beginPath();
+      ctx.moveTo(sx + Math.cos(a) * 17, sy + Math.sin(a) * 17);
+      ctx.lineTo(sx + Math.cos(a) * (32 + 10 * alpha), sy + Math.sin(a) * (32 + 10 * alpha));
+      ctx.strokeStyle = "#f2d873";
+      ctx.lineWidth = 2.2;
+      ctx.stroke();
+    }
+    ctx.beginPath();
+    ctx.arc(sx, sy, 15, 0, Math.PI * 2);
+    ctx.fillStyle = "#fff2c9";
+    ctx.fill();
+    ctx.restore();
+  }
+
+  function drawDangerRing(mag){
+    const ratio = mag / climateEngine.threshold;
+    if (ratio < 0.6) return;
+    const pulse = 0.5 + 0.5 * Math.sin(performance.now() * 0.006);
+    const t = Math.min((ratio - 0.6) / 0.4, 1);
+    ctx.save();
+    traceIslandPath(1.05);
+    ctx.strokeStyle = `rgba(224,87,79,${(0.25 + 0.5 * t) * (0.6 + 0.4 * pulse)})`;
+    ctx.lineWidth = 4 + 3 * t;
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  function drawCompassInset(mag){
+    const size = 78, pad = 10;
+    const ix = W_CANVAS - size - pad, iy = H_CANVAS - size - pad;
+    const cx2 = ix + size / 2, cy2 = iy + size / 2;
+    const r = size / 2 - 8;
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.roundRect(ix, iy, size, size, 10);
+    ctx.fillStyle = "rgba(10,14,22,0.72)";
+    ctx.fill();
+    ctx.strokeStyle = "rgba(130,145,168,0.25)";
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.arc(cx2, cy2, r, 0, Math.PI * 2);
+    ctx.strokeStyle = "rgba(224,87,79,0.5)";
+    ctx.lineWidth = 1.4;
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.moveTo(cx2 - r, cy2); ctx.lineTo(cx2 + r, cy2);
+    ctx.moveTo(cx2, cy2 - r); ctx.lineTo(cx2, cy2 + r);
+    ctx.strokeStyle = "rgba(130,145,168,0.25)";
+    ctx.lineWidth = 1;
+    ctx.stroke();
+
+    const scale = r / climateEngine.threshold;
+    if (miniTrail.length > 1){
+      ctx.beginPath();
+      for (let i = 0; i < miniTrail.length; i++){
+        const px = cx2 + miniTrail[i].x * scale;
+        const py = cy2 - miniTrail[i].y * scale;
+        if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+      }
+      ctx.strokeStyle = "rgba(79,163,232,0.5)";
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    }
+
+    const px = cx2 + climateEngine.vector.x * scale;
+    const py = cy2 - climateEngine.vector.y * scale;
+    const ratio = mag / climateEngine.threshold;
+    const dotColor = ratio > 0.8 ? "#e0574f" : ratio > 0.55 ? "#e0b84f" : "#4fe07f";
+    ctx.beginPath();
+    ctx.arc(px, py, 3.4, 0, Math.PI * 2);
+    ctx.fillStyle = dotColor;
+    ctx.fill();
+    ctx.restore();
+  }
+
+  let lastFrameTime = performance.now();
+
+  function draw(now){
+    let dtFrames = (now - lastFrameTime) / 16.67; // normalize to ~60fps units
+    lastFrameTime = now;
+    dtFrames = Math.min(Math.max(dtFrames, 0), 4);
+
+    const w = computeWeights();
+    const W = climateEngine.vector;
+    const mag = Math.hypot(W.x, W.y);
+
+    drawOcean();
+
+    // gust-driven camera shake — everything except the compass inset shakes
+    ctx.save();
+    if (w.stormW > 0.15){
+      const shakeMag = w.stormW * 4;
+      ctx.translate((Math.random() - 0.5) * shakeMag, (Math.random() - 0.5) * shakeMag);
+    }
+    drawWaveRings();
+    drawIslandShadow();
+    drawIslandBase(w);
+    drawCompassLabels();
+    drawSettlements();
+    updateAndDrawRain(dtFrames, w);
+    updateAndDrawSnow(dtFrames, w);
+    updateAndDrawGusts(dtFrames, w);
+    drawBrightLight(dtFrames, w);
+    drawDangerRing(mag);
+    ctx.restore();
+
+    drawCompassInset(mag);
+
+    document.getElementById("readX").textContent = W.x.toFixed(2);
+    document.getElementById("readY").textContent = W.y.toFixed(2);
+    document.getElementById("readMag").textContent = mag.toFixed(2);
+    document.getElementById("readThreshold").textContent = climateEngine.threshold.toFixed(1);
+    document.getElementById("devotionVal").textContent = climateEngine.devotion.toFixed(1);
+
+    const statusEl = document.getElementById("statusLine");
+    const ratio = mag / climateEngine.threshold;
+    if (crashed){
+      statusEl.textContent = "CATACLYSM";
+      statusEl.className = "status-line status-danger";
+    } else if (ratio > 0.8){
+      statusEl.textContent = "CRITICAL WOBBLE";
+      statusEl.className = "status-line status-danger";
+    } else if (ratio > 0.55){
+      statusEl.textContent = "UNSTABLE";
+      statusEl.className = "status-line status-warn";
+    } else {
+      statusEl.textContent = "STABLE";
+      statusEl.className = "status-line status-safe";
+    }
+
+    document.getElementById("genInfo").textContent =
+      `Generation ${generation} · Ticks survived: ${ticksSurvived} · Permanent friction bonus: +${permanent.gammaBonus.toFixed(4)} · noise reduction: -${permanent.noiseReduction.toFixed(3)}`;
+
+    updateFactionUI();
+    updateRallyUI();
+  }
+
+  // ---------------------------------------------------------------------
+  // Fixed-timestep game loop (simulation) decoupled from render loop
+  // ---------------------------------------------------------------------
+  let lastTime = performance.now();
+  let accumulator = 0;
+
+  function loop(now){
+    requestAnimationFrame(loop);
+    let delta = now - lastTime;
+    lastTime = now;
+    if (delta > 1000) delta = 1000;
+
+    if (!paused && !crashed){
+      accumulator += delta * speedMultiplier;
+      let ticksThisFrame = 0;
+      while (accumulator >= TICK_MS && ticksThisFrame < 20){
+        tick();
+        accumulator -= TICK_MS;
+        ticksThisFrame++;
+        if (crashed) { accumulator = 0; break; }
+      }
+    }
+    draw(now);
+  }
+
+  // ---------------------------------------------------------------------
+  // Event bindings
+  // ---------------------------------------------------------------------
+  document.getElementById("pauseBtn").addEventListener("click", (e) => {
+    paused = !paused;
+    e.target.textContent = paused ? "Resume" : "Pause";
+  });
+
+  document.getElementById("speedBtn").addEventListener("click", (e) => {
+    const speeds = [1, 2, 4, 0.5];
+    const idx = speeds.indexOf(speedMultiplier);
+    speedMultiplier = speeds[(idx + 1) % speeds.length];
+    e.target.textContent = `Speed: ${speedMultiplier}x`;
+  });
+
+  document.getElementById("resetBtn").addEventListener("click", resetRun);
+  document.getElementById("genContinueBtn").addEventListener("click", beginNextGeneration);
+
+  // ---------------------------------------------------------------------
+  // Boot
+  // ---------------------------------------------------------------------
+  buildFactionUI();
+  requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>
