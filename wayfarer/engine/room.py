@@ -33,6 +33,28 @@ KIND_FALLBACK_COLORS = {
     "stairs_up": (170, 140, 200),
     "building": (150, 100, 60),
     "cave": (40, 70, 45),
+    # Wayfarer Adventure Mode's biome-dungeon entrance -- see
+    # wayfarer/wayfarer_adventure.md. Warm desert-orange, distinct from the
+    # Depths' cool "cave" marker at a glance.
+    "wilds": (200, 120, 40),
+    # Session 45: Frostreach's own town-exit marker -- icy pale blue,
+    # distinct from both "cave" and the Scorched Wastes' warm "wilds" tint
+    # at a glance.
+    "frost": (110, 170, 220),
+    # Session 46: Stormfell's own town-exit marker -- magenta/violet,
+    # distinct from "cave"/"wilds" (warm orange)/"frost" (cool blue). See
+    # main.py's AssetManager.make_tint_variant("storm", ...) call for why
+    # this landed on a red-leaning wash rather than the blue-leaning first
+    # attempt.
+    "storm": (180, 70, 200),
+    # Session 47: Fenmire's own town-exit marker -- murky swamp green,
+    # distinct from every warm/cool tint used by the first three biomes.
+    "mire": (70, 110, 60),
+    # Session 47: the Final Area's town-exit marker -- saturated
+    # yellow-gold (red+green boosted, blue suppressed), a hue combination
+    # none of the other four markers use (see main.py's make_tint_variant
+    # call for why an earlier "just make it brighter" attempt didn't work).
+    "sanctum": (220, 190, 60),
 }
 
 _ROOM_CACHE = {}
@@ -225,6 +247,16 @@ class Room:
             from engine.procgen import generate_room
             _, seed_str, level_str, gx_str, gy_str = room_id.split(":")
             data = generate_room(int(seed_str), int(level_str), int(gx_str), int(gy_str))
+        elif room_id.startswith("biome:"):
+            # Wayfarer Adventure Mode (see wayfarer/wayfarer_adventure.md):
+            # a single finite generated room, id "biome:<biome_id>:<seed>".
+            # Unlike "proc:" rooms, main.py's load_room applies no epoch/
+            # respawn machinery to these -- the population generated here is
+            # cached forever by _ROOM_CACHE below, same as a hand-authored
+            # room's fixed templates.
+            from engine.procgen import generate_biome_room
+            _, biome_id, seed_str = room_id.split(":")
+            data = generate_biome_room(int(seed_str), biome_id)
         else:
             path = os.path.join(ROOMS_DIR, f"{room_id}.json")
             with open(path, "r") as f:

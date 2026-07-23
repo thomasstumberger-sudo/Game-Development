@@ -364,9 +364,12 @@ class Player(Entity):
         return 0
 
     def try_move(self, dx, dy, room, enemies, items, npcs=(),
-                 locked_doors=(), gates=(), chests=(), switches=(), traps=(), blocked=None):
+                 locked_doors=(), gates=(), chests=(), switches=(), traps=(),
+                 locked_exits=(), blocked=None):
         """Resolve a single grid step: attack > npc > locked_door/gate
-        (closed only -- caller filters) > blocked > exit > pickup > chest/
+        (closed only -- caller filters) > locked_exit (Adventure Mode biome
+        gating, see wayfarer_adventure.md -- caller filters to whichever
+        exits aren't unlocked yet) > blocked > exit > pickup > chest/
         switch/trap > move. Does not mutate enemies/items/chests/switches/
         traps -- caller applies combat/pickup/unlock/trigger effects.
 
@@ -397,6 +400,10 @@ class Player(Entity):
         for gate in gates:
             if gate["x"] == new_x and gate["y"] == new_y:
                 return {"type": "gate", "gate": gate}
+
+        for locked_exit in locked_exits:
+            if locked_exit["x"] == new_x and locked_exit["y"] == new_y:
+                return {"type": "locked_exit", "exit": locked_exit}
 
         if not room.is_walkable(new_x, new_y, blocked):
             return {"type": "blocked"}

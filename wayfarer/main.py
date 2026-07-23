@@ -182,6 +182,20 @@ class Game:
             self.spell_defs = json.load(f)  # ordered list -- unlock order matters, see engine/spells.py
         with open(os.path.join(BASE_DIR, "data", "traps.json")) as f:
             self.trap_defs = json.load(f)
+        # Wayfarer Adventure Mode (see wayfarer/wayfarer_adventure.md):
+        # artifact fragment definitions, resolved against ids
+        # engine/procgen.py's generate_biome_room emits -- same "procgen
+        # trusts a key string exists, main.py resolves it" split as
+        # equipment/spellbook defs above.
+        with open(os.path.join(BASE_DIR, "data", "artifacts.json")) as f:
+            self.artifact_defs = json.load(f)
+        # Session 45: the fetch/trade quest chain -- an ordered list, same
+        # "scan from the front for the first not-yet-completed entry" shape
+        # as self.quests/current_quest() below, just keyed by a persisted
+        # id set (completed_adventure_quests) rather than a bare index,
+        # per wayfarer_adventure.md's own proposed schema.
+        with open(os.path.join(BASE_DIR, "data", "adventure_quests.json")) as f:
+            self.adventure_quests = json.load(f)
 
         self.save = SaveManager(SAVE_PATH)
         if new_game:
@@ -198,6 +212,12 @@ class Game:
         self.depths_kills = state["depths_kills"]
         self.quest_index = state["quest_index"]
         self.known_spells = set(state.get("known_spells", set()))
+        # Wayfarer Adventure Mode: fragments ever claimed, flat/permanent
+        # like known_spells (see engine/save.py).
+        self.artifact_fragments = set(state.get("artifact_fragments", set()))
+        # Session 45: which fetch/trade quests in the chain are complete --
+        # same flat/permanent shape as the two sets above.
+        self.completed_adventure_quests = set(state.get("completed_adventure_quests", set()))
         # Catches up a returning save to any spell it already qualifies for
         # (e.g. this session's new content, or simply level 1's starting
         # spell on a brand new character) -- silent, no message spam on boot.
@@ -271,6 +291,19 @@ class Game:
         self.journal_open = False
         self.spellbook_open = False
         self.spellbook_cursor = 0
+        # Session 45: the Frontier Guide's fetch/trade panel -- single
+        # fixed-action shape, no cursor, same as the Quartermaster's quest
+        # panel (see _draw_trade_panel/attempt_trade).
+        self.trade_open = False
+        # Session 47: the Final Area's one-time victory modal (see
+        # _draw_win_screen/handle_key_down/handle_mouse_down). Deliberately
+        # NOT persisted -- it's a celebratory toast the first time the final
+        # chest opens, not a game state; whether the chest itself has
+        # already been claimed is tracked the normal way, via
+        # opened_chest_ids/completed_adventure_quests (both persisted), so a
+        # reload after winning never re-shows the modal but the "already
+        # won" fact is never lost either.
+        self.win_screen_open = False
         self.active_npc = None
         # Mouse support (session 13): whichever panel is currently drawn
         # re-populates these two just before it blits itself, so a click
@@ -328,6 +361,57 @@ class Game:
         AssetManager.load_sprite("wall_hub", f"{O}/tile_5_6.png")
         AssetManager.load_sprite("building", f"{O}/tile_2_16.png")
         AssetManager.load_sprite("cave", f"{O}/tile_3_13.png")
+        # Wayfarer Adventure Mode's biome-dungeon entrance (see
+        # wayfarer/wayfarer_adventure.md) -- same "cave" source art as the
+        # Crypt, warm-tinted (make_tint_variant, same trick as gate/
+        # locked_door below) so the two entrances read as different
+        # destinations at a glance rather than reusing one sprite outright.
+        AssetManager.make_tint_variant("wilds", "cave", (230, 150, 60))
+        # Session 45: Frostreach's own town-exit marker -- same "cave" source
+        # art, cool icy-blue tint instead of the Scorched Wastes' warm
+        # orange, so the two biome entrances read as different destinations
+        # from each other (and from the Crypt's own cave icon) at a glance.
+        AssetManager.make_tint_variant("frost", "cave", (110, 170, 230))
+        # Session 46: Stormfell's own town-exit marker -- same "cave" source
+        # art. A first pass at (150, 120, 220) (a blue-leaning violet) read
+        # as near-identical to "frost" once rendered -- confirmed by a
+        # zoomed screenshot and a direct pixel sample of both tinted
+        # surfaces (both landed on a near-identical dark blue-grey, since
+        # BLEND_RGB_MULT can only ever darken the source's own channel
+        # ratios, and the underlying cave art's shadow pixels are already
+        # blue-dominant -- a wash color that's *also* blue-leaning can't pull
+        # the result away from that). A magenta/violet wash (boosting red
+        # over green, the opposite of frost's blue/green-leaning wash) plus a
+        # higher strength (less blended toward white, more saturated) reads
+        # as a distinct purple against both "wilds" (warm orange) and
+        # "frost" (cool blue) -- reconfirmed the same way after the change.
+        AssetManager.make_tint_variant("storm", "cave", (180, 70, 200), strength=0.85)
+        # Session 47: Fenmire's own town-exit marker -- a swamp-green wash
+        # boosting green over both red and blue, distinct in channel
+        # relationship from every wash used above (wilds boosts red, frost
+        # boosts blue, storm boosts red+blue together) so it can't collapse
+        # toward any of them the way session 46's first storm attempt did.
+        AssetManager.make_tint_variant("mire", "cave", (70, 150, 60))
+        # Session 47: the Final Area's town-exit marker. First attempt used
+        # a soft (230, 200, 110) gold at strength=0.5, reasoning (wrongly)
+        # that a *lower* strength would read "brighter" -- a rendered
+        # screenshot showed the opposite: make_tint_variant's `strength`
+        # interpolates the wash color *toward white* as it drops (strength
+        # 0 = an unmodified wash, i.e. no tint at all), so 0.5 produced a
+        # muted, barely-there wash, nearly indistinguishable from "mire" in
+        # a pixel sample. And per sessions 31/46's own established finding,
+        # BLEND_RGB_MULT can only ever darken a channel relative to the
+        # source art's own value -- there's no way to make a tint of the
+        # same dark "cave" sprite read as literally brighter than the
+        # others, so "radiant"/"brightest" was the wrong bar to aim for.
+        # Fixed by aiming for a distinct *hue combination* instead (the same
+        # standard the other four markers actually meet): a saturated
+        # yellow-gold (roughly equal red+green boost, blue suppressed) at a
+        # high strength for saturation, same as storm's own fix -- a
+        # combination none of the other four washes use (wilds is
+        # red-dominant, frost is blue-only, storm is red+blue, mire is
+        # green-only).
+        AssetManager.make_tint_variant("sanctum", "cave", (230, 210, 60), strength=0.8)
 
         # Interactive dungeon fixtures (session 10). Gate and locked_door
         # share one "iron bars" source image, tinted cool blue vs. warm gold
@@ -348,6 +432,11 @@ class Game:
         # above, so a placeholder (see AssetManager's new "book" shape) in a
         # violet distinct from every other item/potion tint used so far.
         AssetManager.make_placeholder("item_spellbook", (150, 90, 200), shape="book")
+        # Wayfarer Adventure Mode: artifact fragments (data/artifacts.json)
+        # -- no matching art in either sheet, same situation as the
+        # spellbook above. Amber diamond, distinct from the Viper's olive
+        # one and from the key's real sprite.
+        AssetManager.make_placeholder("item_fragment", (255, 170, 40), shape="diamond")
 
         # Session 28: dungeon traps -- one caltrop-shaped placeholder per
         # type (see AssetManager's "spike" shape), colored to hint at each
@@ -430,6 +519,15 @@ class Game:
         # forest/toxin green distinct from both the Slime's muted green
         # circle and the Viper's olive diamond.
         AssetManager.make_placeholder("enemy_green_dragon", (20, 150, 40), shape="triangle")
+        # Session 47: the Elder Dragon -- the Final Area's guardian, a
+        # deliberately tougher capstone fight rather than a rematch against
+        # one of the four biome mini-bosses (see data/enemies.json). Same
+        # triangle silhouette as its four younger kin (it reads as a dragon
+        # at a glance, same reasoning as every other dragon placeholder
+        # here), but a dark bronze/gold rather than any of the four
+        # saturated elemental hues, so it's immediately distinct from all of
+        # them rather than looking like a reused Red/White/Blue/Green.
+        AssetManager.make_placeholder("enemy_elder_dragon", (140, 100, 30), shape="triangle")
         AssetManager.load_sprite("player", f"{C}/tile_12_6.png")
         AssetManager.load_sprite("npc_quartermaster", f"{C}/tile_12_12.png")
         AssetManager.load_sprite("npc_merchant", f"{C}/tile_12_27.png")
@@ -439,6 +537,13 @@ class Game:
         # labeled contact sheet, same discipline session 9 established) to
         # stand apart from the three already-placed NPCs at a glance.
         AssetManager.load_sprite("npc_scholar", f"{C}/tile_12_21.png")
+        # Session 45: Frontier Guide -- no unused, distinct-enough portrait
+        # left in the character sheet (session 9/19 already claimed the
+        # readable ones for the other four town NPCs), so tint the
+        # Quartermaster's own portrait an earthy frontier green rather than
+        # reuse a portrait outright (same "no matching art, tint an
+        # existing one" trick as the enemy sprites above).
+        AssetManager.make_tint_variant("npc_guide", "npc_quartermaster", (110, 150, 90), strength=0.6)
 
         # Consumables: each minor/normal/greater tier is now real distinct
         # art (not a color-dot variant of one image like session 5's
@@ -693,6 +798,20 @@ class Game:
         fixture blocks movement like a wall would."""
         return {(d["x"], d["y"]) for d in self.locked_doors} | {(g["x"], g["y"]) for g in self.gates}
 
+    def _locked_exits(self):
+        """Session 45 (Wayfarer Adventure Mode biome-unlock gating): any
+        exit in the current room tagged `requires_quest` whose quest isn't
+        complete yet -- a world-map-scale switch-gated gate, per
+        wayfarer_adventure.md's own framing. Deliberately separate from
+        _blocked_positions() above: unlike a locked door, a gated exit tile
+        is ordinary floor for every *other* purpose (enemy pathing, spell
+        line-of-sight) -- only Player.try_move's own exit dispatch needs to
+        know it isn't traversable yet."""
+        return [
+            e for e in self.room.exits
+            if e.get("requires_quest") and e["requires_quest"] not in self.completed_adventure_quests
+        ]
+
     def _current_room_flags(self):
         """All flag types tracked for the current room, in the generic
         {flag_type: {entity_id, ...}} shape save.set_room_flags expects."""
@@ -717,7 +836,8 @@ class Game:
         self.save.save_game(
             self.player, self.inventory, self.current_room_id, self.seed,
             self.turn_count, self.depths_kills, self.quest_index,
-            self.known_spells,
+            self.known_spells, self.artifact_fragments,
+            self.completed_adventure_quests,
         )
 
     # -- input handlers ------------------------------------------------
@@ -793,6 +913,7 @@ class Game:
             dx, dy, self.room, self.enemies, self.items, self.npcs,
             locked_doors=self.locked_doors, gates=self.gates,
             chests=self.chests, switches=self.switches, traps=self.traps,
+            locked_exits=self._locked_exits(),
             blocked=self._blocked_positions(),
         )
         self._reveal_region_at_player()
@@ -830,6 +951,8 @@ class Game:
             elif npc.type == "scholar":
                 self.bookshop_open = True
                 self.bookshop_cursor = 0
+            elif npc.type == "guide":
+                self.trade_open = True
             else:
                 self.quest_open = True
             return  # talking doesn't give nearby enemies a free turn
@@ -905,10 +1028,49 @@ class Game:
         elif kind == "gate":
             messages.append("An iron gate blocks the way. Find the switch.")
 
+        elif kind == "locked_exit":
+            # Session 45 (Wayfarer Adventure Mode biome-unlock gating) --
+            # same non-committal bump as a locked door/gate above, just
+            # keyed by an adventure-quest id instead of an item/switch.
+            messages.append("The way is sealed by old magic. Perhaps someone in town can help.")
+
         elif kind == "chest":
             chest = result["chest"]
             if chest["id"] in self.opened_chest_ids:
                 pass  # already looted -- just a normal walk-through
+            elif "artifact" in chest:
+                # Wayfarer Adventure Mode (see wayfarer/wayfarer_adventure.md):
+                # a biome dungeon's terminal reward. Never enters the
+                # stackable Inventory or the equipment bag -- own exactly
+                # one, ever, closer to how a spellbook teaches instantly
+                # than to a regular chest item.
+                fragment_id = chest["artifact"]["fragment_id"]
+                self.opened_chest_ids.add(chest["id"])
+                frag_name = self.artifact_defs[fragment_id]["name"]
+                if fragment_id in self.artifact_fragments:
+                    messages.append(f"The chest is empty -- you already claimed the {frag_name}.")
+                else:
+                    self.artifact_fragments.add(fragment_id)
+                    messages.append(f"The chest holds {frag_name}!")
+                    AssetManager.play_sfx("pickup")
+            elif chest.get("final_reward"):
+                # Session 47: the Final Area's win trigger (see
+                # engine/procgen.py's BIOME_DEFS["final_area"] and
+                # _vault_reward). "adventure_victory" is a synthetic id --
+                # never an entry in data/adventure_quests.json -- added to
+                # the same completed_adventure_quests set the fetch/trade
+                # chain already uses purely so this fact persists without a
+                # new save table; current_adventure_quest()'s own front-scan
+                # only ever checks the real chain ids, so an extra id in the
+                # set is otherwise inert.
+                self.opened_chest_ids.add(chest["id"])
+                if "adventure_victory" in self.completed_adventure_quests:
+                    messages.append("The chest is empty -- you have already claimed your victory.")
+                else:
+                    self.completed_adventure_quests.add("adventure_victory")
+                    messages.append("You lay all four fragments together and the old seal finally breaks.")
+                    self.win_screen_open = True
+                    AssetManager.play_sfx("pickup")
             elif "equipment" in chest:
                 # Session 17: a vault chest can hold a per-instance gear
                 # drop, same as floor loot -- lands unidentified in the bag,
@@ -970,6 +1132,12 @@ class Game:
             target_room = exit_data["target_room"]
             if target_room == "proc:ENTRY":
                 target_room = f"proc:{self.seed}:1:0:0"
+            elif target_room.startswith("biome:ENTRY:"):
+                # Wayfarer Adventure Mode: town_hub.json can't know the
+                # per-save seed ahead of time, same "ENTRY" sentinel trick
+                # as the Crypt's proc:ENTRY above.
+                biome_id = target_room.split(":")[2]
+                target_room = f"biome:{biome_id}:{self.seed}"
             stairs_message = {
                 "stairs_down": "You descend deeper into the dungeon.",
                 "stairs_up": "You climb back up.",
@@ -1264,6 +1432,46 @@ class Game:
 
         self.quest_index += 1
         self.message_log = [message]
+        self.dirty = True
+
+    # -- adventure quest chain (session 45, see wayfarer_adventure.md) ----
+    #
+    # A separate, ordered chain from the cull-quest ladder above -- ids in
+    # data/adventure_quests.json are scanned front-to-back for the first
+    # one not yet in self.completed_adventure_quests, same "index-shaped"
+    # linear-chain MVP the design doc scopes for a first pass, just backed
+    # by a persisted set (per the doc's own schema) rather than a bare int
+    # so a future branching chain isn't blocked on this session's data
+    # shape.
+
+    def current_adventure_quest(self):
+        for quest in self.adventure_quests:
+            if quest["id"] not in self.completed_adventure_quests:
+                return quest
+        return None
+
+    def close_trade_panel(self):
+        self.trade_open = False
+        self.dirty = True
+
+    def attempt_trade(self):
+        """Fetch/trade with the Guide: proof of the wanted artifact fragment
+        (still held, not consumed -- see wayfarer_adventure.md's Final Area
+        note that the win condition needs every fragment held at once, so
+        trading it away here would make that check impossible to satisfy
+        later) advances the chain and, via the matching biome exit's own
+        `requires_quest` field, unlocks the next biome."""
+        quest = self.current_adventure_quest()
+        if (
+            quest is None
+            or self.active_npc is None
+            or self.active_npc.type != quest["giver_npc"]
+            or quest["wants"]["id"] not in self.artifact_fragments
+        ):
+            return
+        self.completed_adventure_quests.add(quest["id"])
+        self.message_log = [quest["dialogue"]["success"]]
+        self.trade_open = False
         self.dirty = True
 
     # -- shop --------------------------------------------------------------
@@ -2100,10 +2308,14 @@ class Game:
             self._draw_healer_panel()
         if self.bookshop_open:
             self._draw_bookshop_panel()
+        if self.trade_open:
+            self._draw_trade_panel()
         if self.spellbook_open:
             self._draw_spellbook_panel()
         if self.journal_open:
             self._draw_journal_panel()
+        if self.win_screen_open:
+            self._draw_win_screen()
 
         pygame.display.flip()
 
@@ -2340,7 +2552,7 @@ class Game:
         return (
             self.inventory_open or self.quest_open or self.shop_open
             or self.spellbook_open or self.journal_open or self.healer_open
-            or self.bookshop_open
+            or self.bookshop_open or self.trade_open
         )
 
     def handle_room_click(self, pos):
@@ -2406,6 +2618,8 @@ class Game:
             self.close_healer_panel()
         elif self.bookshop_open:
             self.close_bookshop_panel()
+        elif self.trade_open:
+            self.close_trade_panel()
         elif self.spellbook_open:
             self.close_spellbook_panel()
         elif self.journal_open:
@@ -2430,6 +2644,13 @@ class Game:
         handle_panel_click) but a room click also arms click-and-hold --
         holding the button repeats handle_room_click at the live cursor
         position via tick_move_repeat, exactly like a held movement key."""
+        if self.win_screen_open:
+            # Any click dismisses the one-time victory modal -- it has no
+            # rows of its own, so it deliberately doesn't go through
+            # panel_click_targets/_any_panel_open like every other panel.
+            self.win_screen_open = False
+            self.dirty = True
+            return
         if self._any_panel_open():
             self.handle_panel_click(pos)
             return
@@ -2445,25 +2666,37 @@ class Game:
         game (Esc pressed with no panel open to close instead) -- main.py
         still owns the actual `running` flag/event loop, everything else
         about what a keypress *means* lives here now."""
+        if self.win_screen_open:
+            # Any key (including Esc) dismisses the one-time victory modal
+            # -- checked before Esc's own quit-if-nothing-to-close logic
+            # below, same "consume this input, do nothing else this frame"
+            # priority every other panel already gets.
+            self.win_screen_open = False
+            self.dirty = True
+            return False
         if key == pygame.K_ESCAPE:
             return not self.close_active_panel()
         if key == pygame.K_F3:
             self.debug_overlay = not self.debug_overlay
             self.dirty = True
             return False
-        if key == pygame.K_i and not (self.quest_open or self.shop_open or self.journal_open or self.spellbook_open or self.healer_open or self.bookshop_open):
+        if key == pygame.K_i and not (self.quest_open or self.shop_open or self.journal_open or self.spellbook_open or self.healer_open or self.bookshop_open or self.trade_open):
             self.toggle_inventory()
             return False
-        if key == pygame.K_m and not (self.quest_open or self.shop_open or self.inventory_open or self.spellbook_open or self.healer_open or self.bookshop_open):
+        if key == pygame.K_m and not (self.quest_open or self.shop_open or self.inventory_open or self.spellbook_open or self.healer_open or self.bookshop_open or self.trade_open):
             self.toggle_journal()
             return False
-        if key == pygame.K_c and not (self.quest_open or self.shop_open or self.inventory_open or self.journal_open or self.healer_open or self.bookshop_open):
+        if key == pygame.K_c and not (self.quest_open or self.shop_open or self.inventory_open or self.journal_open or self.healer_open or self.bookshop_open or self.trade_open):
             self.toggle_spellbook()
             return False
 
         if self.quest_open:
             if key in (pygame.K_u, pygame.K_RETURN):
                 self.claim_quest_reward()
+            return False
+        if self.trade_open:
+            if key in (pygame.K_u, pygame.K_RETURN):
+                self.attempt_trade()
             return False
         if self.healer_open:
             if key in (pygame.K_UP, pygame.K_w):
@@ -2700,6 +2933,62 @@ class Game:
             if quest is not None and self.depths_kills >= quest["target"] and i == len(body) - 1:
                 row_rect = pygame.Rect(origin[0], origin[1] + row_y, panel_w, 18)
                 self.panel_click_targets.append((row_rect, self.claim_quest_reward))
+
+        hint = font.render("Esc to close", True, (160, 160, 160))
+        panel.blit(hint, (10, panel_h - 24))
+
+        self.screen.blit(panel, origin)
+
+    def _draw_trade_panel(self):
+        """The Frontier Guide's fetch/trade panel (session 45). Same
+        "measure-then-build wrapped lines" shape as the Shop panel, since
+        the dialogue lines run longer than this panel's width at 14pt --
+        unlike the plain fixed-height quest panel above, whose two lines
+        were always short enough to not need wrapping."""
+        overlay = pygame.Surface((WINDOW_W, WINDOW_H), pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, 140))
+        self.screen.blit(overlay, (0, 0))
+
+        panel_w = 360
+        title_font = AssetManager.get_font(16, bold=True)
+        font = AssetManager.get_font(14)
+
+        quest = self.current_adventure_quest()
+        npc = self.active_npc
+        matches = quest is not None and npc is not None and npc.type == quest["giver_npc"]
+
+        have = False
+        if matches:
+            want_id = quest["wants"]["id"]
+            have = want_id in self.artifact_fragments
+            want_name = self.artifact_defs[want_id]["name"]
+            raw_lines = [quest["dialogue"]["intro"]]
+            raw_lines.append(f"You carry the {want_name}." if have else quest["dialogue"]["incomplete"])
+            if have:
+                raw_lines.append("Press U or click here to trade.")
+        else:
+            raw_lines = ["Safe travels, adventurer. I've nothing more to ask of you."]
+
+        wrapped = [_wrap_text(font, line, panel_w - 20) for line in raw_lines]
+        body_h = sum(16 * len(w) + 6 for w in wrapped)
+        panel_h = 40 + body_h + 34
+
+        panel = self._panel_surface(panel_w, panel_h)
+        origin = self._begin_panel_hitboxes(panel_w, panel_h)
+
+        npc_name = npc.name if npc else "Frontier Guide"
+        panel.blit(title_font.render(npc_name, True, COLOR_TEXT), (10, 8))
+
+        y = 36
+        for i, wrapped_line_group in enumerate(wrapped):
+            row_top = y
+            for wl in wrapped_line_group:
+                panel.blit(font.render(wl, True, COLOR_TEXT), (10, y))
+                y += 16
+            y += 6
+            if matches and have and i == len(wrapped) - 1:
+                row_rect = pygame.Rect(origin[0], origin[1] + row_top, panel_w, y - row_top)
+                self.panel_click_targets.append((row_rect, self.attempt_trade))
 
         hint = font.render("Esc to close", True, (160, 160, 160))
         panel.blit(hint, (10, panel_h - 24))
@@ -3006,12 +3295,101 @@ class Game:
             line = f"{quest['description']} -- {status}"
             panel.blit(font.render(line, True, COLOR_TEXT), (10, 32 + i * 18))
 
-        map_top = 32 + len(self.quests) * 18 + 16
+        # Wayfarer Adventure Mode (see wayfarer/wayfarer_adventure.md): a
+        # one-line summary of fragments claimed so far. Wrapped (session 46:
+        # a third biome/fragment pushed this past the panel's 460px width --
+        # confirmed by an actual rendered screenshot clipping the line at
+        # "...Ember-Charred Fragment, Frost" before this wrap was added,
+        # same clipping session 45 already caught and fixed on the guide
+        # line below).
+        frag_top = 32 + len(self.quests) * 18 + 8
+        have = sorted(self.artifact_defs[fid]["name"] for fid in self.artifact_fragments)
+        frag_line = f"Artifact Fragments: {len(have)}/{len(self.artifact_defs)}" + (f" -- {', '.join(have)}" if have else "")
+        frag_wrapped = _wrap_text(font, frag_line, panel_w - 20)
+        for i, wl in enumerate(frag_wrapped):
+            panel.blit(font.render(wl, True, COLOR_TEXT), (10, frag_top + i * 18))
+
+        # Session 45: the fetch/trade quest chain's current step -- built
+        # this session (see current_adventure_quest/_draw_trade_panel).
+        # Wrapped (unlike frag_line above, before session 46) because
+        # "Frontier Guide wants: <name> -- ready to trade" runs past this
+        # panel's 460px width at this font -- confirmed by an actual
+        # rendered screenshot clipping the word "trade" before this wrap was
+        # added.
+        guide_top = frag_top + len(frag_wrapped) * 18
+        adventure_quest = self.current_adventure_quest()
+        # Session 47: distinguished from the plain "no further requests"
+        # case below -- current_adventure_quest() already returns None the
+        # moment guide_final is traded (unlocking the Final Area exit), but
+        # that's not the same moment as actually finishing it (opening the
+        # final vault chest, tracked separately via the synthetic
+        # "adventure_victory" id -- see handle_move's chest branch).
+        if "adventure_victory" in self.completed_adventure_quests:
+            guide_line = "The frontier is at peace -- the seal is broken and the realm saved."
+        elif adventure_quest is None:
+            guide_line = "Frontier Guide: no further requests."
+        else:
+            want_name = self.artifact_defs[adventure_quest["wants"]["id"]]["name"]
+            status = "ready to trade" if adventure_quest["wants"]["id"] in self.artifact_fragments else "not yet found"
+            guide_line = f"Frontier Guide wants: {want_name} -- {status}"
+        guide_wrapped = _wrap_text(font, guide_line, panel_w - 20)
+        for i, wl in enumerate(guide_wrapped):
+            panel.blit(font.render(wl, True, COLOR_TEXT), (10, guide_top + i * 18))
+
+        map_top = guide_top + len(guide_wrapped) * 18 + 8
         panel.blit(title_font.render("Dungeon Map", True, COLOR_TEXT), (10, map_top))
         self._draw_dungeon_map(panel, 10, map_top + 24)
 
         hint = font.render("M or Esc to close", True, (160, 160, 160))
         panel.blit(hint, (10, panel_h - 24))
+
+        self.screen.blit(panel, origin)
+
+    def _draw_win_screen(self):
+        """Session 47 (Wayfarer Adventure Mode's Final Area, see
+        wayfarer_adventure.md): a one-time celebratory modal shown the
+        instant the final vault chest opens, reusing run_menu's own
+        panel-and-centered-text rendering style per the design doc's own
+        suggestion ("reusing run_menu's existing title-screen rendering
+        infra") rather than building a separate screen system. Unlike every
+        other panel it takes no input beyond "dismiss" (see
+        handle_key_down/handle_mouse_down) -- there's nothing to select,
+        just a message to read -- and dismissing it drops straight back into
+        ordinary play rather than any menu, since Adventure Mode is a wing
+        of the game, not the whole of it (the Depths keep going)."""
+        overlay = pygame.Surface((WINDOW_W, WINDOW_H), pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, 180))
+        self.screen.blit(overlay, (0, 0))
+
+        title_font = AssetManager.get_font(28, bold=True)
+        font = AssetManager.get_font(15)
+
+        have = sorted(self.artifact_defs[fid]["name"] for fid in self.artifact_fragments)
+        lines = [
+            "Ember, frost, storm, and mire -- reunited at last.",
+            "The Elder Dragon's seal is broken, and the frontier is at peace.",
+            "",
+            f"Fragments carried: {', '.join(have)}",
+        ]
+        wrapped = [_wrap_text(font, line, 520) if line else [""] for line in lines]
+
+        panel_w = 560
+        panel_h = 70 + sum(18 * len(w) for w in wrapped) + 50
+        panel = self._panel_surface(panel_w, panel_h)
+        origin = ((WINDOW_W - panel_w) // 2, (WINDOW_H - panel_h) // 2)
+
+        title = title_font.render("You Win!", True, (230, 200, 110))
+        panel.blit(title, ((panel_w - title.get_width()) // 2, 16))
+
+        y = 60
+        for wrapped_line_group in wrapped:
+            for wl in wrapped_line_group:
+                text = font.render(wl, True, COLOR_TEXT)
+                panel.blit(text, ((panel_w - text.get_width()) // 2, y))
+                y += 18
+
+        hint = font.render("Press any key or click to continue adventuring.", True, (160, 160, 160))
+        panel.blit(hint, ((panel_w - hint.get_width()) // 2, panel_h - 32))
 
         self.screen.blit(panel, origin)
 

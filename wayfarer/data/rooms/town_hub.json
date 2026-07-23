@@ -45,6 +45,55 @@
       "target_room": "crypt",
       "target_x": 1,
       "target_y": 9
+    },
+    {
+      "id": "to_scorched_wastes",
+      "kind": "wilds",
+      "x": 16,
+      "y": 4,
+      "target_room": "biome:ENTRY:scorched_wastes",
+      "target_x": 20,
+      "target_y": 16
+    },
+    {
+      "id": "to_frostreach",
+      "kind": "frost",
+      "x": 26,
+      "y": 4,
+      "target_room": "biome:ENTRY:frostreach",
+      "target_x": 20,
+      "target_y": 16,
+      "requires_quest": "guide_frostreach"
+    },
+    {
+      "id": "to_stormfell",
+      "kind": "storm",
+      "x": 6,
+      "y": 4,
+      "target_room": "biome:ENTRY:stormfell",
+      "target_x": 20,
+      "target_y": 16,
+      "requires_quest": "guide_stormfell"
+    },
+    {
+      "id": "to_fenmire",
+      "kind": "mire",
+      "x": 11,
+      "y": 2,
+      "target_room": "biome:ENTRY:fenmire",
+      "target_x": 20,
+      "target_y": 16,
+      "requires_quest": "guide_fenmire"
+    },
+    {
+      "id": "to_final_area",
+      "kind": "sanctum",
+      "x": 21,
+      "y": 2,
+      "target_room": "biome:ENTRY:final_area",
+      "target_x": 20,
+      "target_y": 16,
+      "requires_quest": "guide_final"
     }
   ],
   "npcs": [
@@ -65,6 +114,12 @@
       "type": "scholar",
       "x": 20,
       "y": 18
+    },
+    {
+      "id": "guide",
+      "type": "guide",
+      "x": 16,
+      "y": 10
     }
   ]
 }

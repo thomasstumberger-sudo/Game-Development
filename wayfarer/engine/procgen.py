@@ -423,6 +423,23 @@ def _place_vault(rng, host_rect, cell_bounds):
     return None, None
 
 
+def _reachable_floor(layout, start):
+    """BFS over every '.' tile connected to `start`. Used by
+    generate_biome_room to verify a guaranteed vault's isolating wall ring
+    (see below) didn't accidentally sever some unrelated corridor."""
+    h, w = len(layout), len(layout[0])
+    seen = {start}
+    stack = [start]
+    while stack:
+        x, y = stack.pop()
+        for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            nx, ny = x + dx, y + dy
+            if 0 <= nx < w and 0 <= ny < h and layout[ny][nx] == "." and (nx, ny) not in seen:
+                seen.add((nx, ny))
+                stack.append((nx, ny))
+    return seen
+
+
 def _random_free_point(rng, rect, occupied, tries=12):
     x, y, w, h = rect
     for _ in range(tries):
@@ -701,6 +718,392 @@ def generate_room(seed, level, gx, gy, epoch=0):
 
     return {
         "name": f"The Depths — Level {level} ({gx}, {gy})",
+        "layout": ["".join(row) for row in layout],
+        "exits": exits,
+        "enemies": enemies,
+        "items": items,
+        "equipment_drops": equipment_drops,
+        "spellbook_drops": spellbook_drops,
+        "regions": regions,
+        "locked_doors": locked_doors,
+        "gates": gates,
+        "switches": switches,
+        "chests": chests,
+        "traps": traps,
+    }
+
+
+# -- Wayfarer Adventure Mode: finite biome dungeons -------------------------
+# See wayfarer/wayfarer_adventure.md for the full design writeup. Unlike the
+# Depths above (an unbounded (level, gx, gy) plane, regenerated per room),
+# a biome dungeon is exactly ONE room, id'd "biome:<biome_id>:<seed>" --
+# finite by construction, no gx/gy neighbors, no stairs, no level scaling,
+# no epoch/respawn (main.py's load_room only applies that machinery to
+# "proc:"-prefixed ids, so a biome room's population is generated once and
+# cached forever by Room.load, same as a hand-authored room). It reuses
+# generate_room's core-room/corridor/vault carving helpers wholesale --
+# only the top-level assembly differs: a single fixed exit back to town
+# instead of the four-directional edge-hash dance, a fixed difficulty tier
+# instead of depth/level scaling, and a *guaranteed* vault (not chance-
+# gated) whose chest always holds the biome's artifact fragment, guarded by
+# its mini-boss standing in the same room. Reachable directly from
+# town_hub, no unlock gating yet -- that's a later session (see the design
+# doc's phased build order, step 2).
+BIOME_ENTRY_LANDING = (MID_X, MID_Y)
+BIOME_EXIT_CELL = (0, MID_Y)
+# Fixed, curated difficulty (see wayfarer_adventure.md's Open Questions --
+# "leans fixed/curated" over scaling with player level): tier 1 is the
+# Depths' own mid-difficulty band, reused as-is rather than inventing a
+# parallel table.
+BIOME_TIER = 1
+
+BIOME_DEFS = {
+    # Terrain flavor (per wayfarer_adventure.md's biome table): desert/
+    # canyon. Mini-boss and fragment id below are the only two facts
+    # generate_biome_room needs -- display name/sprite for the fragment
+    # itself lives in data/artifacts.json (main.py resolves it), same
+    # "procgen trusts a key string exists" split as
+    # EQUIPMENT_BASE_TYPES_BY_SLOT/SPELL_IDS_BY_BAND above.
+    # `town_return`: which town_hub tile a "to_town" exit drops the player
+    # at -- session 44 hardcoded this to (16, 6), the tile just south of
+    # the Scorched Wastes' own door (16, 4). Session 45 (Frostreach)
+    # parameterizes it per biome so a second town door doesn't silently
+    # reuse the first door's landing spot.
+    "scorched_wastes": {
+        "name": "Scorched Wastes",
+        "boss_type": "young_red_dragon",
+        "fragment_id": "ember_fragment",
+        "town_return": (16, 6),
+    },
+    # Session 45 (Wayfarer Adventure Mode, see wayfarer_adventure.md):
+    # second biome, ice/tundra terrain flavor, cold-elemental mini-boss --
+    # the design doc's Frostreach entry. Terrain art is still the shared
+    # dungeon_v2 tileset (art resize/re-skin is explicitly a separate,
+    # later pass on this branch), same "art stays as-is" scope session 44
+    # already drew for Scorched Wastes.
+    "frostreach": {
+        "name": "Frostreach",
+        "boss_type": "young_white_dragon",
+        "fragment_id": "frost_fragment",
+        "town_return": (26, 6),
+    },
+    # Session 46 (Wayfarer Adventure Mode, see wayfarer_adventure.md): third
+    # biome, ruins/highlands terrain flavor, lightning-elemental mini-boss --
+    # the design doc's Stormfell entry, third link in the fetch/trade chain
+    # (Frostreach -> Stormfell). Same "art stays as-is" scope as the first
+    # two biomes -- interior is still the shared dungeon_v2 tileset, only
+    # the town door gets a new tint (see AssetManager's "storm" variant).
+    "stormfell": {
+        "name": "Stormfell",
+        "boss_type": "young_blue_dragon",
+        "fragment_id": "storm_fragment",
+        "town_return": (6, 6),
+    },
+    # Session 47 (Wayfarer Adventure Mode, see wayfarer_adventure.md):
+    # fourth and last of the design doc's own biome table -- swamp/jungle
+    # terrain flavor, poison-elemental mini-boss (the Young Green Dragon,
+    # reusing the Viper's poison-field mechanism per session 33's own
+    # research, not a real "poison" damage_type). Closes out the doc's
+    # phased-build step 3 ("extend to the full biome count").
+    "fenmire": {
+        "name": "Fenmire",
+        "boss_type": "young_green_dragon",
+        "fragment_id": "mire_fragment",
+        "town_return": (11, 4),
+    },
+    # Session 47: the design doc's Final Area -- unlocked once every
+    # fragment is held (see data/adventure_quests.json's guide_final, whose
+    # `wants` is just the last fragment in the chain; since the fetch/trade
+    # mechanic never consumes a traded fragment -- session 45's own
+    # deliberate departure from the source games -- holding the last one
+    # implies holding all four, so a single-fragment want correctly encodes
+    # the doc's "every fragment held" condition without a new want-type
+    # schema). No `fragment_id`: `final_reward` instead marks this biome's
+    # guaranteed vault chest as the win trigger rather than another
+    # fragment drop -- see `_vault_reward()` below and main.py's matching
+    # `chest.get("final_reward")` branch. `boss_type` is a new, deliberately
+    # tougher-than-any-single-dragon guardian (`elder_dragon`, see
+    # data/enemies.json) rather than reusing one of the four biome
+    # mini-bosses a second time -- the doc's own "short, dense final
+    # dungeon" framing implies a genuine capstone fight, not a rematch.
+    "final_area": {
+        "name": "The Sundering",
+        "boss_type": "elder_dragon",
+        "final_reward": True,
+        "town_return": (21, 4),
+    },
+}
+
+
+def _vault_reward(biome):
+    """What the guaranteed vault chest holds -- an artifact fragment for
+    every regular biome, or the win trigger for the Final Area. Shared by
+    both the normal-placement and no-room-for-a-vault fallback paths below
+    so the two chest payloads can never drift out of sync with each other."""
+    if biome.get("final_reward"):
+        return {"final_reward": True}
+    return {"artifact": {"fragment_id": biome["fragment_id"]}}
+
+
+def generate_biome_room(seed, biome_id):
+    biome = BIOME_DEFS[biome_id]
+    layout_rng = random.Random(f"{seed}:biome:{biome_id}:layout")
+    pop_rng = random.Random(f"{seed}:biome:{biome_id}:pop")
+    tier = BIOME_TIER
+
+    layout = [["#"] * WIDTH for _ in range(HEIGHT)]
+    regions = []
+
+    cell_bounds = _grid_cells()
+    nodes = list(cell_bounds.keys())
+    core_rooms = {node: _carve_room_in_cell(layout_rng, cell_bounds[node]) for node in nodes}
+    for rect in core_rooms.values():
+        _carve_rect(layout, rect)
+    for i, node in enumerate(nodes):
+        x, y, w, h = core_rooms[node]
+        regions.append({"id": f"room{i}", "x": x, "y": y, "w": w, "h": h})
+
+    adjacency = []
+    for col in range(GRID_COLS):
+        for row in range(GRID_ROWS):
+            if col + 1 < GRID_COLS:
+                adjacency.append(((col, row), (col + 1, row)))
+            if row + 1 < GRID_ROWS:
+                adjacency.append(((col, row), (col, row + 1)))
+    tree_edges, loop_edges = _spanning_tree(layout_rng, nodes, adjacency)
+
+    corridor_i = 0
+
+    def _add_corridor(p1, p2):
+        nonlocal corridor_i
+        cells = _carve_corridor(layout, p1, p2)
+        regions.append({"id": f"corridor{corridor_i}", "cells": cells})
+        corridor_i += 1
+
+    for a, b in tree_edges + loop_edges:
+        _add_corridor(_rect_center(core_rooms[a]), _rect_center(core_rooms[b]))
+
+    core_rects = list(core_rooms.values())
+
+    def _nearest_core_room(point):
+        px, py = point
+        return min(core_rects, key=lambda r: abs(_rect_center(r)[0] - px) + abs(_rect_center(r)[1] - py))
+
+    # -- single fixed exit back to town -- always open, no edge-hash
+    # negotiation needed since this room has no neighbors on any plane.
+    exit_x, exit_y = BIOME_EXIT_CELL
+    layout[exit_y][exit_x] = "."
+    in_x, in_y = exit_x + 1, exit_y
+    layout[in_y][in_x] = "."
+    _add_corridor((in_x, in_y), _rect_center(_nearest_core_room((in_x, in_y))))
+    town_return_x, town_return_y = biome.get("town_return", (16, 6))
+    exits = [{
+        "id": "to_town",
+        "x": exit_x, "y": exit_y,
+        "target_room": "town_hub",
+        "target_x": town_return_x, "target_y": town_return_y,
+    }]
+
+    landing = BIOME_ENTRY_LANDING
+    layout[landing[1]][landing[0]] = "."
+    _add_corridor(landing, _rect_center(_nearest_core_room(landing)))
+
+    # -- regular population (every core room except wherever the vault ends
+    # up) -- same weighted tables as the Depths, just fixed-tier rather than
+    # depth/level-scaled.
+    max_enemies_per_room = 3 if tier == 2 else 2
+    item_chance = 0.6 if tier == 0 else 0.75
+    enemies, items, equipment_drops, spellbook_drops, traps = [], [], [], [], []
+    e_i = i_i = eq_i = sb_i = tr_i = 0
+    room_occupied = {i: set() for i in range(len(core_rects))}
+    for i, rect in enumerate(core_rects):
+        occupied = room_occupied[i]
+        if layout_rng.random() < TRAP_CHANCE_BY_TIER[tier]:
+            pt = _random_free_point(layout_rng, rect, occupied)
+            if pt is not None:
+                occupied.add(pt)
+                traps.append({
+                    "id": f"biome_{biome_id}_{seed}_trap{tr_i}",
+                    "type": _weighted_choice(layout_rng, TRAP_WEIGHTS_BY_TIER[tier]),
+                    "x": pt[0], "y": pt[1],
+                })
+                tr_i += 1
+        for _ in range(pop_rng.randint(0, max_enemies_per_room)):
+            pt = _random_free_point(pop_rng, rect, occupied)
+            if pt is None:
+                break
+            occupied.add(pt)
+            enemies.append({
+                "id": f"biome_{biome_id}_{seed}_e{e_i}",
+                "type": _weighted_choice(pop_rng, ENEMY_WEIGHTS_BY_TIER[tier]),
+                "x": pt[0], "y": pt[1],
+                "level": 1,
+            })
+            e_i += 1
+        if pop_rng.random() < item_chance:
+            pt = _random_free_point(pop_rng, rect, occupied)
+            if pt is not None:
+                occupied.add(pt)
+                family = _weighted_choice(pop_rng, ITEM_WEIGHTS_BY_TIER[tier])
+                if family == "equipment":
+                    slot = pop_rng.choice(EQUIPMENT_SLOTS)
+                    magnitude = _weighted_choice(pop_rng, MAGNITUDE_WEIGHTS_BY_TIER[tier])
+                    gear_tier = _MAGNITUDE_TO_GEAR_TIER[magnitude]
+                    base_type = EQUIPMENT_BASE_TYPES_BY_SLOT[slot][gear_tier]
+                    equipment_drops.append({
+                        "id": f"biome_{biome_id}_{seed}_eq{eq_i}",
+                        "base_type": base_type,
+                        "enchant": roll_enchant(pop_rng),
+                        "x": pt[0], "y": pt[1],
+                    })
+                    eq_i += 1
+                elif family == "spellbook":
+                    magnitude = _weighted_choice(pop_rng, MAGNITUDE_WEIGHTS_BY_TIER[tier])
+                    band = _MAGNITUDE_TO_GEAR_TIER[magnitude]
+                    spellbook_drops.append({
+                        "id": f"biome_{biome_id}_{seed}_sb{sb_i}",
+                        "spell_id": pop_rng.choice(SPELL_IDS_BY_BAND[band]),
+                        "x": pt[0], "y": pt[1],
+                    })
+                    sb_i += 1
+                else:
+                    magnitude = _weighted_choice(pop_rng, MAGNITUDE_WEIGHTS_BY_TIER[tier])
+                    item_type = family if magnitude == "normal" else f"{family}_{magnitude}"
+                    items.append({
+                        "id": f"biome_{biome_id}_{seed}_i{i_i}",
+                        "type": item_type,
+                        "x": pt[0], "y": pt[1],
+                    })
+                    i_i += 1
+
+    # -- guaranteed vault: the mini-boss chamber. Unlike the Depths' chance-
+    # gated vault, this always exists -- it's the whole point of the
+    # dungeon (fragment guarded by the biome's toughest enemy), so unlike
+    # generate_room() above, a lock that turns out to be bypassable isn't an
+    # acceptable outcome here.
+    #
+    # generate_room()'s own vault placement has a latent gap worth noting:
+    # it carves the vault AFTER the spanning-tree/loop corridors, and
+    # _place_vault only checks the vault's own footprint against the grid
+    # cell's bounds -- never against corridor cells already carved through
+    # that same space. When a corridor's straight L-shaped path happens to
+    # cross where the vault ends up, it silently breaches the vault's other
+    # three walls, leaving the "locked" door decorative (confirmed by
+    # instrumenting generate_room() directly: ~40% of seeded Depths vaults
+    # across a 300-seed sample are reachable without ever picking up the
+    # key). Fixing that in generate_room() itself is out of scope here
+    # (bigger blast radius, and a bypassable Depths vault is low-stakes --
+    # bonus loot, not mandatory progression); Adventure Mode's fragment
+    # being trivially skippable in ~40% of playthroughs would defeat the
+    # whole point, so the fix below is scoped to generate_biome_room only.
+    #
+    # The fix: after carving the vault interior, force every tile in its
+    # 1-tile-thick outer ring to '#' except the connector cell -- this
+    # guarantees the door is the vault's only entrance regardless of what a
+    # corridor happened to carve there first. The only remaining risk is
+    # the reverse problem (the ring-force itself severing some *other*
+    # room's only path through that space), so every attempt is verified by
+    # a full reachability flood from the entry landing before being
+    # accepted; a placement that would disconnect anything is undone (via
+    # the snapshot) and the next host is tried instead.
+    locked_doors, gates, switches, chests = [], [], [], []
+    host_order = list(range(len(nodes)))
+    layout_rng.shuffle(host_order)
+    placed = False
+    for host_i in host_order:
+        host_node = nodes[host_i]
+        vault_rect, connector = _place_vault(layout_rng, core_rooms[host_node], cell_bounds[host_node])
+        if vault_rect is None:
+            continue
+        key_room_i = layout_rng.randrange(len(core_rects))
+        key_pt = _random_free_point(pop_rng, core_rects[key_room_i], room_occupied[key_room_i])
+        if key_pt is None:
+            continue
+
+        vx, vy, vw, vh = vault_rect
+        cx, cy = connector
+        touched = [
+            (x, y)
+            for y in range(vy - 1, vy + vh + 1)
+            for x in range(vx - 1, vx + vw + 1)
+            if 0 <= x < WIDTH and 0 <= y < HEIGHT
+        ]
+        snapshot = {(x, y): layout[y][x] for x, y in touched}
+
+        _carve_rect(layout, vault_rect)
+        for x, y in touched:
+            on_ring = x in (vx - 1, vx + vw) or y in (vy - 1, vy + vh)
+            if on_ring and (x, y) != (cx, cy):
+                layout[y][x] = "#"
+        layout[cy][cx] = "."
+
+        other_centers = [_rect_center(r) for r in core_rects] + [(exit_x, exit_y)]
+        reach = _reachable_floor(layout, landing)
+        if not all(pt in reach for pt in other_centers):
+            # The forced ring severed some other room's only path through
+            # this space -- undo and try the next host.
+            for (x, y), ch in snapshot.items():
+                layout[y][x] = ch
+            continue
+
+        regions.append({"id": "vault0", "x": vx, "y": vy, "w": vw, "h": vh})
+
+        room_occupied[key_room_i].add(key_pt)
+        door_id = f"biome_{biome_id}_{seed}_door0"
+        locked_doors.append({"id": door_id, "x": cx, "y": cy})
+        items.append({
+            "id": f"biome_{biome_id}_{seed}_key0",
+            "type": "key",
+            "x": key_pt[0], "y": key_pt[1],
+        })
+
+        boss_pt = _random_free_point(pop_rng, vault_rect, set()) or _rect_center(vault_rect)
+        enemies.append({
+            "id": f"biome_{biome_id}_{seed}_boss",
+            "type": biome["boss_type"],
+            "x": boss_pt[0], "y": boss_pt[1],
+            "level": 1,
+        })
+
+        chest_x, chest_y = _rect_center(vault_rect)
+        if (chest_x, chest_y) == boss_pt:
+            chest_x = min(vx + vw - 2, chest_x + 1)
+        chests.append({
+            "id": f"biome_{biome_id}_{seed}_chest0",
+            "x": chest_x, "y": chest_y,
+            **_vault_reward(biome),
+        })
+        placed = True
+        break
+
+    if not placed:
+        # No geometric room for a separate locked vault (rare, given the
+        # 2x2 grid's generous per-cell sizing) -- fall back to an unlocked
+        # boss chamber in the biggest core room rather than ever shipping a
+        # dungeon whose fragment can't be reached. Still guards the
+        # fragment behind the mini-boss fight, just without the lock/key
+        # puzzle on top.
+        fallback_i = max(range(len(core_rects)), key=lambda i: core_rects[i][2] * core_rects[i][3])
+        rect = core_rects[fallback_i]
+        occupied = room_occupied[fallback_i]
+        boss_pt = _random_free_point(pop_rng, rect, occupied) or _rect_center(rect)
+        occupied.add(boss_pt)
+        enemies.append({
+            "id": f"biome_{biome_id}_{seed}_boss",
+            "type": biome["boss_type"],
+            "x": boss_pt[0], "y": boss_pt[1],
+            "level": 1,
+        })
+        chest_pt = _random_free_point(pop_rng, rect, occupied) or _rect_center(rect)
+        occupied.add(chest_pt)
+        chests.append({
+            "id": f"biome_{biome_id}_{seed}_chest0",
+            "x": chest_pt[0], "y": chest_pt[1],
+            **_vault_reward(biome),
+        })
+
+    return {
+        "name": biome["name"],
         "layout": ["".join(row) for row in layout],
         "exits": exits,
         "enemies": enemies,
