@@ -125,5 +125,19 @@
     "effect": "none",
     "value": 0,
     "description": "Opens a nearby locked door. Consumed automatically -- no need to press U."
+  },
+  "key_copper": {
+    "name": "Copper Key",
+    "sprite": "item_key_copper",
+    "effect": "none",
+    "value": 0,
+    "description": "Opens the matching copper-banded door. Consumed automatically -- no need to press U."
+  },
+  "key_jade": {
+    "name": "Jade Key",
+    "sprite": "item_key_jade",
+    "effect": "none",
+    "value": 0,
+    "description": "Opens the matching jade-banded door. Consumed automatically -- no need to press U."
   }
 }

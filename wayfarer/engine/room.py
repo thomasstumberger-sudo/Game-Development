@@ -14,6 +14,17 @@ needs to know about them at all for `is_walkable`'s exclusion set). A room
 also picks a `tileset` (defaults to "dungeon") so hand-authored rooms can
 use a different sprite set -- e.g. the overworld hub's grass/hedge tiles
 instead of dungeon stone.
+
+Session 48 (researched via Yoda Stories/Desktop Adventures -- see
+wayfarer_adventure.md's own "sokoban blocks" note, unbuilt until now):
+`blocks`/`plates`, a push-block puzzle pair. A `block` is a structural
+starting position only (main.py's Game tracks live position, since
+pushing moves it); a `plate` is a `gate_id`-linked pressure switch,
+triggered by a block's weight instead of the player's own footstep the
+way a regular `switch` is. Room itself stays exactly as flag-agnostic
+about both as it already is about switches/gates -- it only needs the
+template lists to exist for `is_walkable`'s exclusion set (via the
+caller's `blocked` set) and for main.py to have something to spawn/render.
 """
 
 import json
@@ -97,6 +108,12 @@ class Room:
         # state lives in room_flags" convention chests/switches already use
         # (see main.py's Game.traps/sprung_trap_ids).
         self.trap_templates = data.get("traps", [])
+        # Session 48: push-block puzzles -- see module docstring. Structural
+        # starting positions only; main.py's Game owns the live (mutable,
+        # persisted) block positions the same way it owns dead_enemy_ids/
+        # opened_chest_ids for every other template list here.
+        self.block_templates = data.get("blocks", [])
+        self.plate_templates = data.get("plates", [])
         self._region_grid = self._build_region_grid()
         self._border_regions = self._build_border_regions()
 

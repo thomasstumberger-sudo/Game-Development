@@ -180,6 +180,17 @@ class SaveManager:
                 quest_id TEXT PRIMARY KEY
             )"""
         )
+        # Session 48: push-block puzzles (researched via Yoda Stories/
+        # Desktop Adventures -- see wayfarer_adventure.md's "sokoban blocks"
+        # note) -- a block's live position after being pushed around, same
+        # full-replace-per-room shape/reasoning as room_drops (a block needs
+        # its position remembered, not just a boolean per entity_id).
+        self.conn.execute(
+            """CREATE TABLE IF NOT EXISTS block_positions (
+                room_id TEXT, entity_id TEXT, x INTEGER, y INTEGER,
+                PRIMARY KEY (room_id, entity_id)
+            )"""
+        )
         self.conn.commit()
 
     def has_save(self):
@@ -195,6 +206,7 @@ class SaveManager:
             "player", "inventory", "room_flags", "room_meta",
             "discovered_rooms", "known_spells", "equipment_instances",
             "room_drops", "artifact_fragments", "completed_adventure_quests",
+            "block_positions",
         ):
             self.conn.execute(f"DELETE FROM {table}")
         self.conn.commit()
@@ -475,6 +487,32 @@ class SaveManager:
         self.conn.executemany(
             """INSERT INTO room_drops (room_id, entity_id, item_type, x, y)
                VALUES (?, ?, ?, ?, ?)""",
+            rows,
+        )
+        self.conn.commit()
+
+    def get_block_positions(self, room_id):
+        """Returns {block_id: (x, y), ...} for every block that's been
+        pushed at least once in this room -- a block never in this dict
+        just stays at its template-defined starting position (see main.py's
+        load_room, which overlays this on top of self.room.block_templates
+        the same way get_room_drops' results overlay item templates)."""
+        rows = self.conn.execute(
+            "SELECT entity_id, x, y FROM block_positions WHERE room_id = ?",
+            (room_id,),
+        )
+        return {entity_id: (x, y) for entity_id, x, y in rows}
+
+    def set_block_positions(self, room_id, blocks):
+        """blocks: [{"id", "x", "y"}, ...] (main.py's Game.blocks, its live
+        in-memory copy) -- a full replace, same semantics as
+        set_room_drops. Every block is written every time (not just moved
+        ones) since a full replace is cheaper than diffing and this table
+        is small."""
+        self.conn.execute("DELETE FROM block_positions WHERE room_id = ?", (room_id,))
+        rows = [(room_id, b["id"], b["x"], b["y"]) for b in blocks]
+        self.conn.executemany(
+            "INSERT INTO block_positions (room_id, entity_id, x, y) VALUES (?, ?, ?, ?)",
             rows,
         )
         self.conn.commit()

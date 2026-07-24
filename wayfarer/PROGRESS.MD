@@ -4685,10 +4685,340 @@ only explicitly out-of-scope item left on this branch.
   line cascading correctly above the Dungeon Map section alongside the
   now-4-fragment-wrapped Artifact Fragments line.
 
+### Session 48 — push-block (sokoban) puzzles, closing one half of wayfarer_adventure.md's own "puzzles as texture" note
+
+User-driven request, same framing as sessions 44-47: read `PROGRESS.MD` and
+`wayfarer_adventure.md`, look up *Yoda Stories*/*Desktop Adventures* again,
+and continue development. With the design doc's own four-session phased
+build order (finite biome dungeons, the fetch/trade chain, all four biomes,
+the final area/win screen) fully closed out as of session 47, this session
+went back to the doc's premise section instead of the phased plan, which
+already named a second, never-built mechanic in passing: "Combat and
+puzzles (**sokoban blocks**, colored key/gate pairs) are texture around
+that trade-chain spine." A repo-wide grep (`sokoban|push_block|pushable`)
+confirmed neither push-blocks nor colored keys exist anywhere in the
+engine -- only a single generic `"key"` item and one-color switch/gate
+pairs (session 10). Re-researched both games directly (a fresh web search:
+MobyGames/GameFAQs/the Desktop Corner fansite for Yoda Stories, TV Tropes/
+Fandom for Desktop Adventures) specifically for this mechanic and confirmed
+it's real and central, not a doc-writer's guess: Yoda Stories' own manual
+describes pushing/pulling blocks (Shift+Arrow) onto a marked square to
+trigger an event (the "arrange 4 objects on the green square" Ben Kenobi
+puzzle is the sourced example), and Desktop Adventures' own puzzle
+mix explicitly includes "pushing around blocks and furniture" and "pressing
+switches" alongside item-fetch puzzles. This session builds the
+push-block half of that note; colored key/gate pairs (today's lock/gate
+system is still single-color/generic) are still unbuilt, flagged below
+rather than attempted in the same session.
+
+- **`engine/room.py`**: `Room` gains `block_templates`/`plate_templates`
+  (from a new `"blocks"`/`"plates"` key in room data, both default-empty so
+  every existing room needs zero changes) -- structural starting positions
+  only, same split every other fixture list here already keeps between
+  "Room holds the template, Game owns the live/mutated state."  A `plate`
+  is shaped exactly like a `switch` (`id`/`x`/`y`/`gate_id`) but is
+  triggered by a block's weight instead of the player's own footstep.
+- **`engine/entity.py`**: `Player.try_move` gains a `blocks=()` param and a
+  new branch, checked after `locked_exits` and before the generic `blocked`
+  walkability check (same reasoning locked_door/gate already sit ahead of
+  that check) -- necessarily so, since a block's tile is itself folded into
+  `_blocked_positions()` (see below), and without this branch running
+  first every block would just read as an unmovable wall. On a bump into a
+  block, computes the push destination one tile further in the same
+  direction and validates it against `room.is_walkable` (walls/closed
+  gates-doors) plus every other list `try_move` already receives (enemies,
+  npcs, chests, switches, items, and every *other* block) -- a landing tile
+  occupied by anything returns `{"type": "blocked"}` (the push simply
+  fails, same as bumping a wall) rather than ever silently clipping through
+  or displacing something. A legal push is committal in one input, same as
+  a chest/switch walk-on: the player steps into the block's old tile *and*
+  the block moves, both in the same `try_move` call -- the caller (Game)
+  only needs to update the block's own position afterward, not re-derive
+  where the player ended up.
+- **`main.py`**:
+  - `_blocked_positions()` now also folds in every block's current
+    position, alongside locked doors/gates -- a block is a real physical
+    obstacle for enemy pathing and spell line-of-sight (both already
+    consume this set) exactly like a closed gate, for every purpose
+    *except* the player's own push (which checks `self.blocks` directly in
+    `try_move`, ahead of ever consulting this set).
+  - `load_room`: `self.plates = list(self.room.plate_templates)` (plates
+    never move, so no override needed, same as switches). `self.blocks` is
+    built from `self.room.block_templates`' starting positions, then
+    overlaid with `self.save.get_block_positions(room_id)` for any block
+    that's been pushed on a previous visit -- same "template is the
+    default, a save-backed table is the override" split `room_drops`
+    already established for dropped items, just keyed by id instead of
+    being an add/remove list (a block always exists, it just may have
+    moved).
+  - `handle_move`'s new `"push_block"` branch: updates the block dict's
+    `x`/`y` in place, then checks whether its new position matches any
+    plate; if so and that plate's `gate_id` isn't already open, opens it
+    (removes the gate from `self.gates`, same as the existing `"switch"`
+    branch) -- gates stay open permanently once triggered by a plate,
+    identical semantics to a switch, so there's no "re-close if the block
+    is later pushed off" logic to write. `self.blocks` is mutated in
+    memory only and flushed to the new table at the same three checkpoints
+    `self.room_drops` already flushes at (`persist()`, the `"exit"`
+    stairs/door branch, Word of Recall) -- same in-memory-first convention
+    session 43 established, not a new pattern.
+  - The existing `"gate"` bump message ("Find the switch") was generic
+    enough to imply every gate has a switch specifically, which is no
+    longer true -- reworded to "Something nearby must trigger it" so it
+    stays accurate for either trigger kind without the player having
+    guessed which one a given gate uses.
+  - `_load_assets`: `push_block` (warm brown-stone square placeholder,
+    `make_placeholder(..., shape="square")`, same shape switches already
+    use but a color distinct from their red/green) and `plate_off`/
+    `plate_on` (dim slate-blue vs. lit gold, mirroring switch_off/on's own
+    not-yet/triggered convention) -- no crate/boulder/pressure-plate art in
+    either sheet, same "no matching sprite" situation sessions 21/28/39
+    already hit for the Viper/traps/spellbooks.
+  - `_draw_fixtures`: plates draw before blocks (so a block resting on its
+    plate shows the block, not the floor marking underneath -- same
+    draw-order reasoning Room.draw already uses for floor tiles under
+    exit-kind overlays), both fog-gated through the same `_is_visible`
+    check every other fixture already uses.
+- **`engine/save.py`**: new `block_positions` table
+  (`room_id, entity_id, x, y`, `PRIMARY KEY(room_id, entity_id)`), full-
+  replace via `get_block_positions`/`set_block_positions`, identical shape/
+  semantics to `room_drops`. Added to `reset()`'s wiped-table list.
+- **`data/rooms/crypt.json`**: the mechanic's first (and so far only) real
+  use, added to the existing hand-authored Crypt room rather than into
+  procedurally-generated content (Depths `generate_room`/Adventure Mode
+  `generate_biome_room`) -- deliberately scoped down from an earlier plan
+  to wire this into procgen directly. Reasoning: a procedurally-placed
+  puzzle needs its own solvability guarantee (the block must be reachable,
+  the push path must be straight and clear, and the walled-off reward
+  pocket must not accidentally sever some *other* room's only path through
+  that space -- exactly the class of bug session 44 already found and had
+  to fix for the vault-ring case) -- a real but separately-scoped problem,
+  not attempted this session. A hand-authored room sidesteps all of that:
+  the geometry is fixed and fully inspectable by hand, so this session
+  could build and verify the mechanic itself end-to-end without also
+  re-deriving generate_room's reachability-proof machinery for a second
+  fixture type. Extending push-blocks into procgen is flagged below as
+  follow-on work, not silently dropped.
+  - Carved a small sealed pocket into the existing `back_hall` region's own
+    open interior (no new room, exit, or fog region needed -- the pocket's
+    three cells already fall inside `back_hall`'s existing region
+    rectangle): walled off `(27,1)` and `(27,3)` and `(28,4)`, leaving
+    `(27,2)` as the pocket's sole opening (the `gate` fixture sits there)
+    and `(28,1)/(28,2)/(28,3)` as the enclosed interior holding a new bonus
+    chest (`crypt_chest1`, `gold_greater` -- deliberately gold rather than
+    gear/a spellbook, since a chest that can't fail to have room for its
+    reward was one less thing to verify this session). Confirmed by direct
+    grid inspection (not just visual inspection) that all three sealed
+    cells were previously plain unused `back_hall` floor -- no item/enemy/
+    region boundary sat on any of them -- and that `back_hall`'s only real
+    connections (the row 8-10 bridge to `entry_hall`/`hall_passage`, and
+    the vault door at row 11-12) are nowhere near this corner, so sealing
+    three tiles here can't disconnect anything else in the room.
+  - `crypt_block0` starts at `(21,2)`, three tiles west of a new
+    `crypt_plate0` at `(24,2)` (linked to a new `crypt_gate0` at `(27,2)`)
+    -- reaching the plate takes three separate pushes along the same row,
+    not one, since the block only moves one tile per bump. Deliberately
+    *not* a trivial one-push puzzle: once the block settles on the plate,
+    it's a real (permanent) obstacle sitting in the same row as the now-
+    open gate, so reaching the gate/chest afterward requires detouring
+    around the player's own block via row 1 or row 3 for one tile and
+    dropping back into row 2 -- an emergent side effect of "the block you
+    just placed is still a solid object," not something hand-scripted, and
+    a nice match for how the real games' own block puzzles work (the
+    solution can put an obstacle in your own way).
+- Verified headless (SDL dummy driver, scratch DB via monkeypatched
+  `main.SAVE_PATH`, confirmed the real `save.db`'s mtime unchanged
+  before/after): booted a real `Game`, loaded `crypt`, confirmed
+  `crypt_block0` starts at `(21,2)` and `crypt_gate0` starts closed;
+  drove three real `handle_move(1, 0)` calls and confirmed the block
+  advanced one tile per push (`22,2` -> `23,2` -> `24,2`) while the player
+  advanced into each of the block's vacated tiles in turn, landing on
+  `(24,2)` opened `crypt_gate0` (added to `open_gate_ids`, removed from
+  `self.gates`) via the real plate-match check in `handle_move`; confirmed
+  a further bump into the now-settled block returns `"push_block"` again
+  (it's a legal, if pointless, push against clear floor) rather than
+  `"blocked"`, proving the block is a real obstacle and not just a one-
+  time trigger that vanishes; walked the real detour (north/east/east/
+  south/east/east) around the settled block and through the open gate,
+  confirmed the chest opens through the real chest-dispatch path and
+  grants `gold_greater`'s gold, and confirmed re-bumping the same spot
+  doesn't re-fire (same `opened_chest_ids` no-op every other chest gets).
+  Ran `persist()` then booted a **second** fresh `Game` instance against
+  the same scratch save file and confirmed the block's pushed position,
+  the open gate, and the opened chest all survived the round-trip;
+  separately booted a **third** fresh instance against a brand-new
+  (never-persisted) save and confirmed the block starts back at its
+  template position `(21,2)`, proving the override-on-top-of-template
+  logic only ever applies when there's actually persisted state to apply.
+  Regression-checked `town_hub`/`armory`/a biome room/a Depths `proc:` room
+  all still load with empty `blocks`/`plates` lists and no errors, since
+  none of those rooms define either key. **Also visually inspected** via
+  rendered screenshots: before the push, the brown block, dim slate plate,
+  blue gate bars, and closed chest all reading as four distinct fixtures in
+  a row; after three pushes, the block sitting visibly on the plate's tile
+  (block drawn on top, per the plate-then-block draw order) and the gate
+  bars gone entirely from the render (confirming it actually opened,
+  not just logically).
+
+### Session 49 — colored key/gate pairs, closing the other half of wayfarer_adventure.md's "puzzles as texture" note
+
+Same recurring framing as sessions 44-48: read `PROGRESS.MD` and
+`wayfarer_adventure.md`, look up *Yoda Stories*/*Desktop Adventures* again,
+continue development. Session 48's own Known Limitations left exactly one
+named, sourced, never-built mechanic on the table: "Colored key/gate pairs
+are still unbuilt... this half is still just a single generic `"key"` item
+unlocking any `locked_door`, no color/type matching." This session builds
+that half.
+
+Re-researched both games directly (fresh web search) specifically for this
+mechanic before touching code, same discipline session 48 used for
+sokoban: Yoda Stories' own Fandom wiki (`Mission`/`Locator Map` pages)
+confirms Key Cards are explicitly color-coded ("keys come in many shapes,
+sizes and colors, but all serve the same purpose: opening doors & chests"),
+that they gate `Blockade Cell`/`Gate Cell` puzzles, and that the game's
+hint system deliberately generalizes to an item's *group* (Tools/Key
+Cards/Parts/Valuables) rather than naming the exact required item --
+confirming the real mechanic is "the right key for the right lock," not a
+single universal key. Desktop Adventures sources didn't surface a distinct
+colored-key description in this pass, but wayfarer_adventure.md's premise
+section already pairs the two games as "same engine, two skins," and this
+engine's own existing generic `"key"`/`locked_door` pair (session 10) is
+the mechanic being specialized here, not something invented fresh.
+
+- **`data/items.json`**: two new item defs, `key_copper`/`key_jade`,
+  shaped identically to the existing `"key"` (effect `"none"`, value 0,
+  auto-consumed on bump -- see below) -- flavor text names which door
+  color each opens. No `key_color` field or lookup table: the matching
+  item type is derived directly from the door's color (`f"key_{color}"`),
+  same "the string is the join key" convention `push_block`/`plate_off`
+  already use for their own sprite names, rather than adding a second
+  source of truth that could drift out of sync with the door data.
+- **`engine/room.py`**: zero changes needed. `locked_door_templates` are
+  raw dicts straight from `data/rooms/*.json` (confirmed by reading the
+  module before touching it) -- an optional `"color"` key on a
+  `locked_doors` entry just rides along for free, the same way `plates`'
+  `gate_id` already does, with no schema change and zero risk to every
+  room that doesn't define one.
+- **`main.py`**'s `"locked_door"` branch (`handle_move`): now reads
+  `door.get("color")`. No color -> exactly the original session-10
+  behavior (`"key"` opens it, unchanged, so `crypt_door0` needed zero
+  edits). A color -> the needed item becomes `f"key_{color}"`; a
+  wrong-colored key (or no key at all) leaves the door locked and prints a
+  color-naming message ("This door is banded in copper -- you need a
+  matching key") instead of the generic one, without ever touching (let
+  alone consuming) whatever *is* in the player's bag -- confirmed by
+  headless test, see below.
+- **`_load_assets`**: two new door tint variants (`locked_door_copper`,
+  `locked_door_jade`, both `make_tint_variant` off the same `gate_bars`
+  source art gate/locked_door already share) and two new key-item tint
+  variants (`item_key_copper`, `item_key_jade`, off `item_key`). Picked
+  copper (200, 90, 40, no blue at all) and jade (60, 170, 110, no red at
+  all) specifically to sit far apart from each other *and* from the two
+  colors already claimed on this same source art (gate's blue (120, 170,
+  220), the original locked_door's amber (210, 160, 60)) -- same "hue
+  combination, not just brightness" lesson sessions 46/47 already learned
+  the hard way for the biome tint markers, applied proactively here rather
+  than re-discovered.
+- **`_draw_fixtures`**: a locked door now draws `locked_door_{color}` if
+  it has one, else the plain `locked_door` sprite it always drew before --
+  one conditional, same pattern the trap loop already uses for
+  per-type sprite names (`AssetManager.get_sprite(trap["type"])`).
+- **`data/rooms/crypt.json`**: two new alcoves in the existing hand-authored
+  Crypt, same scoping call session 48 made for push-blocks and for the
+  same reason -- a procedurally-placed colored lock needs its own
+  solvability guarantee (the matching key must be placed somewhere
+  actually reachable *before* the door, not just anywhere in the seed),
+  which is a real but separately-scoped problem, not attempted this
+  session. Both new alcoves reuse the exact "seal a 1-tile pocket into an
+  existing region's own open interior, one wall-gap doorway" shape session
+  48 already established for the crypt_chest1 push-block reward, just
+  carved into `entry_hall` (a mostly-empty 13x18 rectangle with only three
+  pre-existing entities in it) instead of `back_hall`:
+  - Copper alcove: interior `(11,2)` (new `crypt_chest2`, `potion_greater`),
+    sealed by walling `(10,2)`/`(12,2)`/`(11,1)`, door (`crypt_door1`,
+    `color: "copper"`) at `(11,3)`, approached from the already-open
+    `(11,4)`.
+  - Jade alcove: interior `(11,15)` (new `crypt_chest3`,
+    `whetstone_greater`), sealed by walling `(10,15)`/`(12,15)`/`(11,14)`,
+    door (`crypt_door2`, `color: "jade"`) at `(11,16)`, approached from the
+    already-open `(11,17)`.
+  - The matching keys themselves (`crypt_key_copper` at `(3,2)`,
+    `crypt_key_jade` at `(3,17)`) are placed elsewhere in `entry_hall`,
+    both confirmed clear of every pre-existing item/enemy coordinate by
+    direct grid inspection before editing (not just eyeballed) -- same
+    discipline session 48 used before carving its own pocket.
+  - Deliberately **two** colors, not one: a single colored pair would only
+    ever prove "a key now has a name," not the actual discriminating
+    behavior the source games' own color-coding exists for (a key that
+    *doesn't* match still fails). Two independent color/door/chest triples
+    sitting in the same dungeon, verified cross-wise (a jade key bumping
+    the copper door, and vice versa, both correctly refused, see below),
+    is the smallest build that actually demonstrates the mechanic rather
+    than just renaming the existing one.
+- Verified via a standalone flood-fill script (same technique sessions
+  44/46/48 used for their own vault/pocket isolation proofs) before ever
+  touching game code: with all three locked doors (`crypt_door0`,
+  `crypt_door1`, `crypt_door2`) treated as closed, none of their three
+  interiors are reachable from the room's main corridor; opening any *one*
+  door makes only its own interior reachable, the other two staying
+  sealed; with all three open, all 405 floor tiles in the room are
+  reachable (unchanged from before this session's wall edits, confirming
+  nothing else in the room was accidentally disconnected).
+- Verified headless (SDL dummy driver, scratch DB via monkeypatched
+  `main.SAVE_PATH`, confirmed the real `save.db`'s mtime/md5 unchanged
+  before and after): booted a real `Game`, loaded `crypt`, confirmed all
+  three locked doors present with the expected `color` values (or `None`
+  for the original `crypt_door0`); bumped the copper door with an empty
+  inventory and confirmed it stays locked; gave the player a **jade** key
+  and confirmed bumping the copper door still refuses to open *and* the
+  jade key is not consumed by the failed attempt (`inventory.stacks` count
+  unchanged); gave the player the copper key and confirmed the copper door
+  opens and the key is consumed; walked into the copper alcove and
+  confirmed its chest opens through the real chest-dispatch path; repeated
+  the same sequence for the jade door/alcove (using the jade key already
+  in the bag from the earlier mismatch test); ran `persist()` then booted
+  a **second** fresh `Game` instance against the same scratch save and
+  confirmed both colored doors' unlocked state survived the round trip
+  while the untouched `crypt_door0` was still locked; as a regression
+  check, confirmed the plain `"key"` item still opens `crypt_door0`
+  exactly as it did before this session's changes. **Also visually
+  inspected** via rendered screenshots (a fresh, never-persisted save so
+  both colored doors render in their still-locked state): the copper and
+  jade doors reading as clearly distinct tinted-bars fixtures from each
+  other and from the room's original amber `locked_door`/blue `gate`, each
+  sitting correctly in its own small recessed wall alcove above its
+  reward chest; the copper and jade key items on the entry_hall floor
+  reading as distinctly orange-red vs. yellow-green at a glance, matching
+  their respective doors.
+
 ## Known Limitations / Future Work
 
 Roughly in likely-priority order — not committed to, just tracked:
 
+- **Push-block puzzles (session 48) exist in exactly one hand-authored
+  room (Crypt)** — not yet wired into either procedurally-generated
+  system (Depths `generate_room` or Adventure Mode's `generate_biome_room`).
+  Doing so needs its own solvability guarantee (block reachable, push path
+  straight/clear, the sealed reward pocket provably not severing some other
+  room's only path through that space) -- the same class of problem session
+  44 already solved once for the vault-ring case, just for a second fixture
+  type; deliberately not attempted this session, scoped down to a hand-
+  authored room specifically to avoid re-deriving that proof in the same
+  session the mechanic itself was first built.
+- ~~**Colored key/gate pairs are still unbuilt**~~ — closed out session 49:
+  `locked_doors` entries can now carry an optional `"color"`, matched
+  against a `key_<color>` item (`key_copper`/`key_jade` so far, two colors
+  built end-to-end in Crypt), with the original uncolored `"key"`/
+  `locked_door` pair (session 10) completely unchanged as the no-color
+  default. This closes wayfarer_adventure.md's premise-section pairing of
+  colored keys with sokoban blocks as the two puzzle types "texture around
+  the trade-chain spine" — both halves are now built. Same limitation as
+  push-block above, and for the identical reason: **colored doors exist in
+  exactly one hand-authored room (Crypt), not wired into either
+  procedurally-generated system** — a procedurally-placed colored lock
+  needs its matching key provably reachable *before* the door in the same
+  generated seed, a solvability question deliberately not attempted this
+  session.
 - ~~**Adventure Mode is three biomes and two quest-chain steps into a
   multi-session arc (sessions 44-46)**~~ — closed out session 47: all four
   of the design doc's biomes now exist (Scorched Wastes/Young Red Dragon/

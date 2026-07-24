@@ -365,13 +365,14 @@ class Player(Entity):
 
     def try_move(self, dx, dy, room, enemies, items, npcs=(),
                  locked_doors=(), gates=(), chests=(), switches=(), traps=(),
-                 locked_exits=(), blocked=None):
+                 locked_exits=(), blocks=(), blocked=None):
         """Resolve a single grid step: attack > npc > locked_door/gate
         (closed only -- caller filters) > locked_exit (Adventure Mode biome
         gating, see wayfarer_adventure.md -- caller filters to whichever
-        exits aren't unlocked yet) > blocked > exit > pickup > chest/
-        switch/trap > move. Does not mutate enemies/items/chests/switches/
-        traps -- caller applies combat/pickup/unlock/trigger effects.
+        exits aren't unlocked yet) > push_block (session 48) > blocked >
+        exit > pickup > chest/switch/trap > move. Does not mutate
+        enemies/items/chests/switches/traps/blocks -- caller applies
+        combat/pickup/unlock/trigger/push effects.
 
         Session 10: locked doors and gates are non-committal bumps (like
         attacking or talking -- the player doesn't step onto them), while
@@ -381,7 +382,16 @@ class Player(Entity):
         the move, the hazard just happens to you mid-step, same as a real
         dungeon trap. `traps` always holds every trap in the room (sprung or
         not, mirroring chests/switches) -- the caller decides whether one
-        has already been sprung."""
+        has already been sprung.
+
+        Session 48: a `block` is walk-onto in the sokoban sense -- the
+        player steps into the block's old tile *and* the block itself
+        shoves one tile further in the same direction, provided that
+        landing tile is plain floor and nothing else occupies it. Checked
+        before the generic `blocked` walkability check (same reason
+        locked_door/gate are) since `blocked` already folds block positions
+        in (see main.py's _blocked_positions) -- without this branch first,
+        every block would just read as an immovable wall."""
         self.facing = (dx, dy)
         new_x, new_y = self.x + dx, self.y + dy
 
@@ -404,6 +414,26 @@ class Player(Entity):
         for locked_exit in locked_exits:
             if locked_exit["x"] == new_x and locked_exit["y"] == new_y:
                 return {"type": "locked_exit", "exit": locked_exit}
+
+        for block in blocks:
+            if block["x"] == new_x and block["y"] == new_y:
+                push_x, push_y = new_x + dx, new_y + dy
+                if not room.is_walkable(push_x, push_y, blocked):
+                    return {"type": "blocked"}
+                if any(e.alive and e.x == push_x and e.y == push_y for e in enemies):
+                    return {"type": "blocked"}
+                if any(n.x == push_x and n.y == push_y for n in npcs):
+                    return {"type": "blocked"}
+                if any(c["x"] == push_x and c["y"] == push_y for c in chests):
+                    return {"type": "blocked"}
+                if any(s["x"] == push_x and s["y"] == push_y for s in switches):
+                    return {"type": "blocked"}
+                if any(i.x == push_x and i.y == push_y for i in items):
+                    return {"type": "blocked"}
+                if any(b is not block and b["x"] == push_x and b["y"] == push_y for b in blocks):
+                    return {"type": "blocked"}
+                self.x, self.y = new_x, new_y
+                return {"type": "push_block", "block": block, "to": (push_x, push_y)}
 
         if not room.is_walkable(new_x, new_y, blocked):
             return {"type": "blocked"}

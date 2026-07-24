@@ -249,6 +249,18 @@ class Game:
         # trap stays a harmless (but visible) fixture forever.
         self.traps = []
         self.sprung_trap_ids = set()
+        # Session 48: push-block puzzles (see engine/room.py's module
+        # docstring). `plates` mirrors switches (always holds every plate
+        # in the room; state is which sprite it picks via open_gate_ids, no
+        # separate tracking needed). `blocks` is the one fixture list here
+        # whose *position* mutates in play -- loaded from the room's
+        # template starting positions and overlaid with any persisted
+        # pushed position (see load_room), flushed via
+        # engine/save.py's block_positions table at the same three
+        # call sites room_drops already flushes from (persist(), the
+        # "exit" stairs/door branch, and Word of Recall).
+        self.plates = []
+        self.blocks = []
         # Room-based fog of war (session 10): region ids the player has
         # physically stood in, for the *current* room. Persisted via
         # room_flags like everything else above -- see load_room/persist.
@@ -424,9 +436,36 @@ class Game:
         AssetManager.load_sprite("gate_bars", f"{D}/gate_bars.png")
         AssetManager.make_tint_variant("gate", "gate_bars", (120, 170, 220))
         AssetManager.make_tint_variant("locked_door", "gate_bars", (210, 160, 60))
+        # Session 49: colored key/gate pairs (Yoda Stories/Desktop
+        # Adventures -- wayfarer_adventure.md's other never-built "puzzles
+        # as texture" mechanic, sokoban's sibling from the same doc line).
+        # Same "iron bars" source, tinted distinctly from both the generic
+        # amber locked_door above and each other -- copper leans red/orange
+        # (no blue at all), jade leans green (no red) -- so a colored door
+        # reads as visually different from a plain one and from its own
+        # sibling color, not just a hue shift of the same lock.
+        AssetManager.make_tint_variant("locked_door_copper", "gate_bars", (200, 90, 40))
+        AssetManager.make_tint_variant("locked_door_jade", "gate_bars", (60, 170, 110))
         AssetManager.make_placeholder("switch_off", (150, 40, 40), shape="square")
         AssetManager.make_placeholder("switch_on", (50, 180, 70), shape="square")
+        # Session 48: push-block puzzles (Yoda Stories/Desktop Adventures --
+        # see wayfarer_adventure.md's "sokoban blocks" note). No crate/
+        # boulder art in either sheet, same "no matching sprite" situation
+        # as the switches above -- a warm brown-stone square (block) reads
+        # as a physical obstacle distinct from the switch's own red/green,
+        # and the plate's dim slate-blue/lit gold pair (mirroring
+        # switch_off/on's own not-yet/triggered convention) reads as a
+        # floor marking rather than an obstacle.
+        AssetManager.make_placeholder("push_block", (140, 100, 60), shape="square")
+        AssetManager.make_placeholder("plate_off", (90, 95, 115), shape="square")
+        AssetManager.make_placeholder("plate_on", (210, 180, 60), shape="square")
         AssetManager.load_sprite("item_key", f"{I}/tile_30_9.png")
+        # Session 49: the matching colored key items, tinted the same way
+        # their doors are above -- picking up a copper key should visually
+        # imply "this opens the copper door" before the player ever reads
+        # the tooltip.
+        AssetManager.make_tint_variant("item_key_copper", "item_key", (200, 90, 40))
+        AssetManager.make_tint_variant("item_key_jade", "item_key", (60, 170, 110))
         # Session 39: dungeon-found spellbooks -- no readable/book art in
         # either sheet, same "no matching sprite" situation as the switches
         # above, so a placeholder (see AssetManager's new "book" shape) in a
@@ -712,6 +751,21 @@ class Game:
         self.switches = list(self.room.switch_templates)
         self.chests = list(self.room.chest_templates)
         self.traps = list(self.room.trap_templates)
+        self.plates = list(self.room.plate_templates)
+        # Session 48: overlay any previously-pushed position on top of each
+        # block's template starting position -- same "template is the
+        # default, a per-room save table is the override" split room_drops
+        # uses for taken/dropped items, just keyed by id instead of being a
+        # simple add/remove list (a block always exists, it just may have
+        # moved).
+        pushed = self.save.get_block_positions(room_id)
+        self.blocks = [
+            {"id": t["id"], "x": t["x"], "y": t["y"]}
+            for t in self.room.block_templates
+        ]
+        for block in self.blocks:
+            if block["id"] in pushed:
+                block["x"], block["y"] = pushed[block["id"]]
 
         self.enemies = []
         for t in enemy_templates:
@@ -795,8 +849,17 @@ class Game:
     def _blocked_positions(self):
         """Currently-closed locked doors/gates, as a set of (x, y) --
         passed to Player.try_move/Room.is_walkable so a still-closed
-        fixture blocks movement like a wall would."""
-        return {(d["x"], d["y"]) for d in self.locked_doors} | {(g["x"], g["y"]) for g in self.gates}
+        fixture blocks movement like a wall would. Session 48: also folds
+        in every block's current position -- a block is a physical
+        obstacle for enemy pathing, spell line-of-sight, and the player's
+        own non-push movement, exactly like a locked gate, for every
+        purpose *except* the player's own push (Player.try_move checks its
+        own `blocks` list first, before ever consulting this set)."""
+        return (
+            {(d["x"], d["y"]) for d in self.locked_doors}
+            | {(g["x"], g["y"]) for g in self.gates}
+            | {(b["x"], b["y"]) for b in self.blocks}
+        )
 
     def _locked_exits(self):
         """Session 45 (Wayfarer Adventure Mode biome-unlock gating): any
@@ -830,6 +893,7 @@ class Game:
         Called on room transition and on quit -- never per-frame."""
         self.save.set_room_flags(self.current_room_id, self._current_room_flags())
         self.save.set_room_drops(self.current_room_id, self.room_drops)
+        self.save.set_block_positions(self.current_room_id, self.blocks)
         if self.current_room_id.startswith("proc:"):
             epoch, cleared_turn = self._room_meta(self.current_room_id)
             self.save.set_room_meta(self.current_room_id, epoch, cleared_turn)
@@ -913,7 +977,7 @@ class Game:
             dx, dy, self.room, self.enemies, self.items, self.npcs,
             locked_doors=self.locked_doors, gates=self.gates,
             chests=self.chests, switches=self.switches, traps=self.traps,
-            locked_exits=self._locked_exits(),
+            locked_exits=self._locked_exits(), blocks=self.blocks,
             blocked=self._blocked_positions(),
         )
         self._reveal_region_at_player()
@@ -1016,17 +1080,36 @@ class Game:
                     messages.append("Inventory full.")
 
         elif kind == "locked_door":
+            # Session 49 (Yoda Stories/Desktop Adventures -- see
+            # wayfarer_adventure.md's "colored key/gate pairs" note, the
+            # second half of the design doc's "puzzles as texture" line
+            # left unbuilt after session 48's sokoban blocks): a door with
+            # no "color" keeps the original session-10 behavior (any plain
+            # "key" opens it). A colored door only accepts the
+            # matching-colored key ("key_<color>") -- a wrong-colored key
+            # stays in the bag, same as having no key at all.
             door = result["door"]
-            if self.inventory.remove_item("key"):
+            color = door.get("color")
+            needed_item = f"key_{color}" if color else "key"
+            if self.inventory.remove_item(needed_item):
                 self.unlocked_door_ids.add(door["id"])
                 self.locked_doors = [d for d in self.locked_doors if d["id"] != door["id"]]
-                messages.append("You unlock the door with a key.")
+                if color:
+                    messages.append(f"You unlock the {color} door with the matching key.")
+                else:
+                    messages.append("You unlock the door with a key.")
                 AssetManager.play_sfx("door")
+            elif color:
+                messages.append(f"This door is banded in {color} -- you need a matching key.")
             else:
                 messages.append("The door is locked. You need a key.")
 
         elif kind == "gate":
-            messages.append("An iron gate blocks the way. Find the switch.")
+            # Session 48: a gate can now be triggered by either a switch
+            # (step-on) or a plate (block-weight) -- kept generic rather
+            # than naming "the switch" specifically, since bumping a closed
+            # gate doesn't tell the player which kind of trigger it has.
+            messages.append("An iron gate blocks the way. Something nearby must trigger it.")
 
         elif kind == "locked_exit":
             # Session 45 (Wayfarer Adventure Mode biome-unlock gating) --
@@ -1118,6 +1201,29 @@ class Game:
                 messages.append("You hear a distant mechanism unlock.")
                 AssetManager.play_sfx("door")
 
+        elif kind == "push_block":
+            # Session 48 (Yoda Stories/Desktop Adventures' own "push/pull
+            # blocks onto a marked square" puzzles -- see
+            # wayfarer_adventure.md): the block itself already occupies the
+            # tile the player just stepped into their own try_move call, so
+            # only the block's *new* position needs updating here.
+            # self.blocks is mutated here but only flushed to
+            # engine/save.py's block_positions table at the same three
+            # checkpoints self.room_drops already flushes at (persist(),
+            # the "exit" stairs/door branch, Word of Recall) -- same
+            # in-memory-first convention session 43 established.
+            block = result["block"]
+            to_x, to_y = result["to"]
+            block["x"], block["y"] = to_x, to_y
+            plate = next((p for p in self.plates if p["x"] == to_x and p["y"] == to_y), None)
+            if plate is not None and plate["gate_id"] not in self.open_gate_ids:
+                self.open_gate_ids.add(plate["gate_id"])
+                self.gates = [g for g in self.gates if g["id"] != plate["gate_id"]]
+                messages.append("The block settles onto the plate -- a distant mechanism unlocks.")
+                AssetManager.play_sfx("door")
+            else:
+                messages.append("You shove the block forward.")
+
         elif kind == "trap":
             trap = result["trap"]
             if trap["id"] not in self.sprung_trap_ids:
@@ -1146,6 +1252,7 @@ class Game:
             # this state with the destination's.
             self.save.set_room_flags(self.current_room_id, self._current_room_flags())
             self.save.set_room_drops(self.current_room_id, self.room_drops)
+            self.save.set_block_positions(self.current_room_id, self.blocks)
             if self.current_room_id.startswith("proc:"):
                 epoch, cleared_turn = self._room_meta(self.current_room_id)
                 self.save.set_room_meta(self.current_room_id, epoch, cleared_turn)
@@ -2240,6 +2347,7 @@ class Game:
             target_room, target_x, target_y = recall_target
             self.save.set_room_flags(self.current_room_id, self._current_room_flags())
             self.save.set_room_drops(self.current_room_id, self.room_drops)
+            self.save.set_block_positions(self.current_room_id, self.blocks)
             if self.current_room_id.startswith("proc:"):
                 epoch, cleared_turn = self._room_meta(self.current_room_id)
                 self.save.set_room_meta(self.current_room_id, epoch, cleared_turn)
@@ -2340,6 +2448,23 @@ class Game:
             sprite = AssetManager.get_sprite(name)
             if sprite:
                 self.room_surface.blit(sprite, (switch["x"] * TILE_SIZE, switch["y"] * TILE_SIZE))
+        for plate in self.plates:
+            # Session 48: drawn before blocks below so a block resting on
+            # top of its plate still shows the block, not the floor marking
+            # underneath -- same draw-order reasoning floor/wall tiles
+            # already use for exit-kind overlays in Room.draw.
+            if not self._is_visible(plate["x"], plate["y"]):
+                continue
+            name = "plate_on" if plate["gate_id"] in self.open_gate_ids else "plate_off"
+            sprite = AssetManager.get_sprite(name)
+            if sprite:
+                self.room_surface.blit(sprite, (plate["x"] * TILE_SIZE, plate["y"] * TILE_SIZE))
+        for block in self.blocks:
+            if not self._is_visible(block["x"], block["y"]):
+                continue
+            sprite = AssetManager.get_sprite("push_block")
+            if sprite:
+                self.room_surface.blit(sprite, (block["x"] * TILE_SIZE, block["y"] * TILE_SIZE))
         for gate in self.gates:
             if not self._is_visible(gate["x"], gate["y"]):
                 continue
@@ -2349,7 +2474,13 @@ class Game:
         for door in self.locked_doors:
             if not self._is_visible(door["x"], door["y"]):
                 continue
-            sprite = AssetManager.get_sprite("locked_door")
+            # Session 49: a colored door draws its own tint variant
+            # (registered in _load_assets) instead of the generic amber
+            # one, so the correct-colored key reads as an obvious match at
+            # a glance.
+            color = door.get("color")
+            sprite_name = f"locked_door_{color}" if color else "locked_door"
+            sprite = AssetManager.get_sprite(sprite_name)
             if sprite:
                 self.room_surface.blit(sprite, (door["x"] * TILE_SIZE, door["y"] * TILE_SIZE))
         for trap in self.traps:
