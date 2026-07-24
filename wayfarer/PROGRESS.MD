@@ -4991,34 +4991,165 @@ the mechanic being specialized here, not something invented fresh.
   reading as distinctly orange-red vs. yellow-green at a glance, matching
   their respective doors.
 
+### Session 50 — colored key/gate pairs wired into Adventure Mode's procedurally-generated biome vaults
+
+Same recurring framing as sessions 44-49: read `PROGRESS.MD` and
+`wayfarer_adventure.md`, look up *Yoda Stories*/*Desktop Adventures* again,
+continue development. With the design doc's own phased build order (session
+47) and both named "puzzles as texture" mechanics (sokoban blocks session 48,
+colored keys session 49) now built, both of the two remaining Known
+Limitations entries flagged the exact same follow-on: colored locks (and,
+separately, push-blocks) "exist in exactly one hand-authored room (Crypt) --
+not yet wired into either procedurally-generated system," each needing "its
+own solvability guarantee" before being safe to generate. Re-reading
+`generate_biome_room` (`engine/procgen.py`) before touching anything showed
+that guarantee already exists for the colored-key half: the guaranteed vault
+door/key pair session 44 built (and proved reachable via a 500-seed
+flood-fill check, with the vault-ring isolation fix making the lock provably
+the *only* entrance) already places a generic `"key"` item at a point proven
+reachable *before* the vault, and a locked door at a point proven to gate it
+-- coloring that same pair is a pure data change (which color string the
+door/item use) with the underlying geometry, placement logic, and
+reachability proof completely untouched. This is why colored keys, not
+push-blocks, is this session's pick: push-blocks would need a *new*
+solvability proof (block reachable, push path straight/clear, reward pocket
+provably not severing another room's path) built from scratch, while colored
+keys could reuse a proof that already existed. Push-block-in-procgen is still
+unbuilt, left for a future session.
+
+- **`engine/procgen.py`**: `BIOME_DEFS` gains a `"lock_color"` field per
+  biome -- `scorched_wastes` -> `copper`, `frostreach` -> `azure`,
+  `stormfell` -> `violet`, `fenmire` -> `jade`, `final_area` -> `gold`.
+  Reuses session 49's own copper/jade colors for two of the five (never
+  rendered in the same room as each other or as Crypt's own copper/jade
+  alcoves, so no distinctness risk from the reuse) and adds three new ones.
+  In the guaranteed-vault placement block, the door dict now carries
+  `"color": lock_color` (omitted entirely when absent, so Depths'
+  `generate_room()` -- deliberately left untouched, same "bigger blast
+  radius, lower stakes" reasoning session 44 already used to leave a related
+  vault-carving bug unfixed there -- needs zero changes) and the key item's
+  `type` becomes `f"key_{lock_color}"` instead of the bare `"key"`. Both
+  `main.py`'s `"locked_door"` handling and its fixture-draw dispatch
+  (session 49) already read `door.get("color")` generically -- **zero
+  engine-logic changes were needed anywhere**, only the data this session
+  adds.
+- **`data/items.json`**: three new item defs, `key_azure`/`key_violet`/
+  `key_gold`, shaped identically to `key_copper`/`key_jade`.
+- **`main.py`'s `_load_assets`**: registering the matching sprites surfaced a
+  real bug worth its own note. The first attempt tinted all three new colors
+  off `item_key` the same way session 49 tinted copper/jade -- looked fine
+  as tuples on paper, but a rendered 8x-scaled side-by-side comparison sheet
+  of all six key sprites (plain + 5 colors) showed two distinct failures:
+  azure/violet came out muddy brown instead of blue/violet (item_key's
+  source pixels carry almost no blue channel anywhere in the sprite, unlike
+  `gate_bars` -- confirmed by directly sampling every sprite's pixel
+  colors -- so a tint needing blue to read has nothing to multiply against;
+  same class of `BLEND_RGB_MULT`-can-only-darken ceiling sessions 46/47 hit,
+  just for a different base image), and separately, **gold landed visually
+  indistinguishable from copper and even the plain uncolored key** --
+  item_key's own native coloring is already warm red/orange with no blue, so
+  a red+green/no-blue "gold" wash barely shifts an already-similar-looking
+  base. Fixed by using this codebase's existing fallback for "no matching art
+  for the color/shape needed" (the same call already made for switches/
+  push-blocks/plates/spellbooks): all three now render as a small colored
+  diamond placeholder (`make_placeholder`, `shape="diamond"`) instead of a
+  tint, in the exact target hue -- re-rendered and re-sampled, all three read
+  as unambiguously blue/violet/gold with no ceiling problem, and (since
+  `make_placeholder` has no such ceiling) no risk of quietly regressing again
+  the way a fourth or fifth tint attempt against this base art might. Session
+  49's own copper/jade tints are unchanged and out of scope (their mutual
+  distinctness from each other, the actual functional requirement, was
+  already true and still is) -- only this session's own three new colors
+  needed the fix. Worth remembering alongside sessions 46/47's own tint
+  notes: the base-art ceiling problem isn't unique to `gate_bars`, and a
+  side-by-side rendered comparison of *every* variant sharing a base image
+  (not just the newest one against its own target color) is the check that
+  actually catches a wash indistinguishable from a sibling or the plain
+  original, since a single tuple can look reasonable in isolation and still
+  fail that comparison.
+- **`data/rooms/crypt.json`**: untouched -- Crypt's own copper/jade alcoves
+  (session 49) are a separate, still-unrelated hand-authored use of the same
+  color-matching mechanism, not migrated or duplicated.
+- Verified directly (bypassing pygame): stress-tested
+  `generate_biome_room` across all 5 biomes x 200 seeds each (1000 total,
+  915 actually placing a vault, the rest hitting session 44's own documented
+  no-room-for-a-vault fallback where no door/key exists at all) with a
+  flood-fill reachability checker -- for every placed vault, confirmed the
+  door's `color` always matches its biome's `lock_color`, the key's `type`
+  is always the matching `key_<color>`, the vault interior is unreachable
+  with the door treated as closed, the key's own tile *is* reachable with
+  the door closed, and the vault interior becomes fully reachable once the
+  door is treated as open -- zero failures, confirming coloring the lock
+  introduced no new solvability risk on top of session 44's existing proof.
+  Verified headless (SDL dummy driver, scratch DB via monkeypatched
+  `main.SAVE_PATH`, confirmed the real `save.db`'s md5 unchanged
+  before/after -- there was in fact a real `save.db` present this session,
+  unlike session 46's run): for each of the 5 biomes, booted a real `Game`,
+  loaded `biome:<id>:<seed>` (retrying with a fresh seed on the rare
+  no-vault-fallback roll), confirmed exactly one locked door with the
+  expected color and exactly one matching-typed key item generated; gave the
+  player every *other* color's key (all 4 siblings plus the plain
+  uncolored `"key"`) and confirmed a real `handle_move` bump into the door
+  leaves it locked and consumes nothing from the inventory; then gave the
+  correct color's key and confirmed the same bump unlocks the door and
+  consumes exactly that key. Ran `persist()` then booted a **second** fresh
+  `Game` instance against the same scratch save and confirmed the Final
+  Area's door stayed unlocked across the round trip. Regression-checked
+  Crypt's own three doors (`crypt_door0`/`None`, `crypt_door1`/`copper`,
+  `crypt_door2`/`jade`) and floor key set (`key`/`key_copper`/`key_jade`)
+  are completely unaffected, and that `town_hub`'s exit set is still exactly
+  the expected seven. **Also visually inspected** via rendered screenshots:
+  all five biome-vault doors reading as five distinct tinted-bars colors at
+  a glance (direct pixel samples matched each `lock_color`'s tuple exactly:
+  e.g. frostreach's door sampled `(20, 21, 52)`, stormfell's `(31, 19,
+  51)` -- both clearly blue-leaning/violet-leaning respectively, distinct
+  from the plain amber `locked_door` and blue `gate`); a full Frostreach room
+  render showing the azure key, the mini-boss, the vault chest, and ordinary
+  floor loot all rendering correctly together with fog of war and the room
+  name in the HUD; and the 8x key-sprite comparison sheet (see the asset bug
+  above) confirming the final fix reads correctly: copper/gold/jade/azure/
+  violet all now visually distinct from each other and from the plain key.
+
 ## Known Limitations / Future Work
 
 Roughly in likely-priority order — not committed to, just tracked:
 
 - **Push-block puzzles (session 48) exist in exactly one hand-authored
-  room (Crypt)** — not yet wired into either procedurally-generated
+  room (Crypt)** — still not wired into either procedurally-generated
   system (Depths `generate_room` or Adventure Mode's `generate_biome_room`).
   Doing so needs its own solvability guarantee (block reachable, push path
   straight/clear, the sealed reward pocket provably not severing some other
   room's only path through that space) -- the same class of problem session
   44 already solved once for the vault-ring case, just for a second fixture
-  type; deliberately not attempted this session, scoped down to a hand-
-  authored room specifically to avoid re-deriving that proof in the same
-  session the mechanic itself was first built.
-- ~~**Colored key/gate pairs are still unbuilt**~~ — closed out session 49:
-  `locked_doors` entries can now carry an optional `"color"`, matched
-  against a `key_<color>` item (`key_copper`/`key_jade` so far, two colors
-  built end-to-end in Crypt), with the original uncolored `"key"`/
-  `locked_door` pair (session 10) completely unchanged as the no-color
-  default. This closes wayfarer_adventure.md's premise-section pairing of
-  colored keys with sokoban blocks as the two puzzle types "texture around
-  the trade-chain spine" — both halves are now built. Same limitation as
-  push-block above, and for the identical reason: **colored doors exist in
-  exactly one hand-authored room (Crypt), not wired into either
-  procedurally-generated system** — a procedurally-placed colored lock
-  needs its matching key provably reachable *before* the door in the same
-  generated seed, a solvability question deliberately not attempted this
-  session.
+  type, and unlike colored keys (see below) that proof genuinely doesn't
+  exist yet for this mechanic -- still real, unattempted work, not just a
+  copy of the colored-key session.
+- ~~**Colored key/gate pairs are still unbuilt**~~ — closed out session 49
+  (Crypt only), then session 50 closed the "not wired into either
+  procedurally-generated system" half too, for Adventure Mode specifically:
+  `BIOME_DEFS` entries (`engine/procgen.py`) now carry a `lock_color`, and
+  the guaranteed vault door/key pair every biome already generates (session
+  44) is colored with it -- `key_copper`/`key_azure`/`key_violet`/
+  `key_jade`/`key_gold` across the five biomes. This turned out to need no
+  new solvability proof at all (unlike push-block's still-open case above):
+  session 44's own vault-ring reachability guarantee already places the key
+  at a point proven reachable before the door, so coloring the pair is a
+  pure data change riding an existing proof, confirmed by re-running the
+  same flood-fill check across 1000 biome/seed combinations with zero
+  failures. Depths' `generate_room()` still generates only the plain
+  uncolored `"key"` -- deliberately unchanged, same "bigger blast radius on
+  43 sessions of existing content, lower stakes since a Depths vault is
+  bonus loot" reasoning session 44 already used to leave that generator's
+  own vault-ring bug unfixed. See session 50's own PROGRESS.MD entry for a
+  real asset bug this surfaced: `BLEND_RGB_MULT` tinting off `item_key`
+  cannot produce a blue/violet result (that source art has almost no blue
+  channel anywhere) and barely shifts a gold wash at all (the art's own
+  native color is already warm red/orange) -- fixed by using placeholder
+  diamonds instead of tints for all three new key colors, a reminder that a
+  side-by-side comparison against *every* sibling sharing a base image (not
+  just the newest tint alone) is the check that actually catches this,
+  since a tuple that looks reasonable in isolation can still land
+  indistinguishable from a sibling or the plain original.
 - ~~**Adventure Mode is three biomes and two quest-chain steps into a
   multi-session arc (sessions 44-46)**~~ — closed out session 47: all four
   of the design doc's biomes now exist (Scorched Wastes/Young Red Dragon/

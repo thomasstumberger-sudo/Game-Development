@@ -769,11 +769,22 @@ BIOME_DEFS = {
     # the Scorched Wastes' own door (16, 4). Session 45 (Frostreach)
     # parameterizes it per biome so a second town door doesn't silently
     # reuse the first door's landing spot.
+    # `lock_color` (session 50, closing wayfarer_adventure.md's "colored
+    # key/gate pairs... not wired into either procedurally-generated system"
+    # Known Limitations note): the guaranteed vault door below is generated
+    # with this color, matched against a `key_<color>` item generated at the
+    # same already-proven-reachable key point session 44's flood-fill fix
+    # guarantees -- no new solvability question, since the geometry and
+    # reachability check are completely unchanged from before this session,
+    # only the door/item type strings differ. Reuses session 49's own
+    # copper/jade colors for two biomes (never rendered in the same room, so
+    # no distinctness risk from reuse) and adds three new ones for the rest.
     "scorched_wastes": {
         "name": "Scorched Wastes",
         "boss_type": "young_red_dragon",
         "fragment_id": "ember_fragment",
         "town_return": (16, 6),
+        "lock_color": "copper",
     },
     # Session 45 (Wayfarer Adventure Mode, see wayfarer_adventure.md):
     # second biome, ice/tundra terrain flavor, cold-elemental mini-boss --
@@ -786,6 +797,7 @@ BIOME_DEFS = {
         "boss_type": "young_white_dragon",
         "fragment_id": "frost_fragment",
         "town_return": (26, 6),
+        "lock_color": "azure",
     },
     # Session 46 (Wayfarer Adventure Mode, see wayfarer_adventure.md): third
     # biome, ruins/highlands terrain flavor, lightning-elemental mini-boss --
@@ -798,6 +810,7 @@ BIOME_DEFS = {
         "boss_type": "young_blue_dragon",
         "fragment_id": "storm_fragment",
         "town_return": (6, 6),
+        "lock_color": "violet",
     },
     # Session 47 (Wayfarer Adventure Mode, see wayfarer_adventure.md):
     # fourth and last of the design doc's own biome table -- swamp/jungle
@@ -810,6 +823,7 @@ BIOME_DEFS = {
         "boss_type": "young_green_dragon",
         "fragment_id": "mire_fragment",
         "town_return": (11, 4),
+        "lock_color": "jade",
     },
     # Session 47: the design doc's Final Area -- unlocked once every
     # fragment is held (see data/adventure_quests.json's guide_final, whose
@@ -831,6 +845,7 @@ BIOME_DEFS = {
         "boss_type": "elder_dragon",
         "final_reward": True,
         "town_return": (21, 4),
+        "lock_color": "gold",
     },
 }
 
@@ -1050,10 +1065,14 @@ def generate_biome_room(seed, biome_id):
 
         room_occupied[key_room_i].add(key_pt)
         door_id = f"biome_{biome_id}_{seed}_door0"
-        locked_doors.append({"id": door_id, "x": cx, "y": cy})
+        lock_color = biome.get("lock_color")
+        door = {"id": door_id, "x": cx, "y": cy}
+        if lock_color:
+            door["color"] = lock_color
+        locked_doors.append(door)
         items.append({
             "id": f"biome_{biome_id}_{seed}_key0",
-            "type": "key",
+            "type": f"key_{lock_color}" if lock_color else "key",
             "x": key_pt[0], "y": key_pt[1],
         })
 

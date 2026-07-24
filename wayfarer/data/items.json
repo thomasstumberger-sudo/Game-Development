@@ -139,5 +139,26 @@
     "effect": "none",
     "value": 0,
     "description": "Opens the matching jade-banded door. Consumed automatically -- no need to press U."
+  },
+  "key_azure": {
+    "name": "Azure Key",
+    "sprite": "item_key_azure",
+    "effect": "none",
+    "value": 0,
+    "description": "Opens the matching azure-banded door. Consumed automatically -- no need to press U."
+  },
+  "key_violet": {
+    "name": "Violet Key",
+    "sprite": "item_key_violet",
+    "effect": "none",
+    "value": 0,
+    "description": "Opens the matching violet-banded door. Consumed automatically -- no need to press U."
+  },
+  "key_gold": {
+    "name": "Gold Key",
+    "sprite": "item_key_gold",
+    "effect": "none",
+    "value": 0,
+    "description": "Opens the matching gold-banded door. Consumed automatically -- no need to press U."
   }
 }

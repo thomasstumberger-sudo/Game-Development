@@ -446,6 +446,18 @@ class Game:
         # sibling color, not just a hue shift of the same lock.
         AssetManager.make_tint_variant("locked_door_copper", "gate_bars", (200, 90, 40))
         AssetManager.make_tint_variant("locked_door_jade", "gate_bars", (60, 170, 110))
+        # Session 50: three more colors, wiring colored key/gate pairs into
+        # Adventure Mode's own procedurally-generated biome vaults (see
+        # BIOME_DEFS' new "lock_color" field in procgen.py) -- azure leans
+        # blue with green suppressed (distinct from gate's own blue, which
+        # has high green), violet is red+blue with green suppressed, gold
+        # pushes green closer to red than the plain amber locked_door does
+        # while dropping blue further -- all verified distinct from each
+        # other and from the four existing gate_bars tints via a rendered
+        # screenshot and direct pixel sample (see PROGRESS.MD session 50).
+        AssetManager.make_tint_variant("locked_door_azure", "gate_bars", (50, 80, 210))
+        AssetManager.make_tint_variant("locked_door_violet", "gate_bars", (170, 60, 200))
+        AssetManager.make_tint_variant("locked_door_gold", "gate_bars", (230, 200, 40), strength=0.8)
         AssetManager.make_placeholder("switch_off", (150, 40, 40), shape="square")
         AssetManager.make_placeholder("switch_on", (50, 180, 70), shape="square")
         # Session 48: push-block puzzles (Yoda Stories/Desktop Adventures --
@@ -466,6 +478,28 @@ class Game:
         # the tooltip.
         AssetManager.make_tint_variant("item_key_copper", "item_key", (200, 90, 40))
         AssetManager.make_tint_variant("item_key_jade", "item_key", (60, 170, 110))
+        # Session 50: matching key items for the three new biome-vault
+        # colors above -- none tint cleanly off item_key the way copper/jade
+        # did. A rendered screenshot and direct pixel sample showed two
+        # separate flavors of the same underlying problem: item_key's source
+        # pixels carry almost no blue channel at all (unlike gate_bars,
+        # whose blue/violet door tints above read cleanly), so azure/violet
+        # -- which need blue to read -- came out muddy brown, since
+        # BLEND_RGB_MULT can only ever scale a channel down from what the
+        # base already has, never invent one. Gold's failure is the mirror
+        # case: item_key's own native coloring is already warm red/orange
+        # with no blue, so a red+green/no-blue "gold" wash barely shifts it
+        # at all -- an 8x side-by-side render showed gold landing
+        # indistinguishable from both copper and the plain uncolored key.
+        # Same class of base-art ceiling sessions 46/47 already hit for a
+        # different sprite, just discovered here before it shipped rather
+        # than after. Fixed the same way this codebase always resolves "no
+        # matching art for the color/shape needed" (switches/blocks/plates/
+        # spellbooks): a small diamond placeholder in the actual target hue
+        # for all three, rather than a tint of unsuitable source art.
+        AssetManager.make_placeholder("item_key_azure", (50, 90, 220), size=16, shape="diamond")
+        AssetManager.make_placeholder("item_key_violet", (170, 60, 210), size=16, shape="diamond")
+        AssetManager.make_placeholder("item_key_gold", (230, 200, 40), size=16, shape="diamond")
         # Session 39: dungeon-found spellbooks -- no readable/book art in
         # either sheet, same "no matching sprite" situation as the switches
         # above, so a placeholder (see AssetManager's new "book" shape) in a
