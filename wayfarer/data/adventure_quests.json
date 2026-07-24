@@ -1,0 +1,50 @@
+[
+  {
+    "id": "guide_frostreach",
+    "giver_npc": "guide",
+    "biome": "scorched_wastes",
+    "wants": {"type": "artifact", "id": "ember_fragment"},
+    "gives": {"type": "unlock_biome", "id": "frostreach"},
+    "dialogue": {
+      "intro": "The northern pass into the Frostreach is sealed by old magic. Bring me proof you've bested the Scorched Wastes and I'll open the way.",
+      "incomplete": "Still no word from the Wastes. Come back once you've claimed what's guarded there.",
+      "success": "An Ember-Charred Fragment -- so it's true. The northern pass is open to you now. The Frostreach awaits, adventurer."
+    }
+  },
+  {
+    "id": "guide_stormfell",
+    "giver_npc": "guide",
+    "biome": "frostreach",
+    "wants": {"type": "artifact", "id": "frost_fragment"},
+    "gives": {"type": "unlock_biome", "id": "stormfell"},
+    "dialogue": {
+      "intro": "The western ruins of Stormfell answer to nothing but a storm's own fury -- and proof from the Frostreach, if you've truly walked it.",
+      "incomplete": "The ruins stay dark without word from the Frostreach. Bring me what's guarded there.",
+      "success": "A Frost-Bound Fragment -- the Frostreach is truly conquered, then. The western ruins are open. Mind the lightning in Stormfell, adventurer."
+    }
+  },
+  {
+    "id": "guide_fenmire",
+    "giver_npc": "guide",
+    "biome": "stormfell",
+    "wants": {"type": "artifact", "id": "storm_fragment"},
+    "gives": {"type": "unlock_biome", "id": "fenmire"},
+    "dialogue": {
+      "intro": "South of here the Fenmire swallows every path whole -- but I'll open a way through the bog, if you've truly weathered Stormfell's storms.",
+      "incomplete": "The bog stays sealed without word from Stormfell. Bring me what's guarded there.",
+      "success": "A Storm-Cloven Fragment -- Stormfell answers to you now. The Fenmire's paths are open. Watch your footing in the bog, adventurer."
+    }
+  },
+  {
+    "id": "guide_final",
+    "giver_npc": "guide",
+    "biome": "fenmire",
+    "wants": {"type": "artifact", "id": "mire_fragment"},
+    "gives": {"type": "unlock_biome", "id": "final_area"},
+    "dialogue": {
+      "intro": "Four fragments, four corners of the frontier -- if the Fenmire has truly yielded its own, you hold everything the old seal at the world's heart was built to keep out.",
+      "incomplete": "The seal answers to all four fragments together, not three. Find what the Fenmire guards.",
+      "success": "Ember, frost, storm, and mire, all in one hand -- the seal breaks. What waits beyond is yours to face, adventurer. Go carefully."
+    }
+  }
+]

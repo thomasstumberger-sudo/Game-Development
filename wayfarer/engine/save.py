@@ -160,6 +160,37 @@ class SaveManager:
                 PRIMARY KEY (room_id, entity_id)
             )"""
         )
+        # Wayfarer Adventure Mode (see wayfarer/wayfarer_adventure.md): a
+        # flat "have we ever claimed this fragment" set, same shape/
+        # persistence reasoning as known_spells -- a world-progression fact,
+        # not something that can be un-owned.
+        self.conn.execute(
+            """CREATE TABLE IF NOT EXISTS artifact_fragments (
+                fragment_id TEXT PRIMARY KEY
+            )"""
+        )
+        # Session 45: the fetch/trade quest chain's own persisted state --
+        # same flat "have we ever crossed this line" shape as known_spells/
+        # artifact_fragments, per wayfarer_adventure.md's own proposed
+        # schema. Biome-unlock gating (main.py's _locked_exits) reads this
+        # directly rather than a separate unlocked-biomes table, since each
+        # quest id already maps to exactly one biome unlock.
+        self.conn.execute(
+            """CREATE TABLE IF NOT EXISTS completed_adventure_quests (
+                quest_id TEXT PRIMARY KEY
+            )"""
+        )
+        # Session 48: push-block puzzles (researched via Yoda Stories/
+        # Desktop Adventures -- see wayfarer_adventure.md's "sokoban blocks"
+        # note) -- a block's live position after being pushed around, same
+        # full-replace-per-room shape/reasoning as room_drops (a block needs
+        # its position remembered, not just a boolean per entity_id).
+        self.conn.execute(
+            """CREATE TABLE IF NOT EXISTS block_positions (
+                room_id TEXT, entity_id TEXT, x INTEGER, y INTEGER,
+                PRIMARY KEY (room_id, entity_id)
+            )"""
+        )
         self.conn.commit()
 
     def has_save(self):
@@ -174,7 +205,8 @@ class SaveManager:
         for table in (
             "player", "inventory", "room_flags", "room_meta",
             "discovered_rooms", "known_spells", "equipment_instances",
-            "room_drops",
+            "room_drops", "artifact_fragments", "completed_adventure_quests",
+            "block_positions",
         ):
             self.conn.execute(f"DELETE FROM {table}")
         self.conn.commit()
@@ -239,6 +271,12 @@ class SaveManager:
         spell_rows = self.conn.execute("SELECT spell_id FROM known_spells")
         known_spells = {spell_id for (spell_id,) in spell_rows}
 
+        fragment_rows = self.conn.execute("SELECT fragment_id FROM artifact_fragments")
+        artifact_fragments = {fragment_id for (fragment_id,) in fragment_rows}
+
+        quest_rows = self.conn.execute("SELECT quest_id FROM completed_adventure_quests")
+        completed_adventure_quests = {quest_id for (quest_id,) in quest_rows}
+
         instance_rows = self.conn.execute(
             "SELECT instance_id, base_type, enchant, cursed, identified FROM equipment_instances"
         )
@@ -259,6 +297,8 @@ class SaveManager:
             "equipment_instances": equipment_instances,
             "inventory": inventory,
             "known_spells": known_spells,
+            "artifact_fragments": artifact_fragments,
+            "completed_adventure_quests": completed_adventure_quests,
             "current_room": current_room,
             "pos": pos,
             "seed": seed,
@@ -274,6 +314,8 @@ class SaveManager:
             "equipment_instances": {},
             "inventory": {},
             "known_spells": set(),
+            "artifact_fragments": set(),
+            "completed_adventure_quests": set(),
             "current_room": DEFAULT_ROOM,
             "pos": DEFAULT_SPAWN,
             "seed": random.randint(0, 2**31 - 1),
@@ -283,7 +325,8 @@ class SaveManager:
         }
 
     def save_game(self, player, inventory, current_room_id, seed, turn_count,
-                   depths_kills, quest_index, known_spells):
+                   depths_kills, quest_index, known_spells, artifact_fragments=(),
+                   completed_adventure_quests=()):
         equip_cols = ", ".join(f"equip_{slot}" for slot in SLOTS)
         equip_placeholders = ", ".join("?" for _ in SLOTS)
         equip_updates = ", ".join(f"equip_{slot}=excluded.equip_{slot}" for slot in SLOTS)
@@ -364,6 +407,16 @@ class SaveManager:
             "INSERT INTO known_spells (spell_id) VALUES (?)",
             [(spell_id,) for spell_id in known_spells],
         )
+        self.conn.execute("DELETE FROM artifact_fragments")
+        self.conn.executemany(
+            "INSERT INTO artifact_fragments (fragment_id) VALUES (?)",
+            [(fragment_id,) for fragment_id in artifact_fragments],
+        )
+        self.conn.execute("DELETE FROM completed_adventure_quests")
+        self.conn.executemany(
+            "INSERT INTO completed_adventure_quests (quest_id) VALUES (?)",
+            [(quest_id,) for quest_id in completed_adventure_quests],
+        )
         self.conn.execute("DELETE FROM equipment_instances")
         self.conn.executemany(
             """INSERT INTO equipment_instances
@@ -434,6 +487,32 @@ class SaveManager:
         self.conn.executemany(
             """INSERT INTO room_drops (room_id, entity_id, item_type, x, y)
                VALUES (?, ?, ?, ?, ?)""",
+            rows,
+        )
+        self.conn.commit()
+
+    def get_block_positions(self, room_id):
+        """Returns {block_id: (x, y), ...} for every block that's been
+        pushed at least once in this room -- a block never in this dict
+        just stays at its template-defined starting position (see main.py's
+        load_room, which overlays this on top of self.room.block_templates
+        the same way get_room_drops' results overlay item templates)."""
+        rows = self.conn.execute(
+            "SELECT entity_id, x, y FROM block_positions WHERE room_id = ?",
+            (room_id,),
+        )
+        return {entity_id: (x, y) for entity_id, x, y in rows}
+
+    def set_block_positions(self, room_id, blocks):
+        """blocks: [{"id", "x", "y"}, ...] (main.py's Game.blocks, its live
+        in-memory copy) -- a full replace, same semantics as
+        set_room_drops. Every block is written every time (not just moved
+        ones) since a full replace is cheaper than diffing and this table
+        is small."""
+        self.conn.execute("DELETE FROM block_positions WHERE room_id = ?", (room_id,))
+        rows = [(room_id, b["id"], b["x"], b["y"]) for b in blocks]
+        self.conn.executemany(
+            "INSERT INTO block_positions (room_id, entity_id, x, y) VALUES (?, ?, ?, ?)",
             rows,
         )
         self.conn.commit()

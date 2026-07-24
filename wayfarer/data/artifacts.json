@@ -1,0 +1,22 @@
+{
+  "ember_fragment": {
+    "name": "Ember-Charred Fragment",
+    "sprite": "item_fragment",
+    "biome": "scorched_wastes"
+  },
+  "frost_fragment": {
+    "name": "Frost-Bound Fragment",
+    "sprite": "item_fragment",
+    "biome": "frostreach"
+  },
+  "storm_fragment": {
+    "name": "Storm-Cloven Fragment",
+    "sprite": "item_fragment",
+    "biome": "stormfell"
+  },
+  "mire_fragment": {
+    "name": "Mire-Bound Fragment",
+    "sprite": "item_fragment",
+    "biome": "fenmire"
+  }
+}

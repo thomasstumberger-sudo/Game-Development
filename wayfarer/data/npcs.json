@@ -18,5 +18,10 @@
     "name": "Scholar",
     "sprite": "npc_scholar",
     "greeting": "I deal in knowledge, not steel. A spellbook, perhaps -- if your purse allows it."
+  },
+  "guide": {
+    "name": "Frontier Guide",
+    "sprite": "npc_guide",
+    "greeting": "The frontier's bigger than the Wastes alone, if you can prove yourself to me."
   }
 }

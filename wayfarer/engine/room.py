@@ -14,6 +14,17 @@ needs to know about them at all for `is_walkable`'s exclusion set). A room
 also picks a `tileset` (defaults to "dungeon") so hand-authored rooms can
 use a different sprite set -- e.g. the overworld hub's grass/hedge tiles
 instead of dungeon stone.
+
+Session 48 (researched via Yoda Stories/Desktop Adventures -- see
+wayfarer_adventure.md's own "sokoban blocks" note, unbuilt until now):
+`blocks`/`plates`, a push-block puzzle pair. A `block` is a structural
+starting position only (main.py's Game tracks live position, since
+pushing moves it); a `plate` is a `gate_id`-linked pressure switch,
+triggered by a block's weight instead of the player's own footstep the
+way a regular `switch` is. Room itself stays exactly as flag-agnostic
+about both as it already is about switches/gates -- it only needs the
+template lists to exist for `is_walkable`'s exclusion set (via the
+caller's `blocked` set) and for main.py to have something to spawn/render.
 """
 
 import json
@@ -33,6 +44,28 @@ KIND_FALLBACK_COLORS = {
     "stairs_up": (170, 140, 200),
     "building": (150, 100, 60),
     "cave": (40, 70, 45),
+    # Wayfarer Adventure Mode's biome-dungeon entrance -- see
+    # wayfarer/wayfarer_adventure.md. Warm desert-orange, distinct from the
+    # Depths' cool "cave" marker at a glance.
+    "wilds": (200, 120, 40),
+    # Session 45: Frostreach's own town-exit marker -- icy pale blue,
+    # distinct from both "cave" and the Scorched Wastes' warm "wilds" tint
+    # at a glance.
+    "frost": (110, 170, 220),
+    # Session 46: Stormfell's own town-exit marker -- magenta/violet,
+    # distinct from "cave"/"wilds" (warm orange)/"frost" (cool blue). See
+    # main.py's AssetManager.make_tint_variant("storm", ...) call for why
+    # this landed on a red-leaning wash rather than the blue-leaning first
+    # attempt.
+    "storm": (180, 70, 200),
+    # Session 47: Fenmire's own town-exit marker -- murky swamp green,
+    # distinct from every warm/cool tint used by the first three biomes.
+    "mire": (70, 110, 60),
+    # Session 47: the Final Area's town-exit marker -- saturated
+    # yellow-gold (red+green boosted, blue suppressed), a hue combination
+    # none of the other four markers use (see main.py's make_tint_variant
+    # call for why an earlier "just make it brighter" attempt didn't work).
+    "sanctum": (220, 190, 60),
 }
 
 _ROOM_CACHE = {}
@@ -75,6 +108,12 @@ class Room:
         # state lives in room_flags" convention chests/switches already use
         # (see main.py's Game.traps/sprung_trap_ids).
         self.trap_templates = data.get("traps", [])
+        # Session 48: push-block puzzles -- see module docstring. Structural
+        # starting positions only; main.py's Game owns the live (mutable,
+        # persisted) block positions the same way it owns dead_enemy_ids/
+        # opened_chest_ids for every other template list here.
+        self.block_templates = data.get("blocks", [])
+        self.plate_templates = data.get("plates", [])
         self._region_grid = self._build_region_grid()
         self._border_regions = self._build_border_regions()
 
@@ -225,6 +264,16 @@ class Room:
             from engine.procgen import generate_room
             _, seed_str, level_str, gx_str, gy_str = room_id.split(":")
             data = generate_room(int(seed_str), int(level_str), int(gx_str), int(gy_str))
+        elif room_id.startswith("biome:"):
+            # Wayfarer Adventure Mode (see wayfarer/wayfarer_adventure.md):
+            # a single finite generated room, id "biome:<biome_id>:<seed>".
+            # Unlike "proc:" rooms, main.py's load_room applies no epoch/
+            # respawn machinery to these -- the population generated here is
+            # cached forever by _ROOM_CACHE below, same as a hand-authored
+            # room's fixed templates.
+            from engine.procgen import generate_biome_room
+            _, biome_id, seed_str = room_id.split(":")
+            data = generate_biome_room(int(seed_str), biome_id)
         else:
             path = os.path.join(ROOMS_DIR, f"{room_id}.json")
             with open(path, "r") as f:

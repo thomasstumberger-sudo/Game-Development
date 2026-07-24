@@ -189,5 +189,17 @@
     "drain_amount": 4,
     "drain_stat": "attack",
     "sleep_immune": true
+  },
+  "elder_dragon": {
+    "name": "Elder Dragon",
+    "sprite": "enemy_elder_dragon",
+    "hp": 70,
+    "attack": 12,
+    "defense": 6,
+    "xp_reward": 100,
+    "gold_reward": [40, 60],
+    "aggro_range": 24,
+    "wander_chance": 0.05,
+    "sleep_immune": true
   }
 }

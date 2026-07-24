@@ -4081,6 +4081,158 @@ was left unbuilt, same as it not mattering.
   select..." hint line both intact below it -- no clipping, continuing to
   confirm session 29's scroll-to-cursor logic at yet another ladder length.
 
+### Session 44 — Adventure Mode begins: Scorched Wastes, the first finite biome dungeon (Yoda Stories / Desktop Adventures-inspired)
+
+User-driven request: read `wayfarer/PROGRESS.MD` and `wayfarer/wayfarer_adventure.md`
+(a speculative design writeup already sitting on this branch, written but
+never built), look up LucasArts' *Star Wars: Yoda Stories* and *Indiana
+Jones and His Desktop Adventures*, and begin development. Researched both
+directly (Wikipedia, MobyGames, Fandom wikis, TV Tropes via web search) and
+confirmed the design doc's own premise: both games are the same engine
+wearing two skins, structured around **item-for-item fetch/trade chains**
+across procedurally-assembled regions toward a single end goal, with combat/
+puzzles as texture around that spine rather than the point (matching CotW's
+existing role in this codebase). This session builds exactly step 1 of the
+design doc's own phased build order: one finite biome dungeon end-to-end
+(room gen + one mini-boss + one fragment drop), reachable directly from
+town, no unlock gating yet. The fetch/trade quest chain, biome unlock
+gating, additional biomes, and the final win-state area are explicitly
+*not* attempted this session -- each is its own session-sized step in the
+design doc's plan, same granularity as this project's usual practice.
+
+Also per this session's own instruction: art is intentionally left alone
+(the existing `dungeon_v2` tileset, same as the Depths) -- resizing sprites
+larger is scoped for a separate future pass on this branch, not mixed into
+this one.
+
+- **`engine/procgen.py`**: new `generate_biome_room(seed, biome_id)`,
+  alongside the existing `generate_room()` (the Depths' unbounded (level,
+  gx, gy) plane) rather than replacing anything. A biome dungeon is exactly
+  **one** room, id `biome:<biome_id>:<seed>` -- finite by construction, no
+  gx/gy neighbors, no stairs, no per-level difficulty scaling, no epoch/
+  respawn (main.py's `load_room` only applies that machinery to `"proc:"`-
+  prefixed ids, so a biome room's population generates once and is cached
+  forever by `Room.load`, same as a hand-authored room). Reuses
+  `generate_room`'s core-room/corridor/vault carving helpers (`_grid_cells`,
+  `_carve_room_in_cell`, `_spanning_tree`, `_carve_corridor`,
+  `_place_vault`, `_random_free_point`, the weighted-loot tables) wholesale,
+  per the design doc's own reasoning -- only the top-level assembly differs:
+  one fixed exit back to town instead of the four-directional edge-hash
+  dance, `BIOME_TIER = 1` (fixed/curated difficulty, matching the design
+  doc's Open Questions leaning) instead of depth/level scaling, and a
+  **guaranteed** vault (never chance-gated) whose chest always holds the
+  biome's artifact fragment, its mini-boss standing guard in the same
+  chamber. `BIOME_DEFS["scorched_wastes"]` (desert/canyon terrain, Young Red
+  Dragon mini-boss, `ember_fragment`) is the only biome built this session
+  -- the design doc's other three (Frostreach/Stormfell/Fenmire) are future
+  sessions, not attempted.
+  - **Found and fixed a latent bug in the shared vault-carving machinery
+    while building this**, not introduced by this session's new code:
+    `generate_room()`'s existing vault placement carves the vault *after*
+    the spanning-tree/loop corridors and only checks the vault's footprint
+    against the grid cell's own bounds -- never against corridor cells
+    already carved through that same space. When a corridor's straight
+    L-shaped path happens to cross where the vault lands, it silently
+    breaches the vault's other three walls, leaving the "locked" door
+    decorative. Confirmed by instrumenting `generate_room()` directly with a
+    flood-fill reachability check across a 300-seed sample at tier 2: ~40%
+    of seeded Depths vaults are reachable without ever picking up the key.
+    Left unfixed in `generate_room()` itself (bigger blast radius touching
+    43 sessions of existing Depths content, and a bypassable Depths vault is
+    low-stakes -- bonus loot, not mandatory progression) but **fixed in
+    `generate_biome_room`**, where it isn't optional: the fragment behind
+    the lock is the entire point of the dungeon. Fix: after carving the
+    vault interior, force every tile in its 1-tile-thick outer ring to `#`
+    except the connector cell, guaranteeing the door is the only entrance
+    regardless of what a corridor carved there first; every attempt is then
+    verified with a full reachability flood from the entry landing (every
+    core room center + the exit must still be mutually reachable) before
+    being accepted, undoing (via a snapshot) and trying the next host
+    candidate otherwise -- protects against the fix's own inverse failure
+    mode (the forced ring severing some unrelated room's only path through
+    that space). If every host fails both checks (rare -- ~7% of seeds in a
+    1000-seed sample), falls back to an unlocked boss chamber in the
+    biggest core room rather than ever shipping an unreachable fragment.
+  - `BIOME_ENTRY_LANDING`/`BIOME_EXIT_CELL` reuse the existing
+    `MID_X`/`MID_Y` constants (same 40x32 room dimensions as the Depths) --
+    no new size constants needed.
+- **`engine/room.py`**: `Room.load` gains a third dispatch branch (alongside
+  `"proc:"` and hand-authored) for `"biome:"`-prefixed ids, calling
+  `generate_biome_room` and caching the result exactly like a hand-authored
+  room. `KIND_FALLBACK_COLORS` gains a `"wilds"` entry (warm desert-orange)
+  for the new town exit's fallback rendering.
+- **`data/rooms/town_hub.json`**: one new exit, `to_scorched_wastes` at
+  (16, 4), `kind: "wilds"`, `target_room: "biome:ENTRY:scorched_wastes"` --
+  the same `"proc:ENTRY"` sentinel trick the Crypt's exit already uses,
+  since town_hub.json can't know the per-save seed ahead of time.
+  `target_x/y` point at `BIOME_ENTRY_LANDING` (20, 16) directly, since that
+  landing cell's coordinates are fixed regardless of seed.
+- **`data/artifacts.json`**: new file, artifact fragment definitions
+  (name/sprite/biome) -- `generate_biome_room` only ever emits a bare
+  `fragment_id` string (same "procgen trusts a key exists, main.py resolves
+  it" split `EQUIPMENT_BASE_TYPES_BY_SLOT`/`SPELL_IDS_BY_BAND` already use).
+  One entry this session: `ember_fragment`.
+- **`main.py`**:
+  - Loads `data/artifacts.json` into `self.artifact_defs`; new
+    `self.artifact_fragments` set, loaded from save state alongside
+    `known_spells` (same flat "ever claimed" shape and reasoning).
+  - `"exit"` handling: resolves the new `"biome:ENTRY:<biome_id>"` sentinel
+    to `f"biome:{biome_id}:{self.seed}"`, mirroring the existing
+    `"proc:ENTRY"` resolution immediately above it.
+  - Chest-open handling gains an `"artifact" in chest` branch (checked
+    alongside the existing equipment/spellbook/plain-item branches): awards
+    the fragment into `self.artifact_fragments` -- never the stackable
+    Inventory or the equipment bag, same "own exactly one, ever" reasoning
+    the design doc gives for treating a fragment like a key rather than a
+    potion stack. Already-opened is the same silent `pass`-through every
+    other chest content type gets once its id is in `opened_chest_ids`.
+  - `persist()`'s `save.save_game` call now also passes
+    `self.artifact_fragments`.
+  - `_load_assets()`: `item_fragment` (amber diamond placeholder, no
+    matching art in either sheet, same situation as the spellbook
+    placeholder) and `wilds` (the existing `cave` sprite warm-tinted via
+    `make_tint_variant`, same trick as gate/locked_door -- reads as a
+    different destination from the Crypt's own cave icon at a glance
+    without needing new art).
+  - Journal panel (`_draw_journal_panel`): one new summary line, "Artifact
+    Fragments: N/total -- <names>", between the Quest Log and the Dungeon
+    Map section. Confirmed by rendered screenshot it fits inside the
+    existing fixed 470px panel height alongside the full quest list and the
+    9x9 automap grid with no clipping.
+- **`engine/save.py`**: new `artifact_fragments` table (`fragment_id TEXT
+  PRIMARY KEY`), same shape/persistence reasoning as `known_spells` --
+  wired through `load_game`/`new_game_defaults`/`save_game` (new optional
+  `artifact_fragments=()` parameter) and added to `reset()`'s wiped-table
+  list.
+- Verified headless (SDL dummy driver, scratch DB via monkeypatched
+  `main.SAVE_PATH`): walked the real `try_move`/`handle_move` dispatch path
+  from town_hub through the new exit into `biome:scorched_wastes:<seed>`;
+  confirmed exactly one Young Red Dragon and one artifact chest generated;
+  confirmed the locked vault door blocks movement before the key is held,
+  the key pickup and door-unlock both fire through the real pickup/
+  locked_door dispatch, and the vault is inaccessible before that; defeated
+  the mini-boss and claimed the fragment through the real chest-open
+  dispatch; confirmed re-opening the same chest is a silent no-op with the
+  fragment set unchanged; walked back through the biome room's own return
+  exit into `town_hub`; ran `persist()` then booted a **second** fresh
+  `Game` instance against the same save file and confirmed fragment
+  ownership survived the round-trip. Separately stress-tested
+  `generate_biome_room` directly (bypassing pygame) across 500 seeds with a
+  flood-fill reachability checker: zero failures post-fix (boss/chest always
+  reachable, vault interior never reachable without the key when one
+  exists, nothing ever disconnected by the ring-forcing fix) -- confirmed
+  the pre-fix version failed the "reachable without the key" check on ~40%
+  of the same seed range before the ring-isolation fix landed. Also ran a
+  regression pass confirming the pre-existing armory/crypt/Depths exits
+  still work unchanged. **Also visually inspected** via rendered
+  screenshots: town_hub with the new warm-tinted `wilds` exit icon visually
+  distinct from the Crypt's cool-toned `cave` icon at a glance; the
+  Scorched Wastes room itself rendering correctly with fog of war, the
+  `dungeon_v2` tileset (unchanged, per this session's own "art stays as-is"
+  scope), and the room name "Scorched Wastes" in the HUD; and the Journal
+  panel showing "Artifact Fragments: 1/1 -- Ember-Charred Fragment" cleanly
+  laid out alongside the existing Quest Log and Dungeon Map sections.
+
 ### Session 43 — drop consumables back onto the floor (closing the "no drop mechanics" future-work note)
 
 User-driven request: "look up the game Castle of the Winds and continue
@@ -4147,10 +4299,905 @@ consumables and gear).
   clipping (measured 374px at the panel's own font before the screenshot,
   same discipline session 13 established for this exact panel).
 
+### Session 45 — Frostreach + the fetch/trade quest chain (step 2 of Adventure Mode's phased build order)
+
+User-driven request, same framing as session 44: read `PROGRESS.MD` and
+`wayfarer_adventure.md`, look up *Yoda Stories*/*Desktop Adventures* again,
+and continue development. Re-confirmed via a fresh web search (Fandom's
+Yoda Stories wiki, TV Tropes) the design doc's own premise on the specific
+piece this session builds: the source games' progression is a **chain of
+deals** -- trade proof of one region's conquest to an NPC for passage into
+the next, repeating until every step resolves. This session builds exactly
+step 2 of the design doc's suggested phased build order: a second biome
+(Frostreach) plus the fetch/trade NPC and a complete two-step chain
+(Scorched Wastes fragment -> unlocks Frostreach), proving the
+progression-gating system the design doc flagged as "the one genuinely new
+system." The remaining biomes (Stormfell/Fenmire), the final area/win
+screen, and the sprite resize are still explicitly out of scope, each its
+own future session per the doc's own plan.
+
+- **`engine/procgen.py`**: `BIOME_DEFS` gains `"frostreach"` (Young White
+  Dragon mini-boss, `frost_fragment`, cold-elemental hook per the design
+  doc's biome table) -- `generate_biome_room` needed zero other changes,
+  confirming session 44's own claim that it's fully generic per-biome.
+  Also generalized `BIOME_DEFS`' hardcoded `"to_town"` landing tile (was a
+  literal `(16, 6)` for every biome, i.e. right for Scorched Wastes only)
+  into a per-biome `town_return` field, so Frostreach's own return trip
+  lands near its own town door rather than reappearing next to the
+  Scorched Wastes one.
+- **`data/artifacts.json`**: new `frost_fragment` entry ("Frost-Bound
+  Fragment").
+- **`data/adventure_quests.json`**: new file, the design doc's own proposed
+  schema (`id`/`giver_npc`/`biome`/`wants`/`gives`/`dialogue`) -- one entry
+  this session, `guide_frostreach` (wants `ember_fragment`, gives
+  `unlock_biome: frostreach`). `Game.current_adventure_quest()` scans this
+  list front-to-back for the first id not yet in
+  `completed_adventure_quests`, same "linear chain, index-shaped" MVP the
+  doc scopes for a first pass -- just backed by a persisted id *set* rather
+  than a bare int, per the doc's own reasoning (keeps a future branching
+  chain from being blocked on this session's data shape).
+- **`data/npcs.json`** / **`data/rooms/town_hub.json`**: new `guide` NPC
+  type ("Frontier Guide"), placed at (16, 10); new `to_frostreach` exit at
+  (26, 4) carrying a new `requires_quest: "guide_frostreach"` field.
+- **Fetch/trade NPC interaction**: `npc.type == "guide"` opens a new
+  `trade_open` panel (`_draw_trade_panel`) -- structurally the
+  `claim_quest_reward`-shaped branch the design doc predicted, not a
+  reinvented shop/healer-style panel. `Game.attempt_trade()` checks the
+  current chain entry's `wants` against `self.artifact_fragments` and, if
+  held, adds the quest id to `completed_adventure_quests`. **Deliberate
+  departure from the source games' own mechanic, flagged rather than
+  silently changed**: real Yoda Stories/Desktop Adventures consume the
+  traded item permanently (it's gone, replaced by what you get back) --
+  this engine's fragments stay in `self.artifact_fragments` after a trade
+  instead, because wayfarer_adventure.md's own Final Area section already
+  commits to "unlocked once every fragment is **held**" as the eventual win
+  condition, which would be impossible to satisfy if trading consumed the
+  proof. The trade here is "show proof," not "hand it over" -- same class
+  of source-mechanic adaptation as session 29's trap-disarm-by-hotkey or
+  session 43's drop-by-hotkey, both already accepted departures from a
+  mouse-driven/inventory-consuming original.
+- **Biome-unlock gating** — the design doc's "an exit that's only
+  walkable/visible once its prerequisite quest is complete," built as a new
+  non-committal bump type rather than folding it into
+  `_blocked_positions()`: `Player.try_move` gains a `locked_exits` param
+  (checked right after gates, before the walkability check, same
+  non-committal "bump, don't step" shape as a locked door/gate) and a new
+  `"locked_exit"` result kind. `Game._locked_exits()` computes which of the
+  current room's exits carry an unsatisfied `requires_quest` field, fresh
+  every move (not cached) -- deliberately kept separate from
+  `_blocked_positions()` (which *does* feed enemy pathing and spell
+  line-of-sight) since a gated exit tile is ordinary floor for every
+  purpose except the player's own room transition; merging it into the
+  enemy-facing blocked set would have wrongly stopped enemies walking
+  across it and bolts/balls from passing over it.
+- **`engine/save.py`**: new `completed_adventure_quests` table
+  (`quest_id TEXT PRIMARY KEY`), same flat-set shape/persistence reasoning
+  as `known_spells`/`artifact_fragments` -- wired through
+  `load_game`/`new_game_defaults`/`save_game` (new optional
+  `completed_adventure_quests=()` parameter) and added to `reset()`'s
+  wiped-table list.
+- Journal panel (`_draw_journal_panel`): one new line, "Frontier Guide
+  wants: `<name>` -- ready to trade / not yet found," between the Artifact
+  Fragments line and the Dungeon Map section -- wrapped via the same
+  `_wrap_text` helper the Shop/Spellbook panels already use, after an
+  actual rendered screenshot caught the unwrapped version clipping the
+  word "trade" past the panel's 460px width.
+- Verified headless (SDL dummy driver, scratch DB via monkeypatched
+  `main.SAVE_PATH`): confirmed the Frontier Guide NPC spawns in town_hub
+  and the Frostreach exit is present but returns `"locked_exit"` (not
+  `"exit"`) on bump before the chain quest is complete, with the expected
+  "sealed by old magic" message and no room change; walked the real
+  `try_move`/`handle_move` path from town through Scorched Wastes, granted
+  `ember_fragment` (the actual claim path is unchanged from session 44 and
+  already covered by that session's own verification), walked back to
+  town, bumped the Guide to open the real trade panel, confirmed
+  `current_adventure_quest()` returns `guide_frostreach`, called the real
+  `attempt_trade()` and confirmed `completed_adventure_quests` gained the
+  id **and** `artifact_fragments` was untouched (confirming the
+  no-consumption departure above actually holds in code, not just in this
+  note); confirmed `_locked_exits()` now returns empty and the player can
+  walk the real dispatch path into `biome:frostreach:<seed>`, landing a
+  Young White Dragon mini-boss among the room's enemies. Ran `persist()`
+  then booted a **second** fresh `Game` instance against the same save file
+  and confirmed `completed_adventure_quests` and `artifact_fragments` both
+  survived the round-trip. Separately stress-tested `generate_biome_room`
+  directly for `"frostreach"` (bypassing pygame) across 200 seeds with the
+  same flood-fill reachability checker session 44 used: zero failures
+  (boss/chest/locked-door-tile always reachable from the entry landing),
+  confirming the shared vault-ring fix generalizes to a second biome
+  without changes. Also ran a regression pass confirming armory/crypt
+  entry+return still work unchanged. **Also visually inspected** via
+  rendered screenshots: town_hub's two biome-exit arches (warm-orange
+  Scorched Wastes vs. new icy-blue Frostreach) reading as distinct
+  destinations at a glance from a zoomed crop; both trade-panel states
+  (fragment not yet found vs. held, showing the "Press U or click here to
+  trade" prompt only in the latter) wrapping cleanly inside the 360px
+  panel; and the Journal panel's new wrapped Frontier Guide line sitting
+  cleanly between the Artifact Fragments line and the Dungeon Map section
+  with no clipping or overlap, still inside the existing fixed 470px panel
+  height.
+
+### Session 46 — Stormfell (step 3 of Adventure Mode's phased build order: extending to the full biome count)
+
+User-driven request, same framing as sessions 44/45: read `PROGRESS.MD` and
+`wayfarer_adventure.md`, look up *Yoda Stories*/*Desktop Adventures* again,
+continue development, and (explicitly deferred by the user to a later
+session) resize the art assets larger on this branch. Re-confirmed via a
+fresh web search (MobyGames/TV Tropes for Yoda Stories, Wikipedia/TV Tropes/
+Fandom for Desktop Adventures) the design doc's core premise once more:
+both games chain fetch/trade deals across distinct regions toward one goal.
+This session builds exactly step 3 of the design doc's phased order: a
+third biome (Stormfell) plus the third link in the fetch/trade chain
+(Frostreach fragment -> unlocks Stormfell), proving the whole
+generate_biome_room/adventure-quest-chain/locked-exit system generalizes to
+N biomes, not just 2, with zero changes to any of that shared machinery.
+The remaining biome (Fenmire), the final area/win screen, and the sprite
+resize are all still explicitly out of scope, each its own future session.
+
+- **`engine/procgen.py`**: `BIOME_DEFS` gains `"stormfell"` (Young Blue
+  Dragon mini-boss, `storm_fragment`, lightning-elemental hook, ruins/
+  highlands terrain flavor per the design doc's biome table) --
+  `generate_biome_room` needed zero other changes, reconfirming sessions
+  44/45's own claim that it's fully generic per-biome; adding a third biome
+  really was just one new dict entry.
+- **`data/artifacts.json`**: new `storm_fragment` entry ("Storm-Cloven
+  Fragment").
+- **`data/adventure_quests.json`**: new `guide_stormfell` entry (wants
+  `frost_fragment`, gives `unlock_biome: stormfell`) -- `current_adventure_
+  quest()` needed zero changes, since it already scans the whole list
+  front-to-back for the first incomplete id; appending a second link was
+  the entire diff.
+- **`data/npcs.json`**: unchanged -- the Frontier Guide is a single NPC
+  serving the whole chain, not one NPC per biome, so no new NPC was needed
+  for a third link (confirmed by grep: nothing in the codebase hardcodes a
+  biome count or a per-biome NPC assumption).
+- **`data/rooms/town_hub.json`**: new `to_stormfell` exit (kind `"storm"`,
+  at (6, 4), west side of the hub, mirroring Frostreach's east-side (26, 4)
+  placement with Scorched Wastes centered at (16, 4)) carrying
+  `requires_quest: "guide_stormfell"`.
+- **`main.py`/`engine/room.py`**: new `"storm"` town-exit marker, same
+  tint-the-shared-"cave"-sprite trick as `"wilds"`/`"frost"`. First attempt
+  used a blue-leaning violet (150, 120, 220) -- looked fine as a color
+  swatch on paper, but a zoomed rendered screenshot showed it reading as
+  near-identical to `"frost"` in practice, and a direct pixel sample of
+  both tinted surfaces confirmed why: `BLEND_RGB_MULT` can only ever darken
+  the source art's own existing channel ratios, and the shared "cave"
+  sprite's shadow pixels are already blue-dominant, so a wash color that's
+  *also* blue-leaning can't pull the multiplied result away from blue no
+  matter which blue-ish hue is picked. Fixed by switching to a magenta/
+  violet wash (180, 70, 200) that boosts red over green -- the *opposite*
+  channel relationship from frost's blue/green-leaning wash -- at a higher
+  strength (0.85 vs. the others' default 0.6, i.e. less blended toward
+  white) for more saturation to carry through the multiply. Re-rendered and
+  re-sampled after the change: reads as a distinct dark magenta/crimson
+  arch next to frost's icy teal-blue and wilds' warm orange. Worth
+  remembering for any future biome-marker tint: colors that look distinct
+  as raw RGB triples can still collapse together under `BLEND_RGB_MULT`
+  against a shared dark source image -- verify by rendering and sampling
+  actual pixels, not just by eyeballing the tint_color tuples.
+- **Bug found and fixed by the same screenshot discipline**: the Journal
+  panel's "Artifact Fragments" summary line (`_draw_journal_panel`) was
+  never wrapped, unlike the Frontier Guide line directly below it (which
+  session 45 already wrapped after catching its own clipping). At 2
+  fragments it happened to fit; a rendered screenshot after this session's
+  third fragment landed showed it clipping mid-name ("...Ember-Charred
+  Fragment, Frost" then cut off). Fixed by wrapping it with the same
+  `_wrap_text` helper the guide line already uses, and rederiving `guide_
+  top`/`map_top` from the wrapped line count instead of a hardcoded `+18`
+  so the rest of the panel's layout still cascades correctly regardless of
+  how many lines the fragment summary needs.
+- Verified headless (SDL dummy driver, scratch DB via monkeypatched
+  `main.SAVE_PATH`, confirmed real `save.db` untouched before/after --
+  there was in fact no real `save.db` present in the working tree this
+  session, confirmed via `ls`/`md5sum` before starting): stress-tested
+  `generate_biome_room("stormfell")` directly (bypassing pygame) across 200
+  seeds with the same flood-fill reachability checker sessions 44/45 used
+  -- zero failures (boss/chest/locked-door tile always reachable from the
+  entry landing). Booted a real `Game` instance and confirmed the new
+  `to_stormfell` exit starts in `_locked_exits()`'s return and bumping it
+  is a no-op (`"locked_exit"`, stays in `town_hub`); drove the real chain
+  end-to-end -- granted `ember_fragment`, called the real `attempt_trade()`
+  twice (`guide_frostreach` then `guide_stormfell`), confirmed `current_
+  adventure_quest()` returns `None` once both links are complete and
+  `_locked_exits()` no longer includes the Stormfell exit; walked the real
+  `try_move`/`handle_move` dispatch path from town into
+  `biome:stormfell:<seed>` and confirmed a Young Blue Dragon spawns among
+  the room's enemies. Ran `persist()` then booted a **second** fresh `Game`
+  instance against the same scratch save file and confirmed `completed_
+  adventure_quests` and `artifact_fragments` both survived the round-trip.
+  Regression-checked `town_hub`'s exit set is exactly the expected five
+  (`to_armory`/`to_crypt`/`to_scorched_wastes`/`to_frostreach`/
+  `to_stormfell`) via a direct `Room.load("town_hub")`, unaffected by
+  anything this session touched. **Also visually inspected** via rendered
+  screenshots (see the tint-color note above for the door-marker fix, and
+  the wrapping note above for the journal-panel fix): the three biome-exit
+  arches reading as three distinct destinations at a glance in a zoomed
+  crop; the Journal panel's fragment/guide/map sections all correctly
+  cascading with the new wrap; and the trade panel's longer Stormfell
+  dialogue (the longest of the three intro lines so far) still wrapping
+  cleanly inside the existing 360px panel with no clipping.
+
+### Session 47 — Fenmire, the Final Area, and Adventure Mode's win screen (steps 3 and 4 of the phased build order, closing out the arc)
+
+User-driven request, same framing as sessions 44-46: read `PROGRESS.MD` and
+`wayfarer_adventure.md`, look up *Yoda Stories*/*Desktop Adventures* again,
+begin development, and (again explicitly deferred to a later session) resize
+the art assets larger on this branch. Re-confirmed the design doc's core
+premise once more via a fresh web search (Fandom/MobyGames/TV Tropes for
+both games): fetch/trade chains across distinct regions toward one end goal,
+with a final assembled-artifact payoff. This session finishes what sessions
+44-46 started: the fourth and last biome from the doc's own table (Fenmire),
+*and* the doc's step 4 (final area + win state) in the same session, since
+by this point adding a biome is proven trivial (session 46's own note: "one
+new dict entry") and finishing the whole arc felt like better use of a
+session than another single-biome increment. The sprite resize is still the
+only explicitly out-of-scope item left on this branch.
+
+- **`engine/procgen.py`**: `BIOME_DEFS` gains two entries.
+  - `"fenmire"` (swamp/jungle terrain, Young Green Dragon mini-boss reusing
+    the poison mechanism per session 33, `mire_fragment`) -- zero changes
+    needed to `generate_biome_room` itself, reconfirming sessions 45/46's
+    own claim a third time.
+  - `"final_area"` ("The Sundering") -- no `fragment_id`; a new
+    `final_reward: True` key instead. `generate_biome_room`'s two chest-
+    building call sites (the normal vault placement and the no-room-for-
+    a-vault fallback) both now go through a new small `_vault_reward(biome)`
+    helper that returns either `{"artifact": {...}}` or `{"final_reward":
+    True}`, so the two payload sites can't drift out of sync with each
+    other. `boss_type` is a new `elder_dragon` (see data/enemies.json) --
+    deliberately a fresh, tougher guardian rather than reusing one of the
+    four biome mini-bosses a second time, since the doc's own "short, dense
+    final dungeon" framing implies a genuine capstone fight, not a rematch.
+    Still tier 1 (`BIOME_TIER`) like every other biome -- no per-biome tier
+    override added, keeping this session's diff to the same shape as
+    44-46's rather than introducing a new difficulty knob for one room.
+  - Unlock gating for the Final Area reuses the existing fetch/trade chain
+    unchanged: `guide_final`'s `wants` is just `mire_fragment` (the last
+    fragment in the chain), not a new "wants all four" schema. This works
+    because session 45's own departure from the source games (a traded
+    fragment is never consumed, since the doc's Final Area section needs
+    every fragment *held*, not handed over) means that by the time a player
+    holds the last fragment in a strictly linear chain, they already hold
+    every fragment before it -- so "wants the last one" and "wants all of
+    them" are equivalent for this chain's shape, with no new want-type
+    needed.
+- **`data/artifacts.json`**: new `mire_fragment` entry ("Mire-Bound
+  Fragment").
+- **`data/adventure_quests.json`**: two new entries, `guide_fenmire` (wants
+  `storm_fragment`, gives `unlock_biome: fenmire`) and `guide_final` (wants
+  `mire_fragment`, gives `unlock_biome: final_area`) --
+  `current_adventure_quest()` needed zero changes yet again, extending the
+  chain is still just appending entries.
+- **`data/enemies.json`**: new `elder_dragon` (hp 70/attack 12/defense
+  6/xp 100/gold 40-60) -- deliberately no `damage_type`/`resist_elements`,
+  plain physical stats well above any single dragon's, on the reasoning that
+  the four biome dragons already cover fire/cold/lightning/poison and a
+  fifth elemental gimmick wasn't needed for the difficulty to read as a real
+  step up.
+- **`data/rooms/town_hub.json`**: two new exits, `to_fenmire` (kind `"mire"`,
+  (11, 2), `requires_quest: "guide_fenmire"`) and `to_final_area` (kind
+  `"sanctum"`, (21, 2), `requires_quest: "guide_final"`) -- placed on a new
+  row above the three existing biome doors (which share y=4) rather than
+  extending that same row, since the existing three already evenly space
+  the hub's width; town_hub's exit set is now armory/crypt/Depths (unchanged)
+  plus all five biome doors.
+- **`main.py`/`engine/room.py`**: `"mire"`/`"sanctum"` town-exit tint
+  variants and `KIND_FALLBACK_COLORS` entries, plus a placeholder
+  `enemy_elder_dragon` sprite (same triangle silhouette as the four biome
+  dragons, dark bronze/gold instead of any of their four saturated hues).
+  **Sanctum's tint needed a second pass**: the first attempt reasoned that a
+  *lower* `strength` (0.5, vs. the other markers' 0.6-0.85) would read
+  "brighter," on the theory that less blending would let more of the raw
+  tint color through -- backwards. `make_tint_variant`'s own math
+  interpolates the wash color *toward white* as strength drops (strength 0
+  is a no-op wash), so 0.5 produced a muted result that a rendered
+  screenshot showed sitting almost on top of "mire" in a direct pixel
+  sample ((51, 58, 52) vs. mire's (30, 49, 40) -- too close). Also, per
+  sessions 31/46's own already-established finding, `BLEND_RGB_MULT` can
+  only ever darken a channel relative to the source art's own value, so
+  "make the capstone door read as literally brighter than the others" was
+  never achievable against the same dark "cave" source sprite regardless of
+  tint choice -- the wrong bar to aim for. Refixed by aiming for a distinct
+  *hue combination* instead (the standard the other four markers actually
+  meet): a saturated yellow-gold (red+green boosted, blue suppressed) at
+  strength 0.8, a red+green/no-blue combination none of the other four use
+  (wilds is red-dominant, frost is blue-only, storm is red+blue, mire is
+  green-only). Re-rendered and re-sampled (now (49, 56, 29), clearly lower
+  blue than every other marker) and visually confirmed via a zoomed
+  screenshot: mire reads as a cool dark green-teal arch, sanctum as a warm
+  brown-gold one right next to it, distinct at a glance.
+- **Win screen** (the doc's step 4, "nothing in the engine has an ending
+  today"): `Game.win_screen_open`, a transient (not persisted) flag set the
+  instant the Final Area's vault chest opens (`handle_move`'s new
+  `chest.get("final_reward")` branch), alongside a new synthetic
+  `"adventure_victory"` id added to the existing `completed_adventure_quests`
+  set -- deliberately *not* a new save table: `"adventure_victory"` is never
+  an entry in `data/adventure_quests.json`, so `current_adventure_quest()`'s
+  own front-scan (which only ever checks real chain ids) is unaffected by
+  the extra id riding along in the same set, and the "has this save already
+  won" fact persists for free through machinery that already exists. Per the
+  design doc's own suggestion ("reusing run_menu's existing title-screen
+  rendering infra"), `_draw_win_screen()` reuses the same panel/font/overlay
+  style every other panel already uses, but takes no input beyond "dismiss"
+  -- checked at the very top of both `handle_key_down` and `handle_mouse_down`
+  (ahead of Esc's own quit-if-nothing-to-close logic, and ahead of the
+  `_any_panel_open()` panel-click dispatch, since the win screen deliberately
+  isn't part of that family -- it has no rows, nothing to select). Dismissing
+  it drops straight back into ordinary play, never a menu: Adventure Mode is
+  a wing of the game, not the whole of it, and the Depths keep going
+  afterward, matching the design doc's own "additive, not a replacement"
+  framing from session 44. Re-opening the same chest afterward is the same
+  silent no-op every other chest-content branch already gets once its id is
+  in `opened_chest_ids` -- confirmed the modal never re-fires on a second
+  open. The Journal panel's Frontier Guide line also gained a third state
+  (session 45 built two: "not yet found" / "ready to trade"; session 46
+  implicitly kept "no further requests" once the chain empties) --
+  `"adventure_victory"` in `completed_adventure_quests` now shows "The
+  frontier is at peace -- the seal is broken and the realm saved" instead,
+  distinguishing "traded away every fetch/trade step" (true the moment
+  `guide_final` completes) from "actually finished the Final Area" (true
+  only once its chest opens), which aren't the same moment.
+- Verified headless (SDL dummy driver, scratch DB via monkeypatched
+  `main.SAVE_PATH`, confirmed real `save.db`'s mtime unchanged before and
+  after every run this session): drove the *entire* five-biome chain
+  end-to-end through the real dispatch path -- town_hub's exit set is
+  exactly the expected seven
+  (`to_armory`/`to_crypt`/`to_scorched_wastes`/`to_frostreach`/
+  `to_stormfell`/`to_fenmire`/`to_final_area`); walked
+  Scorched Wastes -> Frostreach -> Stormfell -> Fenmire -> Final Area,
+  confirming each new biome exit returns `"locked_exit"` before its chain
+  quest completes and a real `"exit"` transition after; confirmed all four
+  fragments (`ember`/`frost`/`storm`/`mire`) are claimed through the real
+  chest-open dispatch and `attempt_trade()` un-gates each next door in turn;
+  confirmed the Elder Dragon spawns in `biome:final_area:<seed>` and
+  defeating it and opening its chest sets `win_screen_open` **and**
+  `"adventure_victory"`; confirmed re-opening that same chest afterward is a
+  no-op that does *not* re-open the win screen; confirmed Esc, any other
+  key, and a click anywhere (including well outside the panel) all dismiss
+  the win screen without leaking through to movement or quitting the game;
+  ran `persist()` then booted a **second** fresh `Game` instance against the
+  same scratch save file and confirmed `"adventure_victory"` and all four
+  fragments survived the round-trip. Ran this whole sequence (fresh
+  random seed each time, since a new game's seed isn't fixed) 20+ times
+  back-to-back with zero failures after fixing a string of bugs in the
+  *verification script itself*, not the game code -- worth recording since
+  they're exactly the kind of mistake a future session's own verification
+  script could repeat: (1) a hand-rolled BFS pathfinder that refused to
+  terminate when the player's start position was already adjacent to the
+  target, incorrectly reporting "no path" and skipping combat entirely; (2)
+  the same pathfinder routing *through* unrelated town exits as if they were
+  plain floor, since stepping onto an exit tile is committal and silently
+  teleported the walk into the wrong room mid-path; (3) assuming every
+  biome dungeon always has a locked vault door, when session 44's own
+  ~7%-of-seeds fallback (no room for a separate vault, an unlocked boss
+  chamber instead) is a real, already-shipped code path the script needed
+  to handle too. Separately stress-tested `generate_biome_room` directly
+  (bypassing pygame) for both `"fenmire"` and `"final_area"` across 200
+  seeds each with the same flood-fill reachability checker sessions 44-46
+  used, plus an explicit lock-isolation check (the vault interior must be
+  provably unreachable with the door forced shut) -- zero failures for
+  either biome. **Also visually inspected** via rendered screenshots: the
+  five town-hub exit markers reading as five distinct destinations at a
+  glance (see the sanctum tint note above); Fenmire and The Sundering both
+  rendering correctly with fog of war, the room name in the HUD, and (for
+  The Sundering) the new Elder Dragon sprite; the win screen's centered
+  panel with no clipping at any font; and the Journal panel's new victory
+  line cascading correctly above the Dungeon Map section alongside the
+  now-4-fragment-wrapped Artifact Fragments line.
+
+### Session 48 — push-block (sokoban) puzzles, closing one half of wayfarer_adventure.md's own "puzzles as texture" note
+
+User-driven request, same framing as sessions 44-47: read `PROGRESS.MD` and
+`wayfarer_adventure.md`, look up *Yoda Stories*/*Desktop Adventures* again,
+and continue development. With the design doc's own four-session phased
+build order (finite biome dungeons, the fetch/trade chain, all four biomes,
+the final area/win screen) fully closed out as of session 47, this session
+went back to the doc's premise section instead of the phased plan, which
+already named a second, never-built mechanic in passing: "Combat and
+puzzles (**sokoban blocks**, colored key/gate pairs) are texture around
+that trade-chain spine." A repo-wide grep (`sokoban|push_block|pushable`)
+confirmed neither push-blocks nor colored keys exist anywhere in the
+engine -- only a single generic `"key"` item and one-color switch/gate
+pairs (session 10). Re-researched both games directly (a fresh web search:
+MobyGames/GameFAQs/the Desktop Corner fansite for Yoda Stories, TV Tropes/
+Fandom for Desktop Adventures) specifically for this mechanic and confirmed
+it's real and central, not a doc-writer's guess: Yoda Stories' own manual
+describes pushing/pulling blocks (Shift+Arrow) onto a marked square to
+trigger an event (the "arrange 4 objects on the green square" Ben Kenobi
+puzzle is the sourced example), and Desktop Adventures' own puzzle
+mix explicitly includes "pushing around blocks and furniture" and "pressing
+switches" alongside item-fetch puzzles. This session builds the
+push-block half of that note; colored key/gate pairs (today's lock/gate
+system is still single-color/generic) are still unbuilt, flagged below
+rather than attempted in the same session.
+
+- **`engine/room.py`**: `Room` gains `block_templates`/`plate_templates`
+  (from a new `"blocks"`/`"plates"` key in room data, both default-empty so
+  every existing room needs zero changes) -- structural starting positions
+  only, same split every other fixture list here already keeps between
+  "Room holds the template, Game owns the live/mutated state."  A `plate`
+  is shaped exactly like a `switch` (`id`/`x`/`y`/`gate_id`) but is
+  triggered by a block's weight instead of the player's own footstep.
+- **`engine/entity.py`**: `Player.try_move` gains a `blocks=()` param and a
+  new branch, checked after `locked_exits` and before the generic `blocked`
+  walkability check (same reasoning locked_door/gate already sit ahead of
+  that check) -- necessarily so, since a block's tile is itself folded into
+  `_blocked_positions()` (see below), and without this branch running
+  first every block would just read as an unmovable wall. On a bump into a
+  block, computes the push destination one tile further in the same
+  direction and validates it against `room.is_walkable` (walls/closed
+  gates-doors) plus every other list `try_move` already receives (enemies,
+  npcs, chests, switches, items, and every *other* block) -- a landing tile
+  occupied by anything returns `{"type": "blocked"}` (the push simply
+  fails, same as bumping a wall) rather than ever silently clipping through
+  or displacing something. A legal push is committal in one input, same as
+  a chest/switch walk-on: the player steps into the block's old tile *and*
+  the block moves, both in the same `try_move` call -- the caller (Game)
+  only needs to update the block's own position afterward, not re-derive
+  where the player ended up.
+- **`main.py`**:
+  - `_blocked_positions()` now also folds in every block's current
+    position, alongside locked doors/gates -- a block is a real physical
+    obstacle for enemy pathing and spell line-of-sight (both already
+    consume this set) exactly like a closed gate, for every purpose
+    *except* the player's own push (which checks `self.blocks` directly in
+    `try_move`, ahead of ever consulting this set).
+  - `load_room`: `self.plates = list(self.room.plate_templates)` (plates
+    never move, so no override needed, same as switches). `self.blocks` is
+    built from `self.room.block_templates`' starting positions, then
+    overlaid with `self.save.get_block_positions(room_id)` for any block
+    that's been pushed on a previous visit -- same "template is the
+    default, a save-backed table is the override" split `room_drops`
+    already established for dropped items, just keyed by id instead of
+    being an add/remove list (a block always exists, it just may have
+    moved).
+  - `handle_move`'s new `"push_block"` branch: updates the block dict's
+    `x`/`y` in place, then checks whether its new position matches any
+    plate; if so and that plate's `gate_id` isn't already open, opens it
+    (removes the gate from `self.gates`, same as the existing `"switch"`
+    branch) -- gates stay open permanently once triggered by a plate,
+    identical semantics to a switch, so there's no "re-close if the block
+    is later pushed off" logic to write. `self.blocks` is mutated in
+    memory only and flushed to the new table at the same three checkpoints
+    `self.room_drops` already flushes at (`persist()`, the `"exit"`
+    stairs/door branch, Word of Recall) -- same in-memory-first convention
+    session 43 established, not a new pattern.
+  - The existing `"gate"` bump message ("Find the switch") was generic
+    enough to imply every gate has a switch specifically, which is no
+    longer true -- reworded to "Something nearby must trigger it" so it
+    stays accurate for either trigger kind without the player having
+    guessed which one a given gate uses.
+  - `_load_assets`: `push_block` (warm brown-stone square placeholder,
+    `make_placeholder(..., shape="square")`, same shape switches already
+    use but a color distinct from their red/green) and `plate_off`/
+    `plate_on` (dim slate-blue vs. lit gold, mirroring switch_off/on's own
+    not-yet/triggered convention) -- no crate/boulder/pressure-plate art in
+    either sheet, same "no matching sprite" situation sessions 21/28/39
+    already hit for the Viper/traps/spellbooks.
+  - `_draw_fixtures`: plates draw before blocks (so a block resting on its
+    plate shows the block, not the floor marking underneath -- same
+    draw-order reasoning Room.draw already uses for floor tiles under
+    exit-kind overlays), both fog-gated through the same `_is_visible`
+    check every other fixture already uses.
+- **`engine/save.py`**: new `block_positions` table
+  (`room_id, entity_id, x, y`, `PRIMARY KEY(room_id, entity_id)`), full-
+  replace via `get_block_positions`/`set_block_positions`, identical shape/
+  semantics to `room_drops`. Added to `reset()`'s wiped-table list.
+- **`data/rooms/crypt.json`**: the mechanic's first (and so far only) real
+  use, added to the existing hand-authored Crypt room rather than into
+  procedurally-generated content (Depths `generate_room`/Adventure Mode
+  `generate_biome_room`) -- deliberately scoped down from an earlier plan
+  to wire this into procgen directly. Reasoning: a procedurally-placed
+  puzzle needs its own solvability guarantee (the block must be reachable,
+  the push path must be straight and clear, and the walled-off reward
+  pocket must not accidentally sever some *other* room's only path through
+  that space -- exactly the class of bug session 44 already found and had
+  to fix for the vault-ring case) -- a real but separately-scoped problem,
+  not attempted this session. A hand-authored room sidesteps all of that:
+  the geometry is fixed and fully inspectable by hand, so this session
+  could build and verify the mechanic itself end-to-end without also
+  re-deriving generate_room's reachability-proof machinery for a second
+  fixture type. Extending push-blocks into procgen is flagged below as
+  follow-on work, not silently dropped.
+  - Carved a small sealed pocket into the existing `back_hall` region's own
+    open interior (no new room, exit, or fog region needed -- the pocket's
+    three cells already fall inside `back_hall`'s existing region
+    rectangle): walled off `(27,1)` and `(27,3)` and `(28,4)`, leaving
+    `(27,2)` as the pocket's sole opening (the `gate` fixture sits there)
+    and `(28,1)/(28,2)/(28,3)` as the enclosed interior holding a new bonus
+    chest (`crypt_chest1`, `gold_greater` -- deliberately gold rather than
+    gear/a spellbook, since a chest that can't fail to have room for its
+    reward was one less thing to verify this session). Confirmed by direct
+    grid inspection (not just visual inspection) that all three sealed
+    cells were previously plain unused `back_hall` floor -- no item/enemy/
+    region boundary sat on any of them -- and that `back_hall`'s only real
+    connections (the row 8-10 bridge to `entry_hall`/`hall_passage`, and
+    the vault door at row 11-12) are nowhere near this corner, so sealing
+    three tiles here can't disconnect anything else in the room.
+  - `crypt_block0` starts at `(21,2)`, three tiles west of a new
+    `crypt_plate0` at `(24,2)` (linked to a new `crypt_gate0` at `(27,2)`)
+    -- reaching the plate takes three separate pushes along the same row,
+    not one, since the block only moves one tile per bump. Deliberately
+    *not* a trivial one-push puzzle: once the block settles on the plate,
+    it's a real (permanent) obstacle sitting in the same row as the now-
+    open gate, so reaching the gate/chest afterward requires detouring
+    around the player's own block via row 1 or row 3 for one tile and
+    dropping back into row 2 -- an emergent side effect of "the block you
+    just placed is still a solid object," not something hand-scripted, and
+    a nice match for how the real games' own block puzzles work (the
+    solution can put an obstacle in your own way).
+- Verified headless (SDL dummy driver, scratch DB via monkeypatched
+  `main.SAVE_PATH`, confirmed the real `save.db`'s mtime unchanged
+  before/after): booted a real `Game`, loaded `crypt`, confirmed
+  `crypt_block0` starts at `(21,2)` and `crypt_gate0` starts closed;
+  drove three real `handle_move(1, 0)` calls and confirmed the block
+  advanced one tile per push (`22,2` -> `23,2` -> `24,2`) while the player
+  advanced into each of the block's vacated tiles in turn, landing on
+  `(24,2)` opened `crypt_gate0` (added to `open_gate_ids`, removed from
+  `self.gates`) via the real plate-match check in `handle_move`; confirmed
+  a further bump into the now-settled block returns `"push_block"` again
+  (it's a legal, if pointless, push against clear floor) rather than
+  `"blocked"`, proving the block is a real obstacle and not just a one-
+  time trigger that vanishes; walked the real detour (north/east/east/
+  south/east/east) around the settled block and through the open gate,
+  confirmed the chest opens through the real chest-dispatch path and
+  grants `gold_greater`'s gold, and confirmed re-bumping the same spot
+  doesn't re-fire (same `opened_chest_ids` no-op every other chest gets).
+  Ran `persist()` then booted a **second** fresh `Game` instance against
+  the same scratch save file and confirmed the block's pushed position,
+  the open gate, and the opened chest all survived the round-trip;
+  separately booted a **third** fresh instance against a brand-new
+  (never-persisted) save and confirmed the block starts back at its
+  template position `(21,2)`, proving the override-on-top-of-template
+  logic only ever applies when there's actually persisted state to apply.
+  Regression-checked `town_hub`/`armory`/a biome room/a Depths `proc:` room
+  all still load with empty `blocks`/`plates` lists and no errors, since
+  none of those rooms define either key. **Also visually inspected** via
+  rendered screenshots: before the push, the brown block, dim slate plate,
+  blue gate bars, and closed chest all reading as four distinct fixtures in
+  a row; after three pushes, the block sitting visibly on the plate's tile
+  (block drawn on top, per the plate-then-block draw order) and the gate
+  bars gone entirely from the render (confirming it actually opened,
+  not just logically).
+
+### Session 49 — colored key/gate pairs, closing the other half of wayfarer_adventure.md's "puzzles as texture" note
+
+Same recurring framing as sessions 44-48: read `PROGRESS.MD` and
+`wayfarer_adventure.md`, look up *Yoda Stories*/*Desktop Adventures* again,
+continue development. Session 48's own Known Limitations left exactly one
+named, sourced, never-built mechanic on the table: "Colored key/gate pairs
+are still unbuilt... this half is still just a single generic `"key"` item
+unlocking any `locked_door`, no color/type matching." This session builds
+that half.
+
+Re-researched both games directly (fresh web search) specifically for this
+mechanic before touching code, same discipline session 48 used for
+sokoban: Yoda Stories' own Fandom wiki (`Mission`/`Locator Map` pages)
+confirms Key Cards are explicitly color-coded ("keys come in many shapes,
+sizes and colors, but all serve the same purpose: opening doors & chests"),
+that they gate `Blockade Cell`/`Gate Cell` puzzles, and that the game's
+hint system deliberately generalizes to an item's *group* (Tools/Key
+Cards/Parts/Valuables) rather than naming the exact required item --
+confirming the real mechanic is "the right key for the right lock," not a
+single universal key. Desktop Adventures sources didn't surface a distinct
+colored-key description in this pass, but wayfarer_adventure.md's premise
+section already pairs the two games as "same engine, two skins," and this
+engine's own existing generic `"key"`/`locked_door` pair (session 10) is
+the mechanic being specialized here, not something invented fresh.
+
+- **`data/items.json`**: two new item defs, `key_copper`/`key_jade`,
+  shaped identically to the existing `"key"` (effect `"none"`, value 0,
+  auto-consumed on bump -- see below) -- flavor text names which door
+  color each opens. No `key_color` field or lookup table: the matching
+  item type is derived directly from the door's color (`f"key_{color}"`),
+  same "the string is the join key" convention `push_block`/`plate_off`
+  already use for their own sprite names, rather than adding a second
+  source of truth that could drift out of sync with the door data.
+- **`engine/room.py`**: zero changes needed. `locked_door_templates` are
+  raw dicts straight from `data/rooms/*.json` (confirmed by reading the
+  module before touching it) -- an optional `"color"` key on a
+  `locked_doors` entry just rides along for free, the same way `plates`'
+  `gate_id` already does, with no schema change and zero risk to every
+  room that doesn't define one.
+- **`main.py`**'s `"locked_door"` branch (`handle_move`): now reads
+  `door.get("color")`. No color -> exactly the original session-10
+  behavior (`"key"` opens it, unchanged, so `crypt_door0` needed zero
+  edits). A color -> the needed item becomes `f"key_{color}"`; a
+  wrong-colored key (or no key at all) leaves the door locked and prints a
+  color-naming message ("This door is banded in copper -- you need a
+  matching key") instead of the generic one, without ever touching (let
+  alone consuming) whatever *is* in the player's bag -- confirmed by
+  headless test, see below.
+- **`_load_assets`**: two new door tint variants (`locked_door_copper`,
+  `locked_door_jade`, both `make_tint_variant` off the same `gate_bars`
+  source art gate/locked_door already share) and two new key-item tint
+  variants (`item_key_copper`, `item_key_jade`, off `item_key`). Picked
+  copper (200, 90, 40, no blue at all) and jade (60, 170, 110, no red at
+  all) specifically to sit far apart from each other *and* from the two
+  colors already claimed on this same source art (gate's blue (120, 170,
+  220), the original locked_door's amber (210, 160, 60)) -- same "hue
+  combination, not just brightness" lesson sessions 46/47 already learned
+  the hard way for the biome tint markers, applied proactively here rather
+  than re-discovered.
+- **`_draw_fixtures`**: a locked door now draws `locked_door_{color}` if
+  it has one, else the plain `locked_door` sprite it always drew before --
+  one conditional, same pattern the trap loop already uses for
+  per-type sprite names (`AssetManager.get_sprite(trap["type"])`).
+- **`data/rooms/crypt.json`**: two new alcoves in the existing hand-authored
+  Crypt, same scoping call session 48 made for push-blocks and for the
+  same reason -- a procedurally-placed colored lock needs its own
+  solvability guarantee (the matching key must be placed somewhere
+  actually reachable *before* the door, not just anywhere in the seed),
+  which is a real but separately-scoped problem, not attempted this
+  session. Both new alcoves reuse the exact "seal a 1-tile pocket into an
+  existing region's own open interior, one wall-gap doorway" shape session
+  48 already established for the crypt_chest1 push-block reward, just
+  carved into `entry_hall` (a mostly-empty 13x18 rectangle with only three
+  pre-existing entities in it) instead of `back_hall`:
+  - Copper alcove: interior `(11,2)` (new `crypt_chest2`, `potion_greater`),
+    sealed by walling `(10,2)`/`(12,2)`/`(11,1)`, door (`crypt_door1`,
+    `color: "copper"`) at `(11,3)`, approached from the already-open
+    `(11,4)`.
+  - Jade alcove: interior `(11,15)` (new `crypt_chest3`,
+    `whetstone_greater`), sealed by walling `(10,15)`/`(12,15)`/`(11,14)`,
+    door (`crypt_door2`, `color: "jade"`) at `(11,16)`, approached from the
+    already-open `(11,17)`.
+  - The matching keys themselves (`crypt_key_copper` at `(3,2)`,
+    `crypt_key_jade` at `(3,17)`) are placed elsewhere in `entry_hall`,
+    both confirmed clear of every pre-existing item/enemy coordinate by
+    direct grid inspection before editing (not just eyeballed) -- same
+    discipline session 48 used before carving its own pocket.
+  - Deliberately **two** colors, not one: a single colored pair would only
+    ever prove "a key now has a name," not the actual discriminating
+    behavior the source games' own color-coding exists for (a key that
+    *doesn't* match still fails). Two independent color/door/chest triples
+    sitting in the same dungeon, verified cross-wise (a jade key bumping
+    the copper door, and vice versa, both correctly refused, see below),
+    is the smallest build that actually demonstrates the mechanic rather
+    than just renaming the existing one.
+- Verified via a standalone flood-fill script (same technique sessions
+  44/46/48 used for their own vault/pocket isolation proofs) before ever
+  touching game code: with all three locked doors (`crypt_door0`,
+  `crypt_door1`, `crypt_door2`) treated as closed, none of their three
+  interiors are reachable from the room's main corridor; opening any *one*
+  door makes only its own interior reachable, the other two staying
+  sealed; with all three open, all 405 floor tiles in the room are
+  reachable (unchanged from before this session's wall edits, confirming
+  nothing else in the room was accidentally disconnected).
+- Verified headless (SDL dummy driver, scratch DB via monkeypatched
+  `main.SAVE_PATH`, confirmed the real `save.db`'s mtime/md5 unchanged
+  before and after): booted a real `Game`, loaded `crypt`, confirmed all
+  three locked doors present with the expected `color` values (or `None`
+  for the original `crypt_door0`); bumped the copper door with an empty
+  inventory and confirmed it stays locked; gave the player a **jade** key
+  and confirmed bumping the copper door still refuses to open *and* the
+  jade key is not consumed by the failed attempt (`inventory.stacks` count
+  unchanged); gave the player the copper key and confirmed the copper door
+  opens and the key is consumed; walked into the copper alcove and
+  confirmed its chest opens through the real chest-dispatch path; repeated
+  the same sequence for the jade door/alcove (using the jade key already
+  in the bag from the earlier mismatch test); ran `persist()` then booted
+  a **second** fresh `Game` instance against the same scratch save and
+  confirmed both colored doors' unlocked state survived the round trip
+  while the untouched `crypt_door0` was still locked; as a regression
+  check, confirmed the plain `"key"` item still opens `crypt_door0`
+  exactly as it did before this session's changes. **Also visually
+  inspected** via rendered screenshots (a fresh, never-persisted save so
+  both colored doors render in their still-locked state): the copper and
+  jade doors reading as clearly distinct tinted-bars fixtures from each
+  other and from the room's original amber `locked_door`/blue `gate`, each
+  sitting correctly in its own small recessed wall alcove above its
+  reward chest; the copper and jade key items on the entry_hall floor
+  reading as distinctly orange-red vs. yellow-green at a glance, matching
+  their respective doors.
+
+### Session 50 — colored key/gate pairs wired into Adventure Mode's procedurally-generated biome vaults
+
+Same recurring framing as sessions 44-49: read `PROGRESS.MD` and
+`wayfarer_adventure.md`, look up *Yoda Stories*/*Desktop Adventures* again,
+continue development. With the design doc's own phased build order (session
+47) and both named "puzzles as texture" mechanics (sokoban blocks session 48,
+colored keys session 49) now built, both of the two remaining Known
+Limitations entries flagged the exact same follow-on: colored locks (and,
+separately, push-blocks) "exist in exactly one hand-authored room (Crypt) --
+not yet wired into either procedurally-generated system," each needing "its
+own solvability guarantee" before being safe to generate. Re-reading
+`generate_biome_room` (`engine/procgen.py`) before touching anything showed
+that guarantee already exists for the colored-key half: the guaranteed vault
+door/key pair session 44 built (and proved reachable via a 500-seed
+flood-fill check, with the vault-ring isolation fix making the lock provably
+the *only* entrance) already places a generic `"key"` item at a point proven
+reachable *before* the vault, and a locked door at a point proven to gate it
+-- coloring that same pair is a pure data change (which color string the
+door/item use) with the underlying geometry, placement logic, and
+reachability proof completely untouched. This is why colored keys, not
+push-blocks, is this session's pick: push-blocks would need a *new*
+solvability proof (block reachable, push path straight/clear, reward pocket
+provably not severing another room's path) built from scratch, while colored
+keys could reuse a proof that already existed. Push-block-in-procgen is still
+unbuilt, left for a future session.
+
+- **`engine/procgen.py`**: `BIOME_DEFS` gains a `"lock_color"` field per
+  biome -- `scorched_wastes` -> `copper`, `frostreach` -> `azure`,
+  `stormfell` -> `violet`, `fenmire` -> `jade`, `final_area` -> `gold`.
+  Reuses session 49's own copper/jade colors for two of the five (never
+  rendered in the same room as each other or as Crypt's own copper/jade
+  alcoves, so no distinctness risk from the reuse) and adds three new ones.
+  In the guaranteed-vault placement block, the door dict now carries
+  `"color": lock_color` (omitted entirely when absent, so Depths'
+  `generate_room()` -- deliberately left untouched, same "bigger blast
+  radius, lower stakes" reasoning session 44 already used to leave a related
+  vault-carving bug unfixed there -- needs zero changes) and the key item's
+  `type` becomes `f"key_{lock_color}"` instead of the bare `"key"`. Both
+  `main.py`'s `"locked_door"` handling and its fixture-draw dispatch
+  (session 49) already read `door.get("color")` generically -- **zero
+  engine-logic changes were needed anywhere**, only the data this session
+  adds.
+- **`data/items.json`**: three new item defs, `key_azure`/`key_violet`/
+  `key_gold`, shaped identically to `key_copper`/`key_jade`.
+- **`main.py`'s `_load_assets`**: registering the matching sprites surfaced a
+  real bug worth its own note. The first attempt tinted all three new colors
+  off `item_key` the same way session 49 tinted copper/jade -- looked fine
+  as tuples on paper, but a rendered 8x-scaled side-by-side comparison sheet
+  of all six key sprites (plain + 5 colors) showed two distinct failures:
+  azure/violet came out muddy brown instead of blue/violet (item_key's
+  source pixels carry almost no blue channel anywhere in the sprite, unlike
+  `gate_bars` -- confirmed by directly sampling every sprite's pixel
+  colors -- so a tint needing blue to read has nothing to multiply against;
+  same class of `BLEND_RGB_MULT`-can-only-darken ceiling sessions 46/47 hit,
+  just for a different base image), and separately, **gold landed visually
+  indistinguishable from copper and even the plain uncolored key** --
+  item_key's own native coloring is already warm red/orange with no blue, so
+  a red+green/no-blue "gold" wash barely shifts an already-similar-looking
+  base. Fixed by using this codebase's existing fallback for "no matching art
+  for the color/shape needed" (the same call already made for switches/
+  push-blocks/plates/spellbooks): all three now render as a small colored
+  diamond placeholder (`make_placeholder`, `shape="diamond"`) instead of a
+  tint, in the exact target hue -- re-rendered and re-sampled, all three read
+  as unambiguously blue/violet/gold with no ceiling problem, and (since
+  `make_placeholder` has no such ceiling) no risk of quietly regressing again
+  the way a fourth or fifth tint attempt against this base art might. Session
+  49's own copper/jade tints are unchanged and out of scope (their mutual
+  distinctness from each other, the actual functional requirement, was
+  already true and still is) -- only this session's own three new colors
+  needed the fix. Worth remembering alongside sessions 46/47's own tint
+  notes: the base-art ceiling problem isn't unique to `gate_bars`, and a
+  side-by-side rendered comparison of *every* variant sharing a base image
+  (not just the newest one against its own target color) is the check that
+  actually catches a wash indistinguishable from a sibling or the plain
+  original, since a single tuple can look reasonable in isolation and still
+  fail that comparison.
+- **`data/rooms/crypt.json`**: untouched -- Crypt's own copper/jade alcoves
+  (session 49) are a separate, still-unrelated hand-authored use of the same
+  color-matching mechanism, not migrated or duplicated.
+- Verified directly (bypassing pygame): stress-tested
+  `generate_biome_room` across all 5 biomes x 200 seeds each (1000 total,
+  915 actually placing a vault, the rest hitting session 44's own documented
+  no-room-for-a-vault fallback where no door/key exists at all) with a
+  flood-fill reachability checker -- for every placed vault, confirmed the
+  door's `color` always matches its biome's `lock_color`, the key's `type`
+  is always the matching `key_<color>`, the vault interior is unreachable
+  with the door treated as closed, the key's own tile *is* reachable with
+  the door closed, and the vault interior becomes fully reachable once the
+  door is treated as open -- zero failures, confirming coloring the lock
+  introduced no new solvability risk on top of session 44's existing proof.
+  Verified headless (SDL dummy driver, scratch DB via monkeypatched
+  `main.SAVE_PATH`, confirmed the real `save.db`'s md5 unchanged
+  before/after -- there was in fact a real `save.db` present this session,
+  unlike session 46's run): for each of the 5 biomes, booted a real `Game`,
+  loaded `biome:<id>:<seed>` (retrying with a fresh seed on the rare
+  no-vault-fallback roll), confirmed exactly one locked door with the
+  expected color and exactly one matching-typed key item generated; gave the
+  player every *other* color's key (all 4 siblings plus the plain
+  uncolored `"key"`) and confirmed a real `handle_move` bump into the door
+  leaves it locked and consumes nothing from the inventory; then gave the
+  correct color's key and confirmed the same bump unlocks the door and
+  consumes exactly that key. Ran `persist()` then booted a **second** fresh
+  `Game` instance against the same scratch save and confirmed the Final
+  Area's door stayed unlocked across the round trip. Regression-checked
+  Crypt's own three doors (`crypt_door0`/`None`, `crypt_door1`/`copper`,
+  `crypt_door2`/`jade`) and floor key set (`key`/`key_copper`/`key_jade`)
+  are completely unaffected, and that `town_hub`'s exit set is still exactly
+  the expected seven. **Also visually inspected** via rendered screenshots:
+  all five biome-vault doors reading as five distinct tinted-bars colors at
+  a glance (direct pixel samples matched each `lock_color`'s tuple exactly:
+  e.g. frostreach's door sampled `(20, 21, 52)`, stormfell's `(31, 19,
+  51)` -- both clearly blue-leaning/violet-leaning respectively, distinct
+  from the plain amber `locked_door` and blue `gate`); a full Frostreach room
+  render showing the azure key, the mini-boss, the vault chest, and ordinary
+  floor loot all rendering correctly together with fog of war and the room
+  name in the HUD; and the 8x key-sprite comparison sheet (see the asset bug
+  above) confirming the final fix reads correctly: copper/gold/jade/azure/
+  violet all now visually distinct from each other and from the plain key.
+
 ## Known Limitations / Future Work
 
 Roughly in likely-priority order — not committed to, just tracked:
 
+- **Push-block puzzles (session 48) exist in exactly one hand-authored
+  room (Crypt)** — still not wired into either procedurally-generated
+  system (Depths `generate_room` or Adventure Mode's `generate_biome_room`).
+  Doing so needs its own solvability guarantee (block reachable, push path
+  straight/clear, the sealed reward pocket provably not severing some other
+  room's only path through that space) -- the same class of problem session
+  44 already solved once for the vault-ring case, just for a second fixture
+  type, and unlike colored keys (see below) that proof genuinely doesn't
+  exist yet for this mechanic -- still real, unattempted work, not just a
+  copy of the colored-key session.
+- ~~**Colored key/gate pairs are still unbuilt**~~ — closed out session 49
+  (Crypt only), then session 50 closed the "not wired into either
+  procedurally-generated system" half too, for Adventure Mode specifically:
+  `BIOME_DEFS` entries (`engine/procgen.py`) now carry a `lock_color`, and
+  the guaranteed vault door/key pair every biome already generates (session
+  44) is colored with it -- `key_copper`/`key_azure`/`key_violet`/
+  `key_jade`/`key_gold` across the five biomes. This turned out to need no
+  new solvability proof at all (unlike push-block's still-open case above):
+  session 44's own vault-ring reachability guarantee already places the key
+  at a point proven reachable before the door, so coloring the pair is a
+  pure data change riding an existing proof, confirmed by re-running the
+  same flood-fill check across 1000 biome/seed combinations with zero
+  failures. Depths' `generate_room()` still generates only the plain
+  uncolored `"key"` -- deliberately unchanged, same "bigger blast radius on
+  43 sessions of existing content, lower stakes since a Depths vault is
+  bonus loot" reasoning session 44 already used to leave that generator's
+  own vault-ring bug unfixed. See session 50's own PROGRESS.MD entry for a
+  real asset bug this surfaced: `BLEND_RGB_MULT` tinting off `item_key`
+  cannot produce a blue/violet result (that source art has almost no blue
+  channel anywhere) and barely shifts a gold wash at all (the art's own
+  native color is already warm red/orange) -- fixed by using placeholder
+  diamonds instead of tints for all three new key colors, a reminder that a
+  side-by-side comparison against *every* sibling sharing a base image (not
+  just the newest tint alone) is the check that actually catches this,
+  since a tuple that looks reasonable in isolation can still land
+  indistinguishable from a sibling or the plain original.
+- ~~**Adventure Mode is three biomes and two quest-chain steps into a
+  multi-session arc (sessions 44-46)**~~ — closed out session 47: all four
+  of the design doc's biomes now exist (Scorched Wastes/Young Red Dragon/
+  Ember-Charred Fragment, Frostreach/Young White Dragon/Frost-Bound
+  Fragment, Stormfell/Young Blue Dragon/Storm-Cloven Fragment, Fenmire/
+  Young Green Dragon/Mire-Bound Fragment), the fetch/trade chain now runs
+  all the way to a Final Area ("The Sundering," guarded by a new Elder
+  Dragon mini-boss) whose vault chest is Adventure Mode's actual win
+  trigger, and a one-time victory modal (`Game.win_screen_open`/
+  `_draw_win_screen`) closes the design doc's own "nothing in the engine
+  has an ending today" gap. See `wayfarer/wayfarer_adventure.md` for the
+  full original plan (now fully built) and session 47's own PROGRESS.MD
+  entry for exactly how the win state is wired and persisted (via a
+  synthetic `"adventure_victory"` id riding the existing
+  `completed_adventure_quests` set, no new save table). Still true: sprite
+  art for every biome dungeon (including the Final Area) is unchanged from
+  the Depths' own `dungeon_v2` tileset -- resizing sprites larger on this
+  branch (separately requested, reconfirmed as still deferred every session
+  from 46 through 47) still hasn't happened, and is now the only explicitly
+  deferred item left on this branch. Also still true: the fetch/trade
+  mechanic deliberately does *not* consume the traded fragment (see session
+  45's own notes) -- this turned out to be exactly what made `guide_final`'s
+  single-fragment `wants` clause work as an implicit "holds every fragment"
+  check (session 47), so this departure is now load-bearing for the win
+  condition, not just a design choice to revisit. Also flagged (sessions 46
+  and 47 both hit variants of this): a `BLEND_RGB_MULT` color tint's
+  `strength` parameter interpolates *toward white* as it drops (0 = no tint
+  at all), the opposite of what "lower strength, less blended, more
+  saturated" sounds like at a glance -- and separately, the technique can
+  never make a tinted marker read as literally *brighter* than its own dark
+  source sprite, only differently-hued, since the blend mode only ever
+  darkens. Both are worth remembering before reaching for this trick again:
+  verify via an actual rendered screenshot and pixel sample, not
+  reasoning about the tuple/strength numbers on paper.
+- **Adventure Mode's Final Area difficulty is fixed/curated, not
+  level-scaled** (session 47, per the design doc's own "leans fixed/
+  curated" Open Questions note) — the Elder Dragon and every biome's
+  regular encounter roster use the same fixed `BIOME_TIER = 1` as the first
+  three sessions established, unplayed and untuned the same way session 9's
+  original Depths density was; a level 1 and a level 20 character currently
+  face an identical Final Area fight.
+- **No branching/replayability in the adventure quest chain** — the design
+  doc's own stretch goal ("any 2 of 3 fragments," randomized per-playthrough
+  chains closer to the real Desktop Adventures games) was explicitly scoped
+  out of every session's build in favor of a fixed linear chain; once a
+  save's `completed_adventure_quests` contains `"adventure_victory"` there's
+  no reset path short of a full `SaveManager.reset()` (which wipes
+  everything, not just Adventure Mode progress).
 - **Several sprite choices are poor and need to be re-done (flagged
   session 25)** — the user explicitly called this out while scoping
   session 25 to UI/layout only ("I am not worried about the sprites
