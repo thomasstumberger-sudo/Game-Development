@@ -7,9 +7,17 @@ import random
 import sqlite3
 
 from engine.equipment import SLOTS
+from engine.procgen import DEFAULT_DIFFICULTY
 
 DEFAULT_ROOM = "town_hub"  # session 10: replaces start_hall, see PROGRESS.MD
 DEFAULT_SPAWN = (16, 18)
+# Session 53 (Adventure Mode routes): the full route table -- names, blurbs,
+# `chained`, `required_fragments` -- is authored content and lives in
+# data/adventure_quests.json with the rest of the chain material. Only the
+# default id is needed down here, for the same reason DEFAULT_DIFFICULTY is
+# imported above: a pre-session-53 player row has NULL in the new column and
+# has to read back as the straight-line chain it was already walking.
+DEFAULT_ROUTE = "old_road"
 
 
 def _migrate_room_id(room_id):
@@ -98,6 +106,31 @@ class SaveManager:
             "temp_resist_cold_turns INTEGER DEFAULT 0",
             "temp_resist_lightning_bonus INTEGER DEFAULT 0",
             "temp_resist_lightning_turns INTEGER DEFAULT 0",
+            # Session 52 (Adventure Mode journeys -- Yoda Stories' "New
+            # World" option): which journey this character is on, which
+            # combat difficulty they chose for it, and how many journeys
+            # they've finished. All three are world-progression facts about
+            # one character, so they ride the existing single-row player
+            # table rather than a new one -- the same call session 47 made
+            # for the win flag (a synthetic id in completed_adventure_quests
+            # rather than a new table).
+            #
+            # The defaults are load-bearing for save compatibility: every
+            # pre-session-52 save reads back as journey 1 at "wandering"
+            # (enemy level 1 = scale_stats_for_level's identity case), i.e.
+            # exactly the fixed difficulty and exactly the biome room ids it
+            # already had.
+            "journey_index INTEGER DEFAULT 1",
+            "combat_difficulty TEXT DEFAULT 'wandering'",
+            "journeys_won INTEGER DEFAULT 0",
+            # Session 53 (Adventure Mode routes): the shape of this journey's
+            # quest chain -- "old_road" (the straight line sessions 45-52
+            # built) or "open_frontier" (every biome open at once, three of
+            # four fragments enough). Same default-is-load-bearing argument
+            # as the three columns above: every pre-session-53 save reads
+            # back on the old straight line, so its in-progress chain, its
+            # step ids and its gated town exits are all unchanged.
+            "adventure_route TEXT DEFAULT 'old_road'",
             *(f"equip_{slot} TEXT" for slot in SLOTS),
         ):
             try:
@@ -225,6 +258,8 @@ class SaveManager:
                        temp_resist_cold_bonus, temp_resist_cold_turns,
                        temp_resist_lightning_bonus, temp_resist_lightning_turns,
                        attack_drain,
+                       journey_index, combat_difficulty, journeys_won,
+                       adventure_route,
                        {equip_cols}
                 FROM player WHERE id = 1"""
         )
@@ -263,7 +298,15 @@ class SaveManager:
         turn_count = row[10] or 0
         depths_kills = row[11] or 0
         quest_index = row[12] or 0
-        equipment = dict(zip(SLOTS, row[34:34 + len(SLOTS)]))
+        # Session 52: `or` fallbacks (not just the column DEFAULTs) because a
+        # row written before this session's ALTER TABLE has NULL here, not
+        # the default -- SQLite only applies a column default to rows
+        # inserted after the column exists.
+        journey_index = row[34] or 1
+        combat_difficulty = row[35] or DEFAULT_DIFFICULTY
+        journeys_won = row[36] or 0
+        adventure_route = row[37] or DEFAULT_ROUTE
+        equipment = dict(zip(SLOTS, row[38:38 + len(SLOTS)]))
 
         inv_rows = self.conn.execute("SELECT item_type, count FROM inventory")
         inventory = {item_type: count for item_type, count in inv_rows}
@@ -305,6 +348,10 @@ class SaveManager:
             "turn_count": turn_count,
             "depths_kills": depths_kills,
             "quest_index": quest_index,
+            "journey_index": journey_index,
+            "combat_difficulty": combat_difficulty,
+            "journeys_won": journeys_won,
+            "adventure_route": adventure_route,
         }
 
     def new_game_defaults(self):
@@ -322,11 +369,17 @@ class SaveManager:
             "turn_count": 0,
             "depths_kills": 0,
             "quest_index": 0,
+            "journey_index": 1,
+            "combat_difficulty": DEFAULT_DIFFICULTY,
+            "journeys_won": 0,
+            "adventure_route": DEFAULT_ROUTE,
         }
 
     def save_game(self, player, inventory, current_room_id, seed, turn_count,
                    depths_kills, quest_index, known_spells, artifact_fragments=(),
-                   completed_adventure_quests=()):
+                   completed_adventure_quests=(), journey_index=1,
+                   combat_difficulty=DEFAULT_DIFFICULTY, journeys_won=0,
+                   adventure_route=DEFAULT_ROUTE):
         equip_cols = ", ".join(f"equip_{slot}" for slot in SLOTS)
         equip_placeholders = ", ".join("?" for _ in SLOTS)
         equip_updates = ", ".join(f"equip_{slot}=excluded.equip_{slot}" for slot in SLOTS)
@@ -345,8 +398,10 @@ class SaveManager:
                                      temp_resist_cold_bonus, temp_resist_cold_turns,
                                      temp_resist_lightning_bonus, temp_resist_lightning_turns,
                                      attack_drain,
+                                     journey_index, combat_difficulty, journeys_won,
+                                     adventure_route,
                                      {equip_cols})
-                VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, {equip_placeholders})
+                VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, {equip_placeholders})
                 ON CONFLICT(id) DO UPDATE SET
                   hp=excluded.hp, max_hp=excluded.max_hp,
                   xp=excluded.xp, level=excluded.level,
@@ -377,6 +432,10 @@ class SaveManager:
                   temp_resist_lightning_bonus=excluded.temp_resist_lightning_bonus,
                   temp_resist_lightning_turns=excluded.temp_resist_lightning_turns,
                   attack_drain=excluded.attack_drain,
+                  journey_index=excluded.journey_index,
+                  combat_difficulty=excluded.combat_difficulty,
+                  journeys_won=excluded.journeys_won,
+                  adventure_route=excluded.adventure_route,
                   {equip_updates}""",
             (
                 player.hp, player.max_hp, player.xp, player.level,
@@ -394,6 +453,8 @@ class SaveManager:
                 player.temp_resist_cold_bonus, player.temp_resist_cold_turns,
                 player.temp_resist_lightning_bonus, player.temp_resist_lightning_turns,
                 player.attack_drain,
+                journey_index, combat_difficulty, journeys_won,
+                adventure_route,
                 *(player.equipment.get(slot) for slot in SLOTS),
             ),
         )

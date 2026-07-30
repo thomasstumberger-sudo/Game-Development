@@ -5110,20 +5110,808 @@ unbuilt, left for a future session.
   above) confirming the final fix reads correctly: copper/gold/jade/azure/
   violet all now visually distinct from each other and from the plain key.
 
+### Session 51 — push-block puzzles wired into Adventure Mode's generated biome rooms (closing the last of `wayfarer_adventure.md`'s "puzzles as texture" follow-ons)
+
+Same recurring framing as sessions 44-50: read `PROGRESS.MD` and
+`wayfarer_adventure.md`, look up *Yoda Stories*/*Indiana Jones and His
+Desktop Adventures* again, continue development. This picks up the single
+remaining Known Limitations entry at the top of the list — session 48 built
+push-blocks in exactly one hand-authored room (Crypt), session 50 wired the
+*other* mechanic (colored key/gate pairs) into `generate_biome_room` by
+riding session 44's existing vault-ring reachability proof, and explicitly
+left push-blocks-in-procgen alone because it "would need a *new* solvability
+proof built from scratch." That proof is what this session is.
+
+Research this round turned up one fact that directly shaped the design, from
+Zach Barth's reverse-engineering write-up of the Yoda Stories data format:
+the games' "random" worlds are assembled out of **fixed authored sub-maps**
+("after playing a few times it's apparent that these maps are actually a set
+of fixed smaller maps attached together"), and the tile format carries a
+per-tile flag bit specifically marking a tile as a push/pull block. So the
+source games never generated block puzzles cell-by-cell either — they
+stamped authored ones into generated worlds. That's exactly the approach
+taken here (a fixed stamp, procedurally *placed* and then verified), rather
+than trying to carve a puzzle out of whatever geometry a room happened to
+have. The Desktop Corner fansite's own troubleshooting advice ("push/pull
+objects to search for switches") and TV Tropes' note that the games "lock
+doors and peek into presently unreachable areas" also both landed in the
+final design — see the visible-reward-behind-bars note below.
+
+- **The constraint that picked the geometry.** A generated block puzzle has
+  to guarantee more than session 44's vault ring does. The vault ring only
+  has to prove *reachability*; a block puzzle also has to prove the player
+  can't **permanently ruin** it, because a block's pushed position is
+  persisted forever (`block_positions`, session 48), this game has no undo,
+  and there's no per-puzzle reset short of `SaveManager.reset()`. Session
+  48's Crypt puzzle sits in an open room, where a block can be shoved
+  sideways off its lane into a corner and stranded — fine for one room whose
+  geometry a human verified by hand, not provable for a generated one, and
+  full sokoban reversibility analysis is not a thing to attempt inside a
+  room generator. So the generated form is a **dead-end corridor** instead
+  (`engine/procgen.py`'s new `PUSH_LANE_LENGTHS` section carries the
+  diagram):
+
+  ```
+        o:   -2  -1   0   1   2   3      4        o = offset along push dir
+      q=-1:   .   #   #   #   #   #      .        q = offset across it
+      q= 0:   .   .   B   .   .   P(=k)  #        B block, P plate
+      q=+1:   .   #   G   #   #   #      .        G gate (pocket's only door)
+      q=+2:   .   #   K   #   .   .      .        K reward chest in the pocket
+      q=+3:   .   #   #   #   .   .      .
+  ```
+
+  Every cell adjacent to the lane is forced wall except the gate, and the
+  far end past the plate is a forced dead end, so the player can only ever
+  stand *behind* the block: the block can only be pushed along the lane,
+  only toward the plate, and can never overshoot it. The puzzle is
+  unruinable **by construction** rather than by playtesting — there is no
+  sideways push and no backward push available at any point, which is a much
+  stronger property than "we tested it and it seemed fine."
+- **Why the gate sits on the entrance side.** Crypt's hand-authored puzzle
+  puts its gate *past* the plate, which produced the nice emergent "the
+  block you just placed is now in your own way, detour around it" property
+  session 48 liked. In a walled corridor that same layout is fatal: the
+  player ends every solve standing directly behind the block with the
+  corridor's only other end sealed by their own block, so a gate past the
+  plate would open onto a reward permanently out of reach. Putting the gate
+  beside the block's *start* cell instead means the solved state is: block
+  parked at the far end on the plate, player walks back out the way they
+  came, and turns into the pocket its weight just unlocked. (This was worth
+  writing down because the naive port of the hand-authored layout is
+  precisely the broken one.)
+- **`engine/procgen.py`**:
+  - `_push_stamp(origin, along, across, pushes)` — pure geometry: returns
+    the cells to carve open, the cells to force solid, and the named parts
+    (mouth/block/plate/gate/pocket/approach) for the caller. Parameterized
+    by direction and pocket side, so all 8 orientations come out of one
+    definition.
+  - `_place_push_puzzle(...)` — tries hosts/directions/pocket-sides/lane
+    lengths (4 pushes preferred, 3 as fallback) and up to
+    `PUSH_PLACEMENT_ATTEMPTS` random origins each, requiring the whole
+    footprint to fit inside one core room's rect and to touch nothing in a
+    `keep_clear` set (every enemy/item/trap/chest/door/switch, every core
+    room center where corridors land, the entry landing, the town exit).
+    Each candidate is then applied to the layout **for real** and verified
+    by three floods, rolled back from a snapshot unless all pass — the same
+    snapshot/verify/undo pattern session 44's vault ring already uses:
+    1. gate closed, block on its start cell → everything in `must_reach` is
+       still reachable and the corridor mouth is enterable (nothing severed,
+       and the player can actually start pushing);
+    2. gate closed → the pocket is **not** reachable (the puzzle really is
+       what gates the reward, not decoration — the same property the vault
+       ring has to hold for the artifact fragment);
+    3. gate open, block parked on the plate → the pocket **is** reachable
+       and nothing got stranded behind the settled block (solving it pays
+       out, and the block-as-permanent-obstacle doesn't wall anything off).
+  - `_reachable_floor` gains an `avoid` param (cells to treat as solid for
+    one flood — a closed gate, a block in the way); `start` is never
+    avoided.
+  - `_chest_payload(rng, tier)` factored out of `generate_room`'s inline
+    vault-chest block so the new reward chest can't drift from it (same
+    reasoning `_vault_reward` already used). Draw order is unchanged, so
+    every existing Depths seed still generates exactly the chest it did
+    before — verified byte-for-byte, see below.
+  - `generate_biome_room` calls the placement **last**, after the
+    guaranteed vault: the vault is mandatory progression (it holds the
+    biome's fragment), so it keeps first pick of the geometry and is never
+    re-rolled or disturbed; the puzzle fits itself around what's left and
+    skips itself entirely if nothing fits (`_place_vault`'s own "no room for
+    one, don't ship a broken one" fallback). Being last also means nothing
+    upstream sees a changed rng draw, so every seed's existing
+    layout/population/vault is bit-identical to before this session.
+  - Emits `"blocks"`/`"plates"` in the returned room dict; the reward chest
+    rides the existing `chests` list and the plate-triggered gate the
+    existing `gates` list (no `switch_id`, exactly like session 48's
+    hand-authored `crypt_gate0`).
+- **Zero changes anywhere else.** No `main.py`, `engine/entity.py`,
+  `engine/room.py`, `engine/save.py`, or `data/` edits: session 48 already
+  built the push mechanic, the plate→gate trigger, the block-position
+  persistence, the sprites, and the fixture draw order generically, and
+  `Room` already defaults `blocks`/`plates` to empty for every room that
+  doesn't define them. This session is procgen-only — the same "the engine
+  already reads this generically, only the data is new" outcome session 50
+  had with colored locks.
+- **The Depths still ship no blocks/plates**, deliberately (noted inline at
+  `generate_room`'s return): same scope line sessions 44 and 50 drew, same
+  reasoning — high blast radius across 43 sessions of existing content and
+  existing saves, low payoff on a bonus-loot vault.
+- Verified without pygame, via an **independent** checker
+  (`verify_push.py`, deliberately not importing procgen's own
+  `_reachable_floor` — it re-implements the flood and *simulates the actual
+  pushes* under `Player.try_move`'s own rules, so a bug in the generator's
+  checker can't hide behind itself): all 5 biomes x 400 seeds = **2000
+  rooms, 1998 puzzles placed, 0 failures** across every check — geometry
+  (block/plate collinear, gate perpendicular-adjacent, pocket one further
+  out), the lane sealed on both sides at every cell except the gate, the
+  dead end present past the plate, the pocket sealed except at the gate, no
+  overlap with any fixture, mouth reachable, pocket unreachable while the
+  gate is closed, every push landing on legal unoccupied floor, the pushes
+  ending exactly on the plate with the player directly behind, overshoot
+  impossible, pocket reachable once solved, nothing stranded either before
+  or after, and no push available in any unintended direction. The 2 skipped
+  rooms are both cases where every core room came out at or near the 7x7
+  minimum (`frostreach` seed 167, `fenmire` seed 327) — the intended
+  no-fit skip, not a failure.
+- Verified as a regression that this session changed nothing else: re-ran a
+  pre-change dump of 360 Depths rooms (20 seeds x 3 levels x 3 coords x 2
+  epochs) and 200 biome rooms — **every Depths room byte-identical, layout
+  included**, and every biome room's pre-existing fields byte-identical with
+  layout diffs confined entirely to the new stamp's own footprint.
+- Verified headless (SDL dummy driver, scratch DB via monkeypatched
+  `main.SAVE_PATH`, real `save.db` md5 confirmed unchanged before/after
+  every run): for all 5 biomes, booted a real `Game`, walked the real
+  pathfinder to the corridor mouth, and drove real `handle_move` pushes —
+  block advanced one tile per bump with the player stepping into each
+  vacated tile, landed on the plate, opened the gate through the real
+  plate-match check (`open_gate_ids`, gate removed from `self.gates`), then
+  one further bump confirmed a hard `blocked` (neither block nor player
+  moved) proving the dead end holds. Walked the detour back out and into the
+  pocket, opened the reward chest through the real chest-dispatch path, and
+  confirmed the payout: item stacks (`whetstone_greater`, `potion`), gold
+  (`gold_greater`, +25), and — since `_chest_payload` can roll them —
+  a **spellbook** (learned Resist Lightning) and **equipment** ("The chest
+  holds Plate Armor (unidentified)!") both through their own branches. Ran
+  `persist()`, booted a **second** fresh `Game` against the same scratch
+  save and confirmed the pushed block position, the open gate, and the
+  opened chest all survived; booted a **third** against a brand-new save and
+  confirmed the block starts back at its template position. Regression-
+  checked Crypt's own hand-authored puzzle (`crypt_block0` at (21,2),
+  `crypt_plate0`/`crypt_gate0`, all three doors and four chests) unchanged,
+  `town_hub`'s seven exits unchanged, `armory` unaffected, and 12 sampled
+  Depths rooms carrying no blocks/plates at all.
+- **Also visually inspected** via rendered screenshots (8x zoomed crops plus
+  full-window renders): unsolved, the dim slate plate at the corridor's far
+  end, the brown block, the blue gate bars beside it and the closed reward
+  chest *visible through them* all read as four distinct fixtures — that
+  last part being the "peek into a presently unreachable area" the source
+  games use as a lure, which falls out for free here since the pocket sits
+  inside the host room's own fog region; mid-push and solved, the block
+  advancing up the lane and finally sitting on the plate's tile with the
+  gate bars gone from the render entirely; and the reward shot with the
+  player standing in the opened pocket. Separately confirmed under
+  **natural** fog (no forced reveal): on arrival the block/plate are
+  correctly invisible, and walking into the host room reveals the whole
+  puzzle with the stamp's forced walls rendering as ordinary walls — no
+  permanently-black interior tiles, the failure mode session 11's
+  border-region fix exists to prevent.
+- Measured the generation cost, since the performance budget is a hard
+  constraint: the placement search adds **+2.2 ms mean / 12.9 ms worst
+  case** to `generate_biome_room` (0.19 ms → 2.41 ms), paid exactly once per
+  biome room ever entered (`Room.load` caches the result forever) during a
+  room transition that already writes to SQLite. `generate_room` (the
+  Depths, the hot path) is untouched at 0.08 ms.
+- **Live playtest confirmation (unplanned, and the first this branch has
+  had).** The real `save.db` changed mid-session, ~2 hours after the last
+  test run — the user played the build. Worth recording because the save
+  itself shows the feature working outside the test harness: on the real
+  level-7 character (dungeon seed 33888289, 2632 turns, 3 adventure quests
+  done, `integrity_check ok`), `block_positions` holds this session's own
+  generated ids for four biome rooms, and three of them — Scorched Wastes
+  (4-push lane), Frostreach (3), Stormfell (4) — have their block sitting
+  **exactly on its plate** with the reward chest flagged opened; Fenmire is
+  mid-run with its block still at its template position. Crypt's own session
+  48 puzzle is also solved (`crypt_block0` at its plate). Two things this
+  confirms that a scratch DB can't: the puzzles are solvable and legible to
+  a player who wasn't told the geometry, and an **existing save carried the
+  change with no migration** — those three biomes' pre-existing vault/
+  fragment chest flags are all still valid and still flagged opened, which is
+  the payoff for placing the puzzle last and never disturbing an upstream
+  rng draw. (Also a note for future sessions on this project's save
+  discipline: a real-`save.db` md5 change is not automatically a leaked test.
+  Every Game boot this session monkeypatched `main.SAVE_PATH` first and
+  printed the real file's md5 as unchanged immediately after; the timeline
+  — all tests 19:04-19:13, file mtime 21:05 — plus the presence of
+  *newly-generated* ids in it identified the writer as real gameplay.
+  Check the timeline and the row contents before assuming the worst, the same
+  way session 40's genuine near-miss was diagnosed.)
+
+### Session 52 — Adventure Mode journeys: replayable runs with a randomized biome order and a player-chosen combat difficulty (Yoda Stories' "New World" + Combat Difficulty)
+
+Same recurring framing as sessions 44-51: read `PROGRESS.MD` and
+`wayfarer_adventure.md`, continue development. Sessions 48-51 closed the last
+of `wayfarer_adventure.md`'s own follow-ons, so this session goes back to the
+Known Limitations list proper and takes the **two top open entries** — the
+Final Area's fixed, unscaled difficulty, and the total absence of
+branching/replayability in the adventure chain.
+
+Research this round is what fused them into one feature rather than two.
+Looking up *Yoda Stories*' actual New Game dialog turned up that the source
+game ships **exactly these two things, in the same place**: you pick a world
+size and a **Combat Difficulty** ("from ignorable to brutal") at
+world-generation time, and its New menu offers **"New World — builds a new
+world with a new story, which discards the current world"** alongside
+**"Replay Story — builds a new world but keeps the current mission."** So
+difficulty in the source games is neither auto-scaled to the player nor fixed
+forever: it's a knob you set when you generate a world. That resolves the
+design doc's own Open Question ("does the final area's difficulty scale with
+player level... leans fixed/curated") without contradicting it — a journey's
+difficulty is still fixed and curated for its whole length, the player just
+picks *which* curve before setting out. And "New World with a new story" is
+precisely the design doc's own unbuilt stretch goal (randomized
+per-playthrough chains). One feature, both notes closed.
+
+**A journey** is one run through Adventure Mode: one biome order, one world
+seed, one combat difficulty. Journey 1 is the run every existing save is
+already on, and is deliberately identical in every respect to what sessions
+44-51 shipped — every helper special-cases it to a no-op. That constraint
+drove most of the design below.
+
+- **`data/adventure_quests.json` stopped being the chain and became the
+  material the chain is built from.** It was a fixed list of four
+  hand-authored steps, each with dialogue written against one specific
+  (source biome, target biome) pair — which cannot survive a shuffled order.
+  It now holds per-biome authored phrases (`approach`/`sealed`/`opened`/
+  `prose` — how the Guide describes opening a biome, it staying shut, it
+  opening, and how he names it mid-sentence) plus six `templates` that splice
+  a source biome's name and fragment into them. `prose` is authored per biome
+  rather than derived as `"the " + display name` because the names don't take
+  a definite article uniformly ("the Scorched Wastes" but plain "Stormfell"),
+  and the success template says "*yields at last*" rather than "is/are truly
+  conquered" because the names disagree on grammatical number. Journey 1's
+  canonical order regenerates the original hand-authored text almost verbatim
+  (diffed line by line against sessions 45-47's strings).
+- **`main.py`'s new `_build_adventure_chain()`** assembles the same
+  `{id, giver_npc, biome, wants, gives, dialogue}` list shape sessions 45-47
+  hand-authored, so `current_adventure_quest`/`attempt_trade`/
+  `_draw_trade_panel` consume it with **no changes at all**. Step *i* wants
+  biome *i*'s fragment and unlocks biome *i+1*; the last unlocks the Final
+  Area.
+  - **A step's id is named for the biome it unlocks, not its position.**
+    That single choice is what makes journey 1's ids come out as the legacy
+    `guide_frostreach`/`guide_stormfell`/`guide_fenmire`/`guide_final` — so
+    an existing save's `completed_adventure_quests` rows still match — *and*
+    what keeps an id meaningful when a later journey deals the same biomes in
+    a different order. Journeys ≥2 prefix (`j2:guide_fenmire`), so the same
+    four steps can be completed again **without a destructive clear** of the
+    persisted set: past journeys stay in it as history and simply can't
+    satisfy the current chain.
+  - **Journey 1 is never shuffled**, only journeys ≥2. Two reasons: an
+    in-progress save must not have its world resequenced underneath it on
+    load (the real `save.db` is mid-chain right now), and a first playthrough
+    is better as the curated one.
+- **Biome unlock gating moved from quest ids to biomes.** `town_hub.json`'s
+  exits carried `requires_quest: "guide_frostreach"`; they now carry
+  `requires_biome: "frostreach"`, and `_locked_exits()` tests against a new
+  `unlocked_biomes()` (the journey's first biome is always open; everything
+  else opens when the step that `gives` it completes). Session 45's hardcoded
+  form stopped working the moment a journey could deal the biomes in any
+  order — `to_frostreach` is only the second stop on journey 1.
+- **Combat difficulty rides `scale_stats_for_level`, the Depths' own
+  long-standing depth-scaling function**, rather than a parallel multiplier
+  table: `COMBAT_DIFFICULTIES` (Wandering/Restless/Savage/Merciless) maps each
+  rung to an `enemy_level` of 1-4, `generate_biome_room` writes it onto every
+  emitted enemy template's `level`, and main.py's existing `load_room` applies
+  it exactly the way a Depths room's depth already works. So the whole
+  difficulty curve is machinery 40-odd sessions of Depths play have already
+  exercised (+20% hp/xp/gold and +1 attack per rung, +1 defense every 3), and
+  the Elder Dragon goes from hp70/atk12 at Wandering to hp112/atk15 at
+  Merciless. **Level 1 is that function's documented identity case**, which is
+  why "Wandering" is the default: every pre-session-52 save, and every
+  journey-1 character, sees byte-identical biome rooms to before. Harder
+  rungs also pay more XP and gold, which falls out for free and is the right
+  incentive shape.
+- **Room ids carry what a journey varies**, because `Room.load` is a
+  classmethod that only ever receives an id and has nothing else to look
+  anything up in: `biome:<biome_id>:<world_seed>[:<enemy_level>]`. The world
+  seed differs per journey (journey 1 = the character's own dungeon seed), so
+  a new journey generates a genuinely new set of dungeons whose entity ids can
+  never collide with an abandoned journey's persisted `room_flags`. The
+  difficulty segment is **omitted at rung 1**, so every id a pre-session-52
+  save wrote still parses and still generates exactly what it did before — no
+  save migration, and it also keeps `_ROOM_CACHE` correct (two difficulties
+  are two rooms, not one stale entry).
+- **`engine/save.py`**: three new `player` columns via the existing ALTER
+  TABLE pattern — `journey_index`, `combat_difficulty`, `journeys_won`. They
+  ride the single-row player table rather than a new one, the same call
+  session 47 made for the win flag. Read back with `or` fallbacks, not just
+  column DEFAULTs, because SQLite only applies a default to rows inserted
+  *after* the column exists — a pre-existing row has NULL there.
+- **New Journey panel** (`_draw_journey_panel`), reached from the Guide's
+  trade panel via `N` or a click on its new last row. It's this game's version
+  of the source's New Game dialog: it names the current journey's route, spells
+  out what a new one re-rolls and what it keeps, and lists the four rungs with
+  both their flavor and their **actual numeric effect** (a player who has felt
+  Depths level 4 already knows what Merciless means), with `*` marking the rung
+  currently running and `>` the cursor. Selecting arms a confirm; a second
+  U/Enter/click on the same row commits, and Esc backs out of the confirm
+  before it backs out of the panel — discarding a frontier is the most
+  destructive thing a player can do to Adventure Mode progress in one
+  keypress, so it deliberately costs two.
+- **`start_new_journey`** increments the journey, re-rolls order and world
+  seed, sets the difficulty, and clears `artifact_fragments` — which *does*
+  have to actually clear, unlike the quest set, because fragment ids are
+  global (`ember_fragment`) rather than journey-scoped, so the new chain's
+  first trade would otherwise be satisfiable the moment it's offered. It also
+  **clears a Word of Recall anchor pointing into the abandoned world**
+  (session 26 persists whatever room it was last cast in; that id still
+  generates, it just isn't part of this world anymore). It touches nothing
+  else — level, gear, gold, spells, the Depths and the cull-quest ladder all
+  carry over, since Adventure Mode has always been a wing of the game rather
+  than the whole of it. Nothing is deleted from the save: an abandoned
+  journey's `room_flags` rows stay orphaned against ids the new journey will
+  never generate, which is a few dozen harmless rows against a destructive
+  delete pass over a save file.
+- **The Journal's Adventure block was split out into
+  `_journal_adventure_lines()` and gained a journey line** — `Journey 2
+  (Merciless, 1 won): Fenmire > Stormfell > Frostreach > Scorched Wastes >
+  The Sundering`. This is doing real work, not reporting a counter: once the
+  order can shuffle, the route is no longer something a player knows from
+  having played before, so the Journal is where they read it off. The panel's
+  height was a hardcoded 470 that exactly fitted sessions 45-47's content;
+  the new line (which wraps to two) pushed the 9x9 automap grid off the
+  bottom, so it now measures its content the same "measure-then-build" way
+  the Shop/Spellbook/trade panels already do and can't be clipped by a future
+  line either.
+- **The win screen** now names the journey and its difficulty, counts total
+  journeys won, and points at the Guide for another. The victory id is
+  journey-scoped the same way chain ids are (journey 1 keeps the bare legacy
+  `"adventure_victory"`, so an already-won save still reads as won), and
+  winning bumps `journeys_won` — the one fact about a finished journey that
+  has to outlive the journey itself.
+- **The Depths are untouched**, deliberately, same scope line sessions 44/50/51
+  drew: a journey governs the biome wing only, `generate_room` is not called
+  with an enemy level it didn't already compute from depth, and no Depths room
+  id changed.
+
+Verified, all against scratch DBs with `main.SAVE_PATH` monkeypatched first
+and the real `save.db` md5 confirmed unchanged before and after every single
+boot (**161 assertions across four scripted suites, zero failures**):
+
+- **The regression that matters most — journey 1 generates byte-identical
+  rooms.** Diffed a full dump against a mechanically-reverted copy of
+  `procgen.py` (this session's edits undone in a scratch tree, so the
+  comparison is against real pre-change behaviour rather than an assertion
+  about it): **1500 biome rooms (5 biomes x 300 seeds) and 720 Depths rooms
+  (20 seeds x 3 levels x 3 coords x 2 epochs) — every one byte-identical.**
+- **Difficulty changes nothing but enemies**: across 3000 (biome, seed, rung)
+  combinations, stripping the enemy `level` field back to 1 reproduces the
+  difficulty-1 room exactly — layout, vault, key/door, push-block puzzle,
+  items, traps and chests all bit-identical, confirming the new parameter
+  draws from neither rng.
+- **A whole shuffled journey played end to end through the real handlers.**
+  Booted a real `Game`, walked the real pathfinder to the Guide, opened the
+  panel with a real `handle_key_down(K_n)`, picked Savage, confirmed, and
+  then played journey 2's route (Fenmire → Frostreach → Scorched Wastes →
+  Stormfell → The Sundering — *not* the authored order) all the way through:
+  entering each biome by walking onto its town door, picking up the colored
+  vault key, bumping the vault door open, killing each mini-boss with real
+  bump combat, opening the artifact chest, walking back to town and trading.
+  Confirmed at every step that the Guide asked for the right biome's
+  fragment, that the room id carried the journey seed and the `:3` rung, that
+  each mini-boss was really scaled (Young Green 44→62 hp, White 40→56, Red
+  45→63, Blue 42→59, Elder Dragon 70→98), and that trading unlocked exactly
+  the next biome in the shuffled order. The final chest opened the win screen,
+  recorded `j2:adventure_victory`, and bumped `journeys_won` to 1 — then
+  starting journey 3 from the same Guide left the win on record while
+  re-locking the hub to the new first biome.
+- **Save compatibility, two ways.** (1) Synthetically: wrote a save, dropped
+  the three new columns back out to reproduce a pre-session-52 file, and
+  confirmed it boots as journey 1 / Wandering / 0 won with its legacy
+  completed step still gating correctly and its biome room ids unchanged.
+  (2) **Against the user's real character** — booted a *copy* of the actual
+  `save.db` (level 7, 2632 turns, `integrity_check ok`, standing in Fenmire):
+  it reads as journey 1 / Wandering, its three completed steps
+  (`guide_frostreach`/`guide_stormfell`/`guide_fenmire`) and three fragments
+  survive, its next step is still `guide_final`, all four unlocked biomes come
+  out right, all four of its biome rooms resolve to **exactly the ids its 132
+  `room_flags` rows are already stored against**, and its three solved
+  session-51 push-block puzzles are all still sitting on their plates with
+  their reward chests still flagged opened. No migration, nothing to redo.
+- **Regressions on what wasn't meant to change**: Crypt's hand-authored
+  session-48 puzzle (`crypt_block0` at (21,2), plate, gate, 3 doors, 4 chests)
+  intact, Armory unaffected, town_hub still 7 exits with armory/crypt never
+  biome-gated, Depths rooms still carrying no blocks/plates and still scaling
+  by depth rather than difficulty.
+- **Visually inspected via rendered screenshots** (10 of them), which caught a
+  real bug assertions missed — the first draft put each difficulty rung on one
+  line and **every one of the four clipped off the panel's right edge**. Fixed
+  by splitting each into a name+effect row with its blurb wrapped and indented
+  underneath in grey (the Spellbook panel's existing shape) and widening the
+  panel to 520. Re-rendered and confirmed clean: the journey panel in both
+  states, the trade panel with its new row in the mid-chain / not-yet-found /
+  post-victory variants, the Journal on journey 1 in the Depths (automap fits
+  the newly-measured reserved height with room to spare) and on a won journey
+  2 with all four fragments (its longest possible content), and the win
+  screen. Also confirmed the mouse path end to end: clicking the trade
+  panel's new row opens the journey panel, one hitbox is registered per rung,
+  the first click arms and the second commits, and clicking a *different* rung
+  re-arms rather than committing.
+
+### Session 53 — the Open Frontier: a genuinely branching adventure route (closing the last of `wayfarer_adventure.md`'s stretch goals)
+
+Same framing as sessions 44-52: read `PROGRESS.MD` and `wayfarer_adventure.md`,
+continue development. Session 52 left exactly one Adventure Mode note open and
+it was the top of the Known Limitations list — **the chain is still a straight
+line, just a shuffled one**. The design doc's other stretch goal ("a light
+branch — any 2 of 3 fragments unlock the final area") had never been built: a
+journey randomized the *order* of four mandatory steps, it didn't make any of
+them optional or let two run at once.
+
+**A journey now also picks a route**, chosen in the same panel as its combat
+difficulty and fixed for its length, for the same reason difficulty is: which
+biomes are open and what the seal costs are facts the chain gets *built from*
+on boot, so making them live would mean rebuilding a chain underneath a
+half-finished save. Two routes:
+
+- **The Old Road** — one frontier at a time, each opened by the trade before
+  it, all four fragments break the seal. This is exactly what sessions 45-52
+  shipped, unchanged in every respect, and **journey 1 is always on it**.
+- **The Open Frontier** — every biome unlocked from the first day, walked in
+  any order, and **three of the four fragments break the seal**, so one biome
+  is genuinely optional. That is the design doc's "any 2 of 3", scaled to the
+  four biomes that actually shipped.
+
+- **The straight line turned out to be a special case of the branch, not a
+  separate mode.** `current_adventure_quest()`'s front-scan of the chain was
+  replaced by `available_adventure_quests()`, which offers every incomplete
+  step whose source biome is currently unlocked (plus the biome-less seal
+  step, always). On the Old Road that yields exactly one step at a time, in
+  the same order as before, *because* biome i+1 only unlocks when step i
+  completes — verified explicitly at every point in the chain. That
+  equivalence is what let the branch land without a second code path through
+  the trade panel, the Journal or the save layer.
+- **A second want-type, `fragments: {count: N}`**, alongside the existing named
+  `artifact`. Session 45's decision that a trade never *consumes* the fragment
+  it was shown is what makes a count meaningful at all, and is now load-bearing
+  twice over: session 47 used it so the Old Road's single-fragment final step
+  implies "holds all four," and this session uses it so the seal can ask for
+  any three. The Old Road's final step deliberately keeps its original
+  named-fragment want rather than being migrated to a count of 4 — the two are
+  equivalent in a forced-order chain, and not touching it keeps journey 1
+  byte-identical.
+- **An open-route step is named for its SOURCE (`guide_from_fenmire`), not for
+  what it unlocks**, since it unlocks nothing — the mirror image of session
+  52's own naming rule, and safe because only journeys >= 2 can be on this
+  route, so `_journey_id` prefixes them all (`j2:guide_from_fenmire`) and they
+  can never collide with a legacy id.
+- **The Final Area's step is offered from the first day** on the Open Frontier,
+  unsatisfiable, sitting under the four biomes as `The Sundering -- any 3
+  fragments (0/4 carried)`. That's deliberate: it's how a player learns from
+  the panel alone that the route is a branch and that one biome is theirs to
+  skip. (It also removed the need for any "this step has a prerequisite count"
+  machinery — the want *is* the gate.)
+- **The trade panel grew a cursor and a multi-offer layout** (`_draw_multi_
+  trade_panel`) — one row per live offer, with only the selected row's
+  dialogue spelled out underneath in grey so the panel's height stays bounded.
+  It's a separate branch rather than a generalization of the original layout,
+  so a single-offer panel (every Old Road journey, and every existing save)
+  renders byte-identically to sessions 45-52. Up/Down are no-ops when there's
+  only one offer.
+- **`engine/save.py`**: one new `player` column, `adventure_route TEXT DEFAULT
+  'old_road'`, via the existing ALTER TABLE pattern, read back with an `or`
+  fallback for the same reason session 52's three were (SQLite applies a
+  column default only to rows inserted *after* the column exists). The route
+  table itself — names, blurbs, `chained`, `required_fragments` — is authored
+  content and lives in `data/adventure_quests.json` next to the rest of the
+  chain material; only the default id is duplicated down in save.py.
+- **Route-aware victory text.** "You lay all four fragments together" and the
+  win screen's "Ember, frost, storm, and mire -- reunited at last" are both
+  false on a three-fragment win, so each picks its wording from what the
+  player actually carries. The Journal names the route, states the
+  requirement when it's less than the full set (`3/4 (3 needed)`), lists every
+  live offer under one heading, and joins an Open Frontier's biomes with
+  commas + "(any order)" rather than arrows — writing `A > B > C` for a route
+  that doesn't work that way would actively mislead.
+
+Verified against scratch DBs with `main.SAVE_PATH` monkeypatched, the real
+`save.db` md5 confirmed unchanged before and after every boot:
+
+- **72 assertions, zero failures** in the logic suite. The regression that
+  matters most: journey 1's chain is compared against **session 52's
+  `_build_adventure_chain` copied verbatim into the test** — dict-for-dict
+  identical, ids, dialogue and all — rather than against an assertion about
+  what it should say. Also covered: the Old Road offers exactly one step at
+  every point in its chain, a pre-session-53 save (column mechanically dropped
+  back out) boots as `old_road` with its legacy ids intact, the real `save.db`
+  on a copy round-trips through the new column unchanged, and the journey
+  panel's two-section cursor arms/re-arms/commits correctly (including that
+  changing the route disarms a pending confirm).
+- **Two full end-to-end playthroughs through the real handlers**, each run a
+  dozen-plus times over different random journeys. (1) An **Open Frontier**
+  journey started from the Guide with real keypresses, then played in a
+  self-chosen order — walking onto town doors, picking up colored vault keys,
+  bumping vault doors, killing each mini-boss with real bump combat, opening
+  artifact chests, trading each fragment — **skipping one biome entirely** and
+  breaking the seal with three; observed skipping each of the four biomes
+  across runs. (2) The **Old Road on journey 1** played the same way as a
+  regression, all four biomes in the authored order, ending on the "all four
+  fragments" victory line.
+- **Visually inspected via rendered screenshots**, which again caught what
+  assertions missed: the first draft of the multi-offer trade panel clipped
+  `Scorched Wastes -- Ember-Charred Fragment (not ye` off its right edge, and
+  the journey panel's route rows clipped at `...4 fragments break th`. Fixed
+  two different ways worth distinguishing — the trade panel now **measures its
+  longest row and sizes itself to it** (capped at the window), since an offer
+  row must stay one unwrapped line for the one-row-one-hitbox mapping to hold;
+  the journey panel instead **moved text off the head into the wrapped blurb**,
+  since its rows already have somewhere to put prose. Ten panels re-rendered
+  and confirmed clean.
+
+**Found while verifying, not caused by this session: a full 8-slot inventory
+silently blocks picking up a vault key.** `Inventory.add_item` returns False
+when all 8 slots hold distinct types, and the floor-pickup branch just doesn't
+take the item — so a player who has hoarded eight kinds of consumable walks
+over a biome's colored key and nothing happens. It's recoverable (use or drop
+something and step off and back on) and not a softlock, and the chest branch
+right next to it *does* say "your pack is full" — the floor branch says
+nothing at all, which is the actual gap. Flagged below rather than fixed, since
+it's pre-existing behaviour across the whole game (the Depths included) and not
+this session's to change unasked.
+
+### Session 54 — routes as free knobs: The Wide Frontier and The Short Road (closing session 53's own "hardcoded to `chained` true/false" note)
+
+Same framing as sessions 44-53: read `PROGRESS.MD` and `wayfarer_adventure.md`,
+continue development. Session 53's entry left three residual notes and the
+top one named its own gap precisely — **the two routes are hardcoded to
+`chained` true/false rather than `required_fragments` being a free knob**, so
+"all four open, all four required" and "chained but only three needed" weren't
+offered "even though the data file could express them." Both are built now,
+and the note was right that the data file was already ahead of the code.
+
+**The entanglement was one line, in `_build_adventure_chain`.** Session 53
+hung the Final Area off the *last biome step* whenever `chained` was true —
+which silently forces the seal to cost every fragment, because you cannot
+reach the last step of a chain without having walked all of it. That
+condition is now `seal_rides_last_step = chained and required >= len(order)`:
+the legacy shape survives exactly where it always applied (which is why
+journey 1's chain is untouched), and every other combination gets the
+biome-less counting seal step session 53 built for the Open Frontier. Nothing
+else in the builder needed to know which route it was on.
+
+- **Two new routes, one per newly-expressible corner.** *The Wide Frontier*
+  (open, 4): every frontier open at once and walked in any order, but nothing
+  less than all four fragments breaks the seal. *The Short Road* (chained, 3):
+  the Old Road's fixed order, but the seal breaks at three — so the last leg
+  is genuinely optional, and a player can stop one biome early. Four routes
+  is now two independent knobs rather than a closed list: any
+  `(chained, required_fragments)` pair is authorable in
+  `data/adventure_quests.json` with no code change.
+- **A biome step's dialogue follows from what the step DOES, not from the
+  route's name.** `step_*` when it opens another frontier, `final_*` for the
+  legacy seal-bearing last step, `open_*` when it opens nothing and only
+  counts toward the seal. That last case used to be synonymous with "Open
+  Frontier"; it is now also the Short Road's last leg, and it needed no new
+  authored text because session 53's `open_*` templates were already written
+  against a *source* biome rather than a route.
+- **Three sentences that were true of one number stopped being true of the
+  other**, all caught by reading rendered panels rather than by assertions:
+  the seal's row read "The Sundering -- **any 4** fragments" (there is nothing
+  to choose when it wants all of them: now "all 4"); the multi-offer
+  greeting read "**4 fragments of the 4** will break the seal" (now its own
+  authored `*_greeting_all` sentence, "nothing less than all 4"); and a
+  chained route reaching that panel at all is new — the Short Road always has
+  the seal step live alongside its one biome trade — so "Every frontier out
+  there stands open" needed a `chained_greeting` sibling.
+- **The Journal marks the optional legs.** On a chained route wanting fewer
+  fragments than there are biomes, `A > B > C > D` claims every leg is
+  mandatory, so the trailing legs the seal doesn't need now render as
+  `Frostreach (optional)`. The fragment line's `2/4 (3 needed)` says how
+  many; only the summary can say *which*.
+- **The victory line now counts the bag, not the route.** It picked "all
+  four" vs. a count word off `route["chained"]`, which is wrong in the new
+  direction as well as the old: a Short Road player who walks the optional
+  fourth leg lays four on a route that asked for three.
+- **`_capitalize_first`** (a module-level helper, not `str.capitalize`,
+  which would lowercase the proper nouns these sentences are full of): a
+  template opening on a spliced-in `{source_prose}` started its sentence on a
+  lowercase article — "the Frostreach still keeps what it keeps" — visible in
+  the Open Frontier's detail line since session 53. Fixing it in the dialogue
+  builder fixes every such line at once and is a no-op on journey 1's four,
+  which is confirmed by the byte-identity check below rather than assumed.
+- **The journey panel bounds its own height now.** Four routes plus four
+  difficulty rungs plus a three-line preamble overflowed the 600px window, so
+  only the *selected* route's blurb is spelled out — session 53's own
+  multi-offer trade panel technique, applied to the section that grows. The
+  difficulty rungs deliberately keep all four blurbs (they aren't growing,
+  and they're what a player actually compares side by side). The route head
+  also had to grow a shape word — "one at a time" / "all open" — because with
+  four routes the fragment counts alone no longer tell two rows apart (the
+  Open Frontier and the Short Road are both 3 of 4).
+
+**Session 53's "a full 8-slot inventory silently refuses a floor pickup" note
+was wrong on its central claim, and is corrected below.** The floor branch has
+said "Inventory full." since session 1 — verified directly by filling eight
+distinct slots and walking onto a key, which logs the message and leaves the
+item on the floor. What's real in the complaint is smaller: the message
+doesn't name what it refused, so walking over a biome's colored vault key and
+reading a bare two-word status line doesn't connect the two. Now reads "Your
+pack is full -- no room for Copper Key," matching the chest branch's wording.
+This is a reminder worth carrying: a Known Limitations entry written from
+reading the code at the end of a long session is a *hypothesis*, and the cost
+of not re-running it is a later session fixing something that was never
+broken.
+
+Verified against scratch DBs with `main.SAVE_PATH` monkeypatched, the real
+`save.db` md5 confirmed unchanged before and after every boot:
+
+- **187 assertions in the logic suite, zero failures.** The regressions that
+  matter: journey 1's chain is rebuilt and compared for stability plus its
+  authored session 45-52 text (first step's intro, the "Ember, frost, storm,
+  and mire, all in one hand" final success, and that every one of its four
+  steps still unlocks a biome); the Old Road still offers exactly one step at
+  every point in its chain; the Open Frontier still offers all five on day
+  one. Per route, all four corners: exactly one step opens the Final Area
+  whatever shape it takes, ids stay unique and journey-scoped, and no
+  dialogue line escapes with an unformatted `{brace}` in it. Also: three
+  fragments do *not* break the Wide Frontier's seal and four do; the Short
+  Road's seal opens on three with its fourth biome unlocked-but-unvisited;
+  every route round-trips through the save column; and the real `save.db` on
+  a copy boots with every completed step still present in its rebuilt chain.
+- **162 assertions end-to-end through the real handlers, zero failures** —
+  all four routes played from a new character: the Guide bumped, the journey
+  panel driven by real keypresses (route row selects without arming, first U
+  on a rung arms, second commits), then **every town-hub biome door bumped on
+  day one to confirm which are open and which are sealed per route**, each
+  fragment taken out of its real artifact chest with a real bump, each trade
+  taken at the real trade panel by cursor keys, the Final Area's door and
+  victory chest, and a reboot confirming the win, the route and
+  `journeys_won` all persisted. The victory line's wording is asserted
+  against what the bag actually holds. Deliberately out of scope (unchanged
+  this session, covered by sessions 44-53): walking a biome's vault key ->
+  colored door -> mini-boss route, so the player is placed beside the chest
+  rather than made to solve the room.
+- **Visually inspected via rendered screenshots**, which again caught what
+  assertions missed — all three wording bugs above came from reading panels,
+  not from a failing check. Ten panels re-rendered clean: the journey panel
+  with the cursor on each of the four routes, in the difficulty section, and
+  with a confirm armed (its tallest state, which fits the window); the trade
+  panel on the Short Road with zero and one fragment, the Wide Frontier
+  mid-run, and the Open Frontier, each on two cursor rows; the Journal on a
+  Short Road journey; and the win screen on a three-fragment win.
+
+### Session 55 — Transmogrify Monster: re-rolling a live monster into a different one (the last unbuilt spell of session 40's pair)
+
+Same framing as sessions 44-54: read `PROGRESS.MD` and `wayfarer_adventure.md`,
+continue development. `wayfarer_adventure.md` is closed out as of session 53
+(its own header now says so), and session 54 closed its own residual note, so
+this session went back to the Known Limitations list, where the top named
+unbuilt *feature* was the half of session 40's pair session 42 explicitly
+deferred: **Transmogrify Monster**, "turns the target monster into a random
+other monster, preserving its HP percentage." Castle of the Winds' spell
+ladder now stands at 28.
+
+- **The whole feature is one new `Enemy` method, one new cast branch, and one
+  JSON entry** — it rides `_bolt_target` (facing/range/line-of-sight) and the
+  `sleep_immune` boss check exactly as Sleep (session 40) and Slow (session
+  42) already do, making it the third no-damage spell on that targeting path.
+- **`Enemy.transmogrify_into` re-runs `__init__` rather than assigning
+  fields.** The note this closes named the lift as "a fresh stats block,
+  sprite swap, re-applying whatever HP% it had," and the tempting shape is to
+  assign those by hand. That shape rots: `__init__` *is* the definition of a
+  fresh stats block for a type, and it has grown a field in sessions 21, 22,
+  24, 37, 40 and 42. Anything hand-assigned here would silently keep the old
+  body's poison bite or wall-phasing the first time someone adds a seventh.
+  Re-running the constructor makes "the new monster is exactly a fresh one of
+  its type" true by construction — asserted field-by-field against a
+  separately built reference enemy, not just on the fields the message
+  mentions. Only `id` and position survive, because `id` is what
+  `dead_enemy_ids` keys on: this re-rolls *what a monster is*, it does not
+  swap one entity for another.
+- **The destination roster is the non-boss half of the roster (7 of 15
+  types), and that's a deliberate deviation from "a random other monster."**
+  Bosses are already immune to *being* transmogrified (`sleep_immune`, per
+  sessions 40/42), so allowing them as a *destination* would make the
+  spell's worst outcome "your Slime is now a Young Red Dragon, permanently,
+  with no spell in the book to undo it" — not a bolder gamble but a
+  counterplay-free death sentence, and one the player would learn to never
+  cast, which is the real cost. Within the seven normal types it stays a
+  genuine two-way gamble (a Viper can come back as a Tunnel Wight, ~5x its
+  HP), which is the part of the source spell worth having.
+- **A new `Enemy.level`, needed because the spawn template that knew the
+  depth is long gone by cast time.** Depths enemies are built from
+  `scale_stats_for_level(stats, t["level"])` and then the template is
+  dropped, so a naive re-roll would have handed back *base* stats — i.e.
+  Transmogrify would have doubled as "un-scale this level-9 enemy," a far
+  better spell than intended and a silent one. The re-roll now scales the
+  new type to the same depth, verified by comparing against
+  `scale_stats_for_level` directly rather than eyeballing HP.
+- **The new type's `xp_reward`/`gold_reward` come along with it**, which is
+  the gamble's upside: rolling something tougher is worth more when you kill
+  it. Asserted by actually killing a transmogrified enemy through
+  `handle_move` and reading the XP delta against the *new* type's number.
+- **An immune target still costs the cast** (12 mana, one turn) — unchanged
+  from how Sleep and Slow already behave on a boss, and visible in the
+  screenshots below as 87 → 75 mana across the Young Red Dragon shot.
+
+Verified against scratch DBs with `main.SAVE_PATH` monkeypatched, the real
+`save.db` md5 confirmed unchanged before and after every boot:
+
+- **9,352 assertions in the logic suite, zero failures**, run three times
+  (the world seed differs per new game, which matters — see the harness note
+  below). The bulk is two sweeps: every from-type × to-type × every possible
+  starting HP (the HP% result must always land in `1..max_hp`, so a
+  nearly-dead monster never rounds to a corpse and a full-health one never
+  rounds over its new ceiling), and all seven normal types × 60 seeds through
+  the real cast path (destination is always in-pool, never itself, never a
+  boss, and every one of the seven is reachable as a destination). Plus:
+  every boss type reports immunity and is left untouched; an empty line and
+  a target at range 6 both fizzle; a transmogrified enemy chases and attacks
+  on its own turn; sleep and slow are cleared by the change; the wraith's
+  drain touch and wall-phasing are lost with its body and the viper's poison
+  bite is gained with its; a re-roll of a re-roll is still depth-scaled; and
+  the spell is castable in an Adventure Mode biome room too.
+- **20 assertions end-to-end through the real handlers, zero failures** — a
+  fresh character buys the spellbook off the Scholar by real keypresses
+  (arrow keys to the row, `U` to buy, 600g debited), walks into the Depths,
+  bumps east to aim, `C` to open the spellbook, `Down` to the bottom rung,
+  `U` to cast at a half-health Slime, then kills what it became and reboots
+  to confirm the purchase and XP persisted.
+- **The real `save.db` boots on a copy** (level 7, 8 known spells) and every
+  enemy across twelve real Depths rooms on levels 1/3/7 constructs with the
+  new `level` argument matching its floor — the save-compat check for a
+  changed `Enemy` constructor.
+- **Visually inspected via rendered screenshots**: the Spellbook panel with
+  the cursor on the new bottom rung (its three-line description fits, and
+  the panel still fits the 714px window at 28 entries — the partial top row
+  is session 29's scroll window behaving as designed, confirmed by
+  re-rendering mid-ladder and seeing the same edge), the Slime's green
+  sprite becoming a Wraith's across the before/after pair with mana 99 → 87,
+  the Young Red Dragon's "is unaffected" line, and the Scholar's shelf
+  listing Transmogrify Monster at 600g.
+
+**One harness note worth carrying forward, since it cost real time:** the
+first run of the logic suite passed with a hardcoded player position at
+(5, 5), and the second run failed 1,275 assertions with every cast reporting
+"finds no target." Nothing had changed — the world seed is random per new
+game, so (5, 5) is inside a wall on most layouts and the earlier run was
+simply lucky. Any test that needs to aim a spell has to *find* an open lane
+in the room it's actually in (the suite's `open_lane` helper) rather than
+assume one. A single green run of a seed-dependent suite is not a pass.
+
 ## Known Limitations / Future Work
 
 Roughly in likely-priority order — not committed to, just tracked:
 
-- **Push-block puzzles (session 48) exist in exactly one hand-authored
-  room (Crypt)** — still not wired into either procedurally-generated
-  system (Depths `generate_room` or Adventure Mode's `generate_biome_room`).
-  Doing so needs its own solvability guarantee (block reachable, push path
-  straight/clear, the sealed reward pocket provably not severing some other
-  room's only path through that space) -- the same class of problem session
-  44 already solved once for the vault-ring case, just for a second fixture
-  type, and unlike colored keys (see below) that proof genuinely doesn't
-  exist yet for this mechanic -- still real, unattempted work, not just a
-  copy of the colored-key session.
+- ~~**Push-block puzzles (session 48) exist in exactly one hand-authored
+  room (Crypt)**~~ — closed out session 51 for Adventure Mode:
+  `generate_biome_room` now stamps one push-block puzzle per biome room
+  (1998 of 2000 biome/seed combinations place one; the 2 that don't are
+  all-minimum-size-core-room rooms hitting the intended no-fit skip), gating
+  a bonus reward chest. The solvability guarantee this note called for got
+  built as a **dead-end corridor** stamp rather than a Crypt-style open-room
+  layout, and the reason is worth carrying forward: the geometry had to
+  guarantee not just reachability but that the player **can't permanently
+  ruin the puzzle**, since a block's position persists forever
+  (`block_positions`) with no undo and no per-puzzle reset. Walling the lane
+  so the player can only ever stand behind the block makes every push
+  forward-only and terminal — unruinable by construction rather than by
+  playtesting. Also worth carrying forward: porting Crypt's own layout
+  directly would have been *broken*, not merely suboptimal — its gate sits
+  past the plate, which in a walled corridor leaves the player sealed behind
+  their own block with the reward unreachable, so the generated form puts
+  the gate on the entrance side instead (see session 51's entry). Still
+  true, deliberately: **Depths `generate_room` ships no blocks/plates**,
+  same "bigger blast radius on 43 sessions of existing content, lower stakes
+  on a bonus-loot vault" line sessions 44 and 50 already drew for the
+  vault-ring fix and colored locks. Two smaller residual notes: the reward
+  pocket's chest is deliberately *visible* through the closed gate from
+  inside the corridor (matching the source games' "peek into presently
+  unreachable areas" lure, and free here since the pocket sits in the host
+  room's own fog region) rather than hidden behind its own fog region, which
+  is a design choice a later session could reverse; and a wall-phasing enemy
+  (the Wraith family, session 24) can walk into the sealed corridor and stand
+  on a lane tile, which makes a push into it fail until it's killed or moves
+  — transient, not a softlock, and not special-cased.
 - ~~**Colored key/gate pairs are still unbuilt**~~ — closed out session 49
   (Crypt only), then session 50 closed the "not wired into either
   procedurally-generated system" half too, for Adventure Mode specifically:
@@ -5184,20 +5972,111 @@ Roughly in likely-priority order — not committed to, just tracked:
   darkens. Both are worth remembering before reaching for this trick again:
   verify via an actual rendered screenshot and pixel sample, not
   reasoning about the tuple/strength numbers on paper.
-- **Adventure Mode's Final Area difficulty is fixed/curated, not
-  level-scaled** (session 47, per the design doc's own "leans fixed/
-  curated" Open Questions note) — the Elder Dragon and every biome's
-  regular encounter roster use the same fixed `BIOME_TIER = 1` as the first
-  three sessions established, unplayed and untuned the same way session 9's
-  original Depths density was; a level 1 and a level 20 character currently
-  face an identical Final Area fight.
-- **No branching/replayability in the adventure quest chain** — the design
-  doc's own stretch goal ("any 2 of 3 fragments," randomized per-playthrough
-  chains closer to the real Desktop Adventures games) was explicitly scoped
-  out of every session's build in favor of a fixed linear chain; once a
-  save's `completed_adventure_quests` contains `"adventure_victory"` there's
-  no reset path short of a full `SaveManager.reset()` (which wipes
-  everything, not just Adventure Mode progress).
+- ~~**Adventure Mode's Final Area difficulty is fixed/curated, not
+  level-scaled**~~ (session 47, per the design doc's own "leans fixed/
+  curated" Open Questions note) — closed out session 52, though **not** by
+  auto-scaling to player level, which the design doc had already argued
+  against. Looking up *Yoda Stories* found that the source game puts a
+  **Combat Difficulty** slider ("from ignorable to brutal") in its
+  world-generation dialog, so difficulty there is neither auto-scaled nor
+  fixed forever — it's a knob you set when you make a world. Adventure Mode
+  now works the same way: four rungs (Wandering/Restless/Savage/Merciless)
+  chosen when a journey starts and fixed for its length, implemented by
+  feeding an `enemy_level` of 1-4 to the Depths' own `scale_stats_for_level`
+  rather than inventing a parallel table, so the curve is machinery 40-odd
+  sessions of Depths play have already exercised. Wandering is
+  `scale_stats_for_level`'s identity case, which is what makes every existing
+  save and every journey-1 character see byte-identical rooms to before.
+  Still true and still deliberate: **the difficulty is per-journey, not
+  changeable mid-run**, which is a departure from the source game (Yoda
+  Stories lets you change combat difficulty from its options menu at any
+  time) — a journey's rung is baked into its biome room ids, so making it
+  live would mean either re-keying rooms or accepting that already-visited
+  rooms silently re-stat on the next boot. Also still true: **the rungs
+  themselves are untuned**, the same caveat this note originally carried and
+  session 9's Depths density still carries — nobody has played a Merciless
+  journey to see whether it lands as "brutal" or merely tedious.
+- ~~**No branching/replayability in the adventure quest chain**~~ — closed
+  out session 52 by the other half of the same *Yoda Stories* lookup: its New
+  menu offers "New World — builds a new world with a new story, which
+  discards the current world." Adventure Mode now has **journeys** — the
+  Frontier Guide will set the player on a new one at any time (a two-step
+  confirm, since it's the most destructive single action available to
+  Adventure Mode progress), which re-rolls the world seed, shuffles the biome
+  order, and takes a new difficulty. See session 52's entry for the two
+  choices that made this fit an existing save with no migration: quest ids
+  are named for the biome they *unlock* (so journey 1's come out as the
+  legacy `guide_frostreach`/... ids) and journey-prefixed from 2 on (so a
+  completed set is never destructively cleared, just outgrown), and the
+  difficulty segment of a biome room id is omitted at rung 1 (so every id a
+  pre-session-52 save wrote still parses to the same room). Residual notes:
+  **journey 1 is never shuffled** — deliberately, since an in-progress save
+  must not be resequenced underneath it on load and a curated first run is
+  better anyway, but it does mean a brand-new character's first frontier is
+  always the authored one; an abandoned journey's `room_flags`/
+  `block_positions` rows are left **orphaned** in the save rather than
+  deleted (a few dozen harmless rows, but they accumulate one biome-set per
+  journey and nothing ever collects them); and the source game's *other*
+  new-game option, **"Replay Story" (new world, same mission), was not
+  built** — every new journey re-rolls the order, so there's no way to
+  re-run a route you liked on fresh geometry.
+- ~~**The adventure chain is still a straight line, just a shuffled one**
+  (session 52)~~ — closed out session 53: a journey now picks a **route**
+  alongside its difficulty, and the second one (**The Open Frontier**) is the
+  design doc's own "any 2 of 3 fragments unlock the final area" branch, scaled
+  to four biomes — every frontier open from the first day, walked in any
+  order, three of the four fragments enough, one biome genuinely optional.
+  This note's own prediction was right about the two things it named
+  (`available_adventure_quests()` replaced `current_adventure_quest`'s
+  front-scan, and the trade panel grew a multi-offer layout) and wrong about a
+  third: no notion of "steps with no required predecessor" was needed, because
+  "offer every incomplete step whose source biome is unlocked" turns out to
+  make the straight line a *special case* of the branch rather than a separate
+  mode. Residual gaps: the branch is **one alternate shape, not an arbitrary
+  DAG** — nothing authors per-step prerequisites, so "these two in either
+  order, then that one" still isn't expressible; **journey 1 is always the Old
+  Road** (same reasoning as session 52's never-shuffle rule, so a brand-new
+  character's first frontier is still the fully curated one, and the Open
+  Frontier is only reachable by starting a second journey); and ~~**the two
+  routes are hardcoded to `chained` true/false** rather than
+  `required_fragments` being a free knob, so "all four open, all four
+  required" or "chained but only three needed" aren't offered even though the
+  data file could express them~~ — closed out session 54: both named corners
+  now ship (**The Wide Frontier**, open + all four; **The Short Road**,
+  chained + three, so its last leg is optional), and any
+  `(chained, required_fragments)` pair is authorable in
+  `data/adventure_quests.json` with no code change. The entanglement turned
+  out to be a single condition — session 53 hung the Final Area off the last
+  *biome step* for every chained route, which forces the seal to cost every
+  fragment — and splitting it left journey 1's chain byte-identical, since
+  the legacy shape is exactly the case where both knobs agree. Still true and
+  still deliberate: **journey 1 is always the Old Road** (same never-shuffle
+  reasoning as sessions 52/53), and the branch is still **one alternate
+  shape, not an arbitrary DAG** — `chained` is a single boolean over the
+  whole chain, so per-step prerequisites ("these two in either order, then
+  that one") remain inexpressible. Worth carrying forward from this session:
+  three separate sentences that were true of one fragment count and false of
+  the other ("any 4 fragments," "4 fragments of the 4," "Every frontier out
+  there stands open" on a chained route) were all caught by *reading rendered
+  panels*, not by any assertion — a number swapped into an authored sentence
+  needs the sentence re-read, not just re-formatted.
+- ~~**A full 8-slot inventory silently refuses a floor pickup** (found while
+  verifying session 53, pre-existing behaviour) — `Inventory.add_item` returns
+  False once eight distinct item types are held, and `handle_move`'s
+  floor-item branch simply doesn't take the item and says nothing.~~ —
+  **this note's central claim was wrong**, corrected and closed session 54.
+  The floor branch has logged "Inventory full." since session 1; verified
+  directly by filling eight distinct slots and walking onto a key (message
+  logged, item left on the floor, bag unchanged). What was real is the
+  smaller half: the message didn't name what it refused, so walking over a
+  biome's **colored vault key** and reading a bare two-word status line
+  doesn't connect the two. Now reads "Your pack is full -- no room for Copper
+  Key," matching the chest branch's own wording. Still true and unchanged:
+  it's not a softlock (use or drop something and step off and back onto the
+  tile), and the behaviour applies to the Depths equally. Carry forward the
+  process lesson, not just the fix: a Known Limitations entry written from
+  *reading* code at the end of a long session is a hypothesis, and this one
+  cost a later session a fix to something that was never broken.
 - **Several sprite choices are poor and need to be re-done (flagged
   session 25)** — the user explicitly called this out while scoping
   session 25 to UI/layout only ("I am not worried about the sprites
@@ -5384,11 +6263,13 @@ Roughly in likely-priority order — not committed to, just tracked:
   player if cast at an adjacent target), and Slow Monster at 27 (session
   42, halves a target's action rate per cast, stacking to 1/3, 1/4, etc.
   on re-cast, boss-immune via the same `sleep_immune` flag Sleep Monster
-  uses). Now 27 spells total. Easy to extend further: add an entry to
+  uses), and Transmogrify Monster at 28 (session 55, re-rolls a non-boss
+  target into a different non-boss type at the same depth, keeping its
+  HP%). Now 28 spells total. Easy to extend further: add an entry to
   `data/spells.json` and, if it's a new `effect` type, a branch in
   `Game.cast_selected_spell` (session 12) -- the Spellbook panel scrolls to
-  fit whatever the ladder grows to (session 29), confirmed again at 27
-  entries in session 42.
+  fit whatever the ladder grows to (session 29), confirmed again at 28
+  entries in session 55.
 - ~~**Slow Monster and Transmogrify Monster are still unbuilt** (session
   40)~~ — half closed out session 42: Slow Monster shipped, giving
   `Enemy.take_turn` a `slow_level`/`slow_tick` pair that skips all but 1 in
@@ -5397,9 +6278,20 @@ Roughly in likely-priority order — not committed to, just tracked:
   deeper AI-timing model. ~~Transmogrify (turns the target into a random
   other monster, preserving its HP percentage) would need a live
   re-roll-into-any-enemy-type path (fresh stats block, sprite swap,
-  re-applying whatever HP% it had) nothing in `engine/entity.py` currently
-  does~~ — still true and still unbuilt, the bigger lift of the original
-  pair; not attempted this session, deliberately scoped to Slow alone.
+  re-applying whatever HP% it had) nothing in `engine/entity.py`
+  currently does~~ — closed out session 55, and the "fresh stats block"
+  half is what shaped the implementation: `Enemy.transmogrify_into` re-runs
+  `Enemy.__init__` rather than assigning the fields a caller would think
+  to update, so a field added to the constructor in a later session can't
+  be silently left stale on a transmogrified enemy. Two residual notes
+  worth carrying: the destination roster is deliberately the **non-boss**
+  half of `data/enemies.json` (see session 55's entry for why "your Slime
+  is now a Young Red Dragon" is a worse spell, not a bolder one), which a
+  later session could widen if it also gave the player a way back; and the
+  change is **transient across a room exit** the same way `sleep_turns`
+  and `slow_level` already are, since Depths enemies regenerate from epoch
+  on every visit — persisting a re-rolled type would need a per-enemy save
+  column no other runtime combat state has.
 ~~**No trap disarm mechanic or Levitation spell (session 28)**~~ — closed
   out session 29: a new Disarm Trap command (`T`, since `d` is already
   WASD-right movement) targets a detected trap directly ahead of the player

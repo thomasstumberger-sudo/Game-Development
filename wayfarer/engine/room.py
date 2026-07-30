@@ -266,14 +266,30 @@ class Room:
             data = generate_room(int(seed_str), int(level_str), int(gx_str), int(gy_str))
         elif room_id.startswith("biome:"):
             # Wayfarer Adventure Mode (see wayfarer/wayfarer_adventure.md):
-            # a single finite generated room, id "biome:<biome_id>:<seed>".
-            # Unlike "proc:" rooms, main.py's load_room applies no epoch/
-            # respawn machinery to these -- the population generated here is
-            # cached forever by _ROOM_CACHE below, same as a hand-authored
-            # room's fixed templates.
+            # a single finite generated room, id
+            # "biome:<biome_id>:<world_seed>[:<enemy_level>]". Unlike "proc:"
+            # rooms, main.py's load_room applies no epoch/respawn machinery
+            # to these -- the population generated here is cached forever by
+            # _ROOM_CACHE below, same as a hand-authored room's fixed
+            # templates.
+            #
+            # Session 52 added the two things a journey varies, both of them
+            # into the id itself rather than into a lookup this classmethod
+            # would have no way to reach (Room.load only ever gets an id):
+            # `world_seed` differs per journey, so a new journey generates a
+            # genuinely new set of biome dungeons whose entity ids can never
+            # collide with an abandoned journey's persisted room_flags; and
+            # the optional `enemy_level` segment carries the journey's combat
+            # difficulty, which also keeps _ROOM_CACHE correct (two
+            # difficulties are two different rooms, not one stale entry).
+            # The segment is OMITTED at difficulty 1, so every id written by
+            # a pre-session-52 save still parses and still generates exactly
+            # what it did before -- no save migration needed.
             from engine.procgen import generate_biome_room
-            _, biome_id, seed_str = room_id.split(":")
-            data = generate_biome_room(int(seed_str), biome_id)
+            parts = room_id.split(":")
+            _, biome_id, seed_str = parts[:3]
+            enemy_level = int(parts[3]) if len(parts) > 3 else 1
+            data = generate_biome_room(int(seed_str), biome_id, enemy_level)
         else:
             path = os.path.join(ROOMS_DIR, f"{room_id}.json")
             with open(path, "r") as f:

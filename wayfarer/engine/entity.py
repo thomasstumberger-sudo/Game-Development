@@ -33,10 +33,17 @@ class Entity:
 
 
 class Enemy(Entity):
-    def __init__(self, entity_id, enemy_type, x, y, stats):
+    def __init__(self, entity_id, enemy_type, x, y, stats, level=1):
         super().__init__(x, y, stats.get("sprite", "enemy"))
         self.id = entity_id
         self.type = enemy_type
+        # Session 55: how deep this one spawned, i.e. which level `stats`
+        # was already run through procgen.scale_stats_for_level before
+        # reaching here (1 = unscaled). Only Transmogrify needs it -- a
+        # re-rolled monster has to be scaled to the same depth as the one
+        # it replaced, and the spawn template that knew the level is long
+        # gone by then (see transmogrify_into).
+        self.level = level
         self.name = stats.get("name", enemy_type)
         self.max_hp = stats["hp"]
         self.hp = self.max_hp
@@ -118,6 +125,30 @@ class Enemy(Entity):
     @property
     def alive(self):
         return self.hp > 0
+
+    def transmogrify_into(self, new_type, stats, level=None):
+        """Session 55: Castle of the Winds' Transmogrify Monster -- "turns
+        the target monster into a random other monster," preserving the
+        fraction of its max HP it had left. Everything else about the old
+        monster is discarded: it is a different creature afterwards, with
+        the new type's sprite, name, damage type, resistances, poison/drain
+        touch, and XP/gold rewards, and with every per-turn runtime field
+        (sleep_turns, slow_level/slow_tick) back at its fresh value.
+
+        Deliberately re-runs __init__ rather than assigning the handful of
+        fields a caller would think to update: __init__ *is* the definition
+        of "a fresh stats block for this type," so a field added to it in a
+        later session can't be silently left stale on a transmogrified
+        enemy. Identity (`id`) and position survive, because the id is what
+        the room's dead/alive bookkeeping is keyed by (see main.py's
+        dead_enemy_ids) -- this re-rolls what a monster *is*, it doesn't
+        replace one entity with another."""
+        hp_fraction = self.hp / self.max_hp if self.max_hp else 1.0
+        self.__init__(
+            self.id, new_type, self.x, self.y, stats,
+            level=self.level if level is None else level,
+        )
+        self.hp = max(1, min(self.max_hp, round(self.max_hp * hp_fraction)))
 
     def take_turn(self, player, room, occupied_positions):
         """One step of simple chase-or-wander AI. Mutates self.x/y directly

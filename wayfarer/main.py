@@ -16,6 +16,7 @@ import os
 import sys
 import json
 import math
+import random
 import uuid
 
 import pygame
@@ -27,8 +28,11 @@ from engine.room import Room
 from engine.entity import Player, Enemy, ItemPickup, EquipmentDrop, SpellbookDrop, NPC
 from engine.combat import resolve_bump_attack, resolve_spell_hit, resolve_ball_splash_to_player, enemy_attack, grant_xp, resolve_trap, resolve_disarm
 from engine.inventory import Inventory
-from engine.save import SaveManager, DEFAULT_ROOM, DEFAULT_SPAWN
-from engine.procgen import generate_room, scale_stats_for_level, room_doors
+from engine.save import SaveManager, DEFAULT_ROOM, DEFAULT_SPAWN, DEFAULT_ROUTE
+from engine.procgen import (
+    generate_room, scale_stats_for_level, room_doors,
+    BIOME_DEFS, COMBAT_DIFFICULTIES, DEFAULT_DIFFICULTY, difficulty_def,
+)
 from engine.equipment import (
     SLOTS, equip as equip_item, next_offer, create_instance,
     create_shop_instance, bag_instances, display_name as equip_display_name,
@@ -121,6 +125,10 @@ COLOR_MP = (60, 110, 220)
 COLOR_MP_BG = (15, 20, 50)
 COLOR_TEXT = (230, 230, 230)
 COLOR_DEBUG = (0, 255, 0)
+# Session 53: a journey's route decides how many fragments break the seal, so
+# the victory lines can no longer hardcode "four" -- small enough a range that
+# a lookup beats pulling in a number-to-words dependency.
+NUMBER_WORDS = {1: "one", 2: "two", 3: "three", 4: "four", 5: "five"}
 COLOR_POISON = (120, 200, 90)
 COLOR_DRAIN = (150, 150, 230)
 COLOR_WEAKEN = (200, 150, 100)  # session 37: Wight attack drain, earthy tone to match its sprite tint
@@ -133,6 +141,13 @@ COLOR_PANEL_BG = (20, 20, 28, 235)
 COLOR_PANEL_BORDER = (95, 95, 120)
 COLOR_HUD_BG = (17, 17, 24)
 COLOR_GOLD = (230, 190, 60)
+
+
+def _capitalize_first(text):
+    """Uppercase a string's first character and leave the rest alone --
+    unlike str.capitalize(), which lowercases everything after it and would
+    flatten the proper nouns these sentences are full of ("the Frostreach")."""
+    return text[:1].upper() + text[1:]
 
 
 def _wrap_text(font, text, max_width):
@@ -194,8 +209,15 @@ class Game:
         # as self.quests/current_quest() below, just keyed by a persisted
         # id set (completed_adventure_quests) rather than a bare index,
         # per wayfarer_adventure.md's own proposed schema.
+        #
+        # Session 52: the file no longer *is* that list -- it's the authored
+        # material the list is built from (per-biome phrases + templates),
+        # because a journey can shuffle the biome order and a step's dialogue
+        # therefore can't be authored against one fixed (source, target)
+        # pair. _build_adventure_chain() below assembles the same list shape
+        # every consumer already expects.
         with open(os.path.join(BASE_DIR, "data", "adventure_quests.json")) as f:
-            self.adventure_quests = json.load(f)
+            self.adventure_quest_defs = json.load(f)
 
         self.save = SaveManager(SAVE_PATH)
         if new_game:
@@ -216,8 +238,27 @@ class Game:
         # like known_spells (see engine/save.py).
         self.artifact_fragments = set(state.get("artifact_fragments", set()))
         # Session 45: which fetch/trade quests in the chain are complete --
-        # same flat/permanent shape as the two sets above.
+        # same flat/permanent shape as the two sets above. Session 52: ids in
+        # here are journey-scoped (see _journey_id), so this set accumulates
+        # across journeys rather than being cleared by a new one -- a
+        # permanent record of everything this character has ever finished,
+        # and a completed journey's rows keep proving the old journey was
+        # won even after a new one starts.
         self.completed_adventure_quests = set(state.get("completed_adventure_quests", set()))
+        # Session 52 (Adventure Mode journeys, Yoda Stories' "New World"):
+        # which journey this character is on, its chosen combat difficulty,
+        # and how many have been won. self.adventure_chain is derived, not
+        # persisted -- rebuilt from the journey index on every boot and every
+        # time a new journey starts.
+        self.journey_index = state.get("journey_index", 1)
+        self.combat_difficulty = state.get("combat_difficulty", DEFAULT_DIFFICULTY)
+        self.journeys_won = state.get("journeys_won", 0)
+        # Session 53: the journey's ROUTE -- the shape of its chain, chosen
+        # alongside the difficulty when it starts. "old_road" is the straight
+        # line sessions 45-52 built and is what every pre-session-53 save
+        # (and journey 1, always) is on; see route_def/_build_adventure_chain.
+        self.adventure_route = state.get("adventure_route", DEFAULT_ROUTE)
+        self.adventure_chain = self._build_adventure_chain()
         # Catches up a returning save to any spell it already qualifies for
         # (e.g. this session's new content, or simply level 1's starting
         # spell on a brand new character) -- silent, no message spam on boot.
@@ -305,8 +346,12 @@ class Game:
         self.spellbook_cursor = 0
         # Session 45: the Frontier Guide's fetch/trade panel -- single
         # fixed-action shape, no cursor, same as the Quartermaster's quest
-        # panel (see _draw_trade_panel/attempt_trade).
+        # panel (see _draw_trade_panel/attempt_trade). Session 53 gave it a
+        # cursor, because an Open Frontier journey can have several trades
+        # on offer at once (the straight-line route still only ever has one,
+        # and the panel keeps its original single-offer layout in that case).
         self.trade_open = False
+        self.trade_cursor = 0
         # Session 47: the Final Area's one-time victory modal (see
         # _draw_win_screen/handle_key_down/handle_mouse_down). Deliberately
         # NOT persisted -- it's a celebratory toast the first time the final
@@ -316,6 +361,22 @@ class Game:
         # reload after winning never re-shows the modal but the "already
         # won" fact is never lost either.
         self.win_screen_open = False
+        # Session 52: the Guide's "set out on a new journey" panel (Yoda
+        # Stories' New World dialog). journey_pending holds the difficulty
+        # the cursor has *selected* but not yet confirmed -- the panel is a
+        # single surface with two states (pick a difficulty / confirm the
+        # discard) rather than two panels, since the second state is one
+        # sentence and a yes.
+        # Session 53: the same panel also picks the journey's route, so its
+        # cursor now runs over a routes section followed by the difficulty
+        # section (the Shop panel's own "append a section, share one cursor"
+        # shape). journey_route_choice is the route the cursor has landed on;
+        # only the difficulty rows arm/commit, since picking a route is not
+        # itself destructive.
+        self.journey_open = False
+        self.journey_cursor = 0
+        self.journey_pending = None
+        self.journey_route_choice = self.adventure_route
         self.active_npc = None
         # Mouse support (session 13): whichever panel is currently drawn
         # re-populates these two just before it blits itself, so a click
@@ -808,7 +869,9 @@ class Game:
             stats = self.enemy_defs[t["type"]]
             if t.get("level", 1) > 1:
                 stats = scale_stats_for_level(stats, t["level"])
-            self.enemies.append(Enemy(t["id"], t["type"], t["x"], t["y"], stats))
+            self.enemies.append(
+                Enemy(t["id"], t["type"], t["x"], t["y"], stats, level=t.get("level", 1))
+            )
         self.items = [
             ItemPickup(t["id"], t["type"], t["x"], t["y"], self.item_defs[t["type"]])
             for t in item_templates
@@ -897,16 +960,22 @@ class Game:
 
     def _locked_exits(self):
         """Session 45 (Wayfarer Adventure Mode biome-unlock gating): any
-        exit in the current room tagged `requires_quest` whose quest isn't
-        complete yet -- a world-map-scale switch-gated gate, per
+        exit in the current room tagged with a biome the current journey
+        hasn't unlocked yet -- a world-map-scale switch-gated gate, per
         wayfarer_adventure.md's own framing. Deliberately separate from
         _blocked_positions() above: unlike a locked door, a gated exit tile
         is ordinary floor for every *other* purpose (enemy pathing, spell
         line-of-sight) -- only Player.try_move's own exit dispatch needs to
-        know it isn't traversable yet."""
+        know it isn't traversable yet.
+
+        Session 52 swapped the tag from `requires_quest` (a hardcoded chain
+        step id) to `requires_biome`, since a journey can now deal the
+        biomes in any order and no single step id gates a given door
+        anymore -- see unlocked_biomes()."""
+        unlocked = self.unlocked_biomes()
         return [
             e for e in self.room.exits
-            if e.get("requires_quest") and e["requires_quest"] not in self.completed_adventure_quests
+            if e.get("requires_biome") and e["requires_biome"] not in unlocked
         ]
 
     def _current_room_flags(self):
@@ -936,6 +1005,10 @@ class Game:
             self.turn_count, self.depths_kills, self.quest_index,
             self.known_spells, self.artifact_fragments,
             self.completed_adventure_quests,
+            journey_index=self.journey_index,
+            combat_difficulty=self.combat_difficulty,
+            journeys_won=self.journeys_won,
+            adventure_route=self.adventure_route,
         )
 
     # -- input handlers ------------------------------------------------
@@ -1051,6 +1124,7 @@ class Game:
                 self.bookshop_cursor = 0
             elif npc.type == "guide":
                 self.trade_open = True
+                self.trade_cursor = 0
             else:
                 self.quest_open = True
             return  # talking doesn't give nearby enemies a free turn
@@ -1111,7 +1185,16 @@ class Game:
                     messages.append(f"Picked up {item.name}.")
                     AssetManager.play_sfx("pickup")
                 else:
-                    messages.append("Inventory full.")
+                    # Session 54: session 53's Known Limitations note claimed
+                    # this branch said nothing at all when the bag was full,
+                    # which turned out to be wrong -- it has said "Inventory
+                    # full." since session 1. What it didn't say is WHICH item
+                    # it refused, which is the half of the complaint that
+                    # survives verification: walking over a biome's colored
+                    # vault key and reading a bare two-word status line does
+                    # not connect the two. Named here, matching the chest
+                    # branch's own wording two hundred lines below.
+                    messages.append(f"Your pack is full -- no room for {item.name}.")
 
         elif kind == "locked_door":
             # Session 49 (Yoda Stories/Desktop Adventures -- see
@@ -1180,12 +1263,31 @@ class Game:
                 # new save table; current_adventure_quest()'s own front-scan
                 # only ever checks the real chain ids, so an extra id in the
                 # set is otherwise inert.
+                # Session 52: the id is journey-scoped (journey 1 still uses
+                # the bare legacy "adventure_victory", so an already-won save
+                # still reads as won), and winning bumps journeys_won -- the
+                # one fact about a finished journey that has to outlive the
+                # journey itself, since starting a new one is what makes the
+                # frontier winnable again.
                 self.opened_chest_ids.add(chest["id"])
-                if "adventure_victory" in self.completed_adventure_quests:
+                victory_id = self._journey_id("adventure_victory")
+                if victory_id in self.completed_adventure_quests:
                     messages.append("The chest is empty -- you have already claimed your victory.")
                 else:
-                    self.completed_adventure_quests.add("adventure_victory")
-                    messages.append("You lay all four fragments together and the old seal finally breaks.")
+                    self.completed_adventure_quests.add(victory_id)
+                    self.journeys_won += 1
+                    # Session 53: "all four" is only true on the straight-line
+                    # route -- an Open Frontier journey breaks the seal with
+                    # three, and may never have visited the fourth biome.
+                    # Session 54: counted off what's actually in the bag
+                    # rather than off the route, because the route only sets a
+                    # floor -- a Short Road player who walked the optional
+                    # last leg lays four on a route that asked for three, and
+                    # the old wording called that three.
+                    carried = len(self.artifact_fragments)
+                    count_word = NUMBER_WORDS.get(carried, str(carried))
+                    lay = "all four" if carried >= len(self.artifact_defs) else count_word
+                    messages.append(f"You lay {lay} fragments together and the old seal finally breaks.")
                     self.win_screen_open = True
                     AssetManager.play_sfx("pickup")
             elif "equipment" in chest:
@@ -1275,9 +1377,11 @@ class Game:
             elif target_room.startswith("biome:ENTRY:"):
                 # Wayfarer Adventure Mode: town_hub.json can't know the
                 # per-save seed ahead of time, same "ENTRY" sentinel trick
-                # as the Crypt's proc:ENTRY above.
+                # as the Crypt's proc:ENTRY above. Session 52: it can't know
+                # the journey's world seed or difficulty either, so the whole
+                # id is built by biome_room_id().
                 biome_id = target_room.split(":")[2]
-                target_room = f"biome:{biome_id}:{self.seed}"
+                target_room = self.biome_room_id(biome_id)
             stairs_message = {
                 "stairs_down": "You descend deeper into the dungeon.",
                 "stairs_up": "You climb back up.",
@@ -1585,34 +1689,492 @@ class Game:
     # so a future branching chain isn't blocked on this session's data
     # shape.
 
+    # -- journeys (session 52, Yoda Stories' "New World" option) ----------
+    #
+    # A journey is one run through Adventure Mode: one shuffled biome order,
+    # one world seed, one chosen combat difficulty. Journey 1 is the run
+    # every existing save is already on, and is deliberately identical in
+    # every respect to what sessions 44-51 shipped (see the three helpers
+    # below, each of which special-cases 1 to a no-op) -- so this session
+    # adds a replay path without retroactively changing anyone's in-progress
+    # frontier. The Depths are untouched by all of this; a journey only ever
+    # governs the biome wing.
+
+    def _journey_id(self, base):
+        """Namespace a quest id to the current journey. Journey 1 keeps the
+        bare legacy id (`guide_frostreach`, `adventure_victory`, ...) so an
+        existing save's completed_adventure_quests rows still match; every
+        later journey prefixes, so the same four steps can be completed
+        again without a destructive clear of the persisted set."""
+        return base if self.journey_index <= 1 else f"j{self.journey_index}:{base}"
+
+    def journey_world_seed(self):
+        """The seed the current journey's biome dungeons generate from.
+        Journey 1 is the character's own dungeon seed -- i.e. exactly the
+        biome rooms an existing save already has, with the exact room ids it
+        already has flags persisted against. Later journeys derive a fresh
+        one, so their dungeons are genuinely new worlds (new layouts, new
+        vaults, new push-block puzzles) whose entity ids can never collide
+        with an abandoned journey's."""
+        if self.journey_index <= 1:
+            return self.seed
+        return random.Random(f"{self.seed}:journey:{self.journey_index}").randrange(2 ** 31)
+
+    def journey_enemy_level(self):
+        return difficulty_def(self.combat_difficulty)["enemy_level"]
+
+    def biome_room_id(self, biome_id):
+        """"biome:<id>:<world_seed>[:<enemy_level>]" -- the level segment is
+        omitted at difficulty 1 so journey-1 ids are byte-identical to the
+        pre-session-52 format (see engine/room.py's own note)."""
+        room_id = f"biome:{biome_id}:{self.journey_world_seed()}"
+        enemy_level = self.journey_enemy_level()
+        return room_id if enemy_level <= 1 else f"{room_id}:{enemy_level}"
+
+    def journey_biome_order(self):
+        """The biomes in the order this journey's chain visits them.
+        Journey 1 uses the authored order (Scorched Wastes -> Frostreach ->
+        Stormfell -> Fenmire), for two reasons: an in-progress save must not
+        have its world resequenced underneath it on load, and a first
+        playthrough is better as the curated one. Shuffling -- the design
+        doc's own "randomized per-playthrough chains" stretch goal, and the
+        "new story" half of Yoda Stories' New World -- starts at journey 2."""
+        biomes = list(self.adventure_quest_defs["chain_biomes"])
+        if self.journey_index > 1:
+            random.Random(f"{self.seed}:chain:{self.journey_index}").shuffle(biomes)
+        return biomes
+
+    def route_def(self, route_id=None):
+        """Look up a route row from data/adventure_quests.json, falling back
+        to the first (the straight-line Old Road) rather than raising -- same
+        degrade-don't-crash contract difficulty_def() already has for a save
+        carrying an id this build no longer defines."""
+        routes = self.adventure_quest_defs["routes"]
+        wanted = route_id or self.adventure_route
+        for entry in routes:
+            if entry["id"] == wanted:
+                return entry
+        return routes[0]
+
+    def _build_adventure_chain(self):
+        """Assemble the ordered fetch/trade chain for the current journey,
+        in exactly the shape sessions 45-47 hand-authored into
+        adventure_quests.json (id/giver_npc/biome/wants/gives/dialogue), so
+        current_adventure_quest/attempt_trade/_draw_trade_panel needed no
+        changes to consume it.
+
+        Step i wants the fragment guarded by biome i and unlocks biome i+1;
+        the last step unlocks the Final Area. A step's id is named for the
+        biome it *unlocks*, not its position -- which is what makes journey
+        1's ids come out as the legacy `guide_frostreach`/`guide_stormfell`/
+        `guide_fenmire`/`guide_final`, and what keeps an id meaningful when
+        a later journey deals the same biomes in a different order.
+
+        Session 53: that's the `old_road` route. On `open_frontier` the same
+        four biome steps exist but none of them unlocks anything (every
+        frontier is open from the start, see unlocked_biomes) and none of
+        them is the final step -- a fifth, biome-less step wanting *any*
+        three fragments is what opens the Final Area, which is what makes
+        one biome genuinely optional. That's wayfarer_adventure.md's own
+        never-built "any 2 of 3 fragments unlock the final area" branch,
+        scaled to the four biomes that actually shipped. An open-route step
+        is named for its SOURCE (`guide_from_fenmire`) rather than what it
+        unlocks, since it unlocks nothing; only journeys >= 2 can ever be on
+        this route, so `_journey_id` prefixes them all and they can never
+        collide with a legacy id.
+
+        Session 54: `chained` and `required_fragments` are independent knobs
+        rather than two names for one shape. The single decision that used to
+        entangle them is `seal_rides_last_step` below -- session 53 hung the
+        Final Area off the last biome step for *every* chained route, which
+        silently forces the seal to cost every fragment (you cannot reach the
+        last step without having walked all the others). It now does that
+        only when a chained route also wants every fragment, which is exactly
+        the legacy Old Road and is why journey 1's chain is unchanged; any
+        other combination gets the biome-less counting seal step instead. A
+        biome step's dialogue follows from what it actually does rather than
+        from the route's name: `step_*` when it opens another frontier,
+        `final_*` for the legacy seal-bearing last step, `open_*` when it
+        opens nothing and only counts toward the seal (which is the Short
+        Road's last leg as much as any Open Frontier step)."""
+        defs = self.adventure_quest_defs
+        templates = defs["templates"]
+        biome_text = defs["biomes"]
+        order = self.journey_biome_order()
+        final_biome = defs["final_biome"]
+        giver = defs["giver_npc"]
+        route = self.route_def()
+        # Merged into every template's fields, so route-aware phrasing ("the
+        # seal answers to three fragments, not all four") is authored in the
+        # JSON rather than assembled in code. The old_road templates simply
+        # don't reference them.
+        counts = {
+            "required_fragments": route["required_fragments"],
+            "total_fragments": len(order),
+            "final_name": BIOME_DEFS[final_biome]["name"],
+        }
+
+        def dialogue(prefix, fields):
+            # Session 54: a template that opens on a spliced-in `{source_prose}`
+            # ("the Frostreach still keeps what it keeps") starts its sentence
+            # on a lowercase article, since the biome prose is authored to sit
+            # mid-sentence everywhere else. Capitalizing the first character
+            # here fixes every such line at once and is a no-op on every
+            # template that already opens on authored prose -- including all
+            # four of journey 1's, which is why its chain is unchanged.
+            return {
+                key: _capitalize_first(templates[f"{prefix}_{key}"].format(**fields, **counts))
+                for key in ("intro", "incomplete", "success")
+            }
+
+        # Whether the last biome step is itself what opens the Final Area
+        # (the Old Road's shape since session 45) or whether the seal is its
+        # own biome-less step wanting a count. See the docstring: this is the
+        # one line that used to read `route["chained"]` and thereby pinned
+        # the seal's cost to the route's shape.
+        seal_rides_last_step = route["chained"] and route["required_fragments"] >= len(order)
+
+        chain = []
+        for i, source in enumerate(order):
+            fragment_id = BIOME_DEFS[source]["fragment_id"]
+            fields = {
+                "source_name": BIOME_DEFS[source]["name"],
+                "fragment_name": self.artifact_defs[fragment_id]["name"],
+                **{f"source_{k}": v for k, v in biome_text.get(source, {}).items()},
+            }
+            step = {
+                "giver_npc": giver,
+                "biome": source,
+                "wants": {"type": "artifact", "id": fragment_id},
+            }
+            is_last = i == len(order) - 1
+            if route["chained"] and (not is_last or seal_rides_last_step):
+                is_final = is_last and seal_rides_last_step
+                target = final_biome if is_final else order[i + 1]
+                fields["target_name"] = BIOME_DEFS[target]["name"]
+                fields.update({f"target_{k}": v for k, v in biome_text.get(target, {}).items()})
+                step["id"] = self._journey_id("guide_final" if is_final else f"guide_{target}")
+                step["gives"] = {"type": "unlock_biome", "id": target}
+                step["dialogue"] = dialogue("final" if is_final else "step", fields)
+            else:
+                step["id"] = self._journey_id(f"guide_from_{source}")
+                step["gives"] = None
+                step["dialogue"] = dialogue("open", fields)
+            chain.append(step)
+
+        if not seal_rides_last_step:
+            chain.append({
+                "id": self._journey_id("guide_final"),
+                "giver_npc": giver,
+                # No source biome: this step is offered from the first day
+                # (see available_adventure_quests) and is gated purely by
+                # what's in the bag, so the player can see the finish line --
+                # and how many fragments it costs -- before choosing which
+                # frontiers to walk.
+                "biome": None,
+                "wants": {"type": "fragments", "count": route["required_fragments"]},
+                "gives": {"type": "unlock_biome", "id": final_biome},
+                # Session 54: "any 3 of 4" and "all 4" are different
+                # sentences, not the same one with a number swapped -- an
+                # openfinal line promising it's "yours to say which" is a lie
+                # on a route that wants every fragment.
+                "dialogue": dialogue(
+                    "openfinal" if route["required_fragments"] < len(order) else "fullfinal",
+                    {},
+                ),
+            })
+        return chain
+
+    def unlocked_biomes(self):
+        """Which biome entrances the town hub will let the player through
+        right now. The journey's first biome is always open (nothing gates
+        the start of a chain); everything else opens when the step that
+        `gives` it is complete. Session 45 gated exits on a hardcoded quest
+        id instead -- that stopped working once a journey could deal the
+        biomes in any order, since `to_frostreach` is only the second stop
+        on journey 1.
+
+        Session 53: on the Open Frontier route every biome starts unlocked
+        -- the route's whole point is that the four frontiers are walked in
+        whatever order the player likes -- and only the Final Area is still
+        gated, by the biome-less step that wants three fragments."""
+        order = self.journey_biome_order()
+        unlocked = {order[0]} if self.route_def()["chained"] else set(order)
+        for step in self.adventure_chain:
+            if step["id"] in self.completed_adventure_quests and step.get("gives"):
+                unlocked.add(step["gives"]["id"])
+        return unlocked
+
+    def journey_route_summary(self, with_final=False):
+        """How this journey's frontiers are named in one line, for the
+        Journal and the New Journey panel. Session 53: an Open Frontier
+        journey has no fixed order to arrow through, so its biomes are joined
+        with commas and flagged "any order" -- writing "A > B > C" for a route
+        that doesn't work that way would be actively misleading, and the
+        Journal is the only place a player reads their route off."""
+        route = self.route_def()
+        names = [BIOME_DEFS[b]["name"] for b in self.journey_biome_order()]
+        if route["chained"]:
+            # Session 54: on a chained route that wants fewer fragments than
+            # there are biomes (the Short Road), the arrows alone claim every
+            # leg is mandatory. The trailing legs the seal doesn't need are
+            # marked, since the whole point of the route is that they're the
+            # player's to skip -- the fragment count in the Journal's next
+            # line says how many, but not which.
+            for i in range(route["required_fragments"], len(names)):
+                names[i] += " (optional)"
+            summary = " > ".join(names)
+        else:
+            summary = ", ".join(names) + " (any order)"
+        if with_final:
+            summary += f" > {BIOME_DEFS[self.adventure_quest_defs['final_biome']]['name']}"
+        return summary
+
+    def journey_won(self):
+        return self._journey_id("adventure_victory") in self.completed_adventure_quests
+
+    def available_adventure_quests(self):
+        """Every chain step the Guide can offer right now -- incomplete, and
+        either biome-less (the Open Frontier's final step, always offered) or
+        sourced from a biome the player can actually reach.
+
+        Session 53: this replaces current_adventure_quest()'s original
+        front-scan of the whole chain, and is what a genuine branch needed --
+        several steps can be live at once. On the straight-line Old Road it
+        still yields exactly one at a time and in the same order, because
+        biome i+1 only unlocks when step i completes; that equivalence is
+        why nothing about journey 1 changed."""
+        unlocked = self.unlocked_biomes()
+        return [
+            quest for quest in self.adventure_chain
+            if quest["id"] not in self.completed_adventure_quests
+            and (quest["biome"] is None or quest["biome"] in unlocked)
+        ]
+
     def current_adventure_quest(self):
-        for quest in self.adventure_quests:
-            if quest["id"] not in self.completed_adventure_quests:
-                return quest
-        return None
+        offers = self.available_adventure_quests()
+        return offers[0] if offers else None
+
+    def wants_satisfied(self, quest):
+        """Whether the bag holds what a step asks for. Two want-types since
+        session 53: a named `artifact` fragment (every biome step, and the
+        Old Road's own final step) or a `fragments` COUNT -- any N of them,
+        which is the Open Frontier's "it's yours to say which three." The
+        count form only works because a trade never consumes the fragment it
+        was shown (session 45's deliberate departure from the source games)."""
+        wants = quest["wants"]
+        if wants["type"] == "fragments":
+            return len(self.artifact_fragments) >= wants["count"]
+        return wants["id"] in self.artifact_fragments
+
+    def wants_label(self, quest):
+        wants = quest["wants"]
+        if wants["type"] == "fragments":
+            # Session 54: "any 4 fragments" is technically true of a route
+            # that wants all four and reads as a bug -- there is nothing to
+            # choose. The count-want covers both cases now, so the label has
+            # to as well.
+            if wants["count"] >= len(self.artifact_defs):
+                return f"all {wants['count']} fragments"
+            return f"any {wants['count']} fragments"
+        return self.artifact_defs[wants["id"]]["name"]
+
+    def _carry_line(self, quest):
+        """The trade panel's "yes, you have it" line. Kept separate from
+        wants_label because the count-want reads naturally as a noun phrase
+        in a list row ("any 3 fragments") but not in this sentence."""
+        wants = quest["wants"]
+        if wants["type"] == "fragments":
+            return f"You carry {len(self.artifact_fragments)} fragments -- enough."
+        return f"You carry the {self.artifact_defs[wants['id']]['name']}."
+
+    def start_new_journey(self, difficulty_id, route_id=None):
+        """Yoda Stories' "New World -- builds a new world with a new story,
+        which discards the current world." Discards, here, means: the biome
+        wing is re-rolled (new world seed, new biome order, new difficulty)
+        and the fragments in the bag are surrendered to the Guide. It does
+        NOT touch the character (level/gear/gold/spells), the Depths, or the
+        cull-quest ladder -- Adventure Mode has always been a wing of the
+        game rather than the whole of it, and a journey resets that wing
+        only.
+
+        Nothing is deleted from the save. Past journeys' completed steps stay
+        in completed_adventure_quests (their ids are journey-scoped, so they
+        can't satisfy the new journey's steps) and past journeys' biome rooms
+        keep their room_flags rows against ids the new journey will never
+        generate -- orphaned, but a few dozen harmless rows beats a
+        destructive delete pass over a save file."""
+        self.journey_index += 1
+        self.combat_difficulty = difficulty_def(difficulty_id)["id"]
+        # Session 53: the route is picked in the same panel and is fixed for
+        # the journey's length, exactly like the difficulty -- and for the
+        # same reason it can't be changed mid-run: which biomes are open, and
+        # what the seal costs, are facts the chain is built from on boot.
+        self.adventure_route = self.route_def(route_id)["id"]
+        self.adventure_chain = self._build_adventure_chain()
+        # Fragment ids are global (`ember_fragment`, ...), not journey-scoped
+        # the way quest ids are -- so unlike the quest set, this one has to
+        # actually clear, or the new chain's first trade would be satisfiable
+        # the moment it's offered.
+        self.artifact_fragments.clear()
+        # Word of Recall's anchor can point into the journey just abandoned
+        # (session 26 persists whatever room it was last cast in). That id
+        # still generates -- it just isn't part of this world anymore, so
+        # recalling to it would drop the player into a dungeon no quest can
+        # reference. Clear it rather than strand them there.
+        if (self.player.recall_room or "").startswith("biome:"):
+            self.player.recall_room = None
+            self.player.recall_x = None
+            self.player.recall_y = None
+        self.journey_open = False
+        self.journey_pending = None
+        self.trade_open = False
+        self.trade_cursor = 0
+        route = self.route_def()
+        self.message_log = [
+            f"Journey {self.journey_index} begins "
+            f"({route['name']}, {difficulty_def(self.combat_difficulty)['name']}).",
+        ]
+        # Session 54: both halves now also state the seal's cost when it's
+        # less than every fragment, since that's the whole difference between
+        # the Old Road and the Short Road (and it's the first thing a player
+        # on a new route needs to know).
+        total = len(self.journey_biome_order())
+        required = route["required_fragments"]
+        short = f" Any {required} of the {total} will break the seal." if required < total else ""
+        if route["chained"]:
+            first = BIOME_DEFS[self.journey_biome_order()[0]]["name"]
+            self.message_log.append(
+                f"The Guide takes back your fragments and points you toward the {first}.{short}"
+            )
+        else:
+            asks = f"any {required}" if required < total else f"all {required}"
+            self.message_log.append(
+                "The Guide takes back your fragments. Every frontier stands open -- "
+                f"bring back {asks}."
+            )
+        self.persist()
+        self.dirty = True
 
     def close_trade_panel(self):
         self.trade_open = False
         self.dirty = True
 
+    def open_journey_panel(self):
+        """Opened from the Guide's trade panel (N / a click on its last
+        row). Replaces the trade panel rather than stacking on top of it --
+        this codebase has never had two panels open at once and the Esc
+        chain in close_active_panel assumes it stays that way."""
+        self.trade_open = False
+        self.journey_open = True
+        # Session 53: the cursor opens on the route the current journey is
+        # running, so the panel's first state answers "what am I on now" for
+        # the route the same way the `*` marker does for the difficulty.
+        self.journey_route_choice = self.adventure_route
+        self.journey_cursor = self._journey_route_index(self.adventure_route)
+        self.journey_pending = None
+        self.dirty = True
+
+    def _journey_route_index(self, route_id):
+        routes = self.adventure_quest_defs["routes"]
+        for i, entry in enumerate(routes):
+            if entry["id"] == route_id:
+                return i
+        return 0
+
+    def close_journey_panel(self):
+        """Esc backs out of the confirm step first, then out of the panel --
+        so a mis-hit on Enter is one keystroke to undo, not a discarded
+        frontier."""
+        if self.journey_pending is not None:
+            self.journey_pending = None
+        else:
+            self.journey_open = False
+        self.dirty = True
+
+    def _journey_row_count(self):
+        return len(self.adventure_quest_defs["routes"]) + len(COMBAT_DIFFICULTIES)
+
+    def journey_move_cursor(self, delta):
+        self.journey_cursor = max(0, min(self._journey_row_count() - 1, self.journey_cursor + delta))
+        self.dirty = True
+
+    def activate_journey_row(self, index):
+        """Session 53: the panel is two sections under one cursor (the Shop
+        panel's own shape) -- routes first, then difficulties. Activating a
+        route row just picks it, since choosing a chain shape isn't itself
+        destructive; only a difficulty row arms and commits.
+
+        First activation of a difficulty selects it and arms the confirm; the
+        second (on the same row) commits. Discarding a frontier is the most
+        destructive thing a player can do to their Adventure Mode progress
+        with a single keypress, so it deliberately costs two -- and changing
+        the route while a confirm is armed disarms it, so the journey that
+        gets committed is always the one the panel is currently describing."""
+        routes = self.adventure_quest_defs["routes"]
+        if 0 <= index < len(routes):
+            self.journey_route_choice = routes[index]["id"]
+            self.journey_cursor = index
+            self.journey_pending = None
+            self.dirty = True
+            return
+        index -= len(routes)
+        if not 0 <= index < len(COMBAT_DIFFICULTIES):
+            return
+        chosen = COMBAT_DIFFICULTIES[index]["id"]
+        if self.journey_pending == chosen:
+            self.start_new_journey(chosen, self.journey_route_choice)
+        else:
+            self.journey_cursor = index + len(routes)
+            self.journey_pending = chosen
+            self.dirty = True
+
+    # -- the Guide's trade panel ------------------------------------------
+
+    def trade_offers(self):
+        """The steps the Guide will trade on right now, filtered to the NPC
+        actually being talked to. A list rather than a single quest since
+        session 53 -- see available_adventure_quests."""
+        npc = self.active_npc
+        if npc is None:
+            return []
+        return [q for q in self.available_adventure_quests() if q["giver_npc"] == npc.type]
+
+    def selected_trade_offer(self):
+        offers = self.trade_offers()
+        if not offers:
+            return None
+        return offers[min(self.trade_cursor, len(offers) - 1)]
+
+    def trade_move_cursor(self, delta):
+        offers = self.trade_offers()
+        if len(offers) < 2:
+            return  # single-offer panel has no list to move through
+        self.trade_cursor = max(0, min(len(offers) - 1, self.trade_cursor + delta))
+        self.dirty = True
+
+    def activate_trade_row(self, index):
+        """A click on an offer row selects it and, if it can be traded on,
+        trades immediately -- same one-click-does-the-thing contract the
+        Shop/Healer rows already have."""
+        self.trade_cursor = index
+        self.dirty = True
+        self.attempt_trade()
+
     def attempt_trade(self):
-        """Fetch/trade with the Guide: proof of the wanted artifact fragment
+        """Fetch/trade with the Guide: proof of what the selected step wants
         (still held, not consumed -- see wayfarer_adventure.md's Final Area
         note that the win condition needs every fragment held at once, so
         trading it away here would make that check impossible to satisfy
-        later) advances the chain and, via the matching biome exit's own
-        `requires_quest` field, unlocks the next biome."""
-        quest = self.current_adventure_quest()
-        if (
-            quest is None
-            or self.active_npc is None
-            or self.active_npc.type != quest["giver_npc"]
-            or quest["wants"]["id"] not in self.artifact_fragments
-        ):
+        later) completes that step and, via the matching biome exit's own
+        `requires_biome` field, unlocks whatever it gives."""
+        quest = self.selected_trade_offer()
+        if quest is None or not self.wants_satisfied(quest):
             return
         self.completed_adventure_quests.add(quest["id"])
         self.message_log = [quest["dialogue"]["success"]]
         self.trade_open = False
+        self.trade_cursor = 0
         self.dirty = True
 
     # -- shop --------------------------------------------------------------
@@ -2308,6 +2870,53 @@ class Game:
                     f"You cast {spell['name']}. {target.name} is slowed to "
                     f"1/{target.slow_level + 1} speed."
                 )
+        elif effect == "transmogrify":
+            # Session 55: Castle of the Winds' Transmogrify Monster --
+            # "turns the target monster into a random other monster." Same
+            # single-enemy facing/range targeting and the same sleep_immune
+            # boss-immunity check as Sleep/Slow above (sessions 40/42), so
+            # this is the third spell riding _bolt_target without dealing
+            # damage. Two adaptations worth naming:
+            #
+            # * The destination roster is the *non-boss* half of
+            #   data/enemies.json (`sleep_immune` false), not every type.
+            #   Bosses are already immune to being transmogrified, so
+            #   allowing them as a destination would make the spell's worst
+            #   outcome "your Slime is now a Young Red Dragon, and no spell
+            #   in the book can undo it" -- a permanent, counterplay-free
+            #   death sentence rather than a gamble. Within the seven normal
+            #   types it's still a real gamble in both directions (a Viper
+            #   can come back as a Tunnel Wight), which is the part of the
+            #   source spell actually worth having.
+            # * The re-roll is scaled to the depth the original spawned at
+            #   (Enemy.level, session 55) rather than to base stats, so
+            #   transmogrifying on dungeon level 9 can't be used to launder
+            #   a scaled enemy into an unscaled one. The new type's own
+            #   xp_reward/gold_reward come along with it -- rolling a
+            #   tougher monster is worth more, which is the gamble's upside.
+            target = self._bolt_target(spell)
+            if target is None:
+                message = f"You cast {spell['name']}, but it finds no target."
+            elif target.sleep_immune:
+                message = f"You cast {spell['name']}, but {target.name} is unaffected."
+            else:
+                candidates = sorted(
+                    t for t, defn in self.enemy_defs.items()
+                    if t != target.type and not defn.get("sleep_immune")
+                )
+                if not candidates:
+                    message = f"You cast {spell['name']}, but nothing else stirs in its place."
+                else:
+                    old_name = target.name
+                    new_type = random.choice(candidates)
+                    new_stats = self.enemy_defs[new_type]
+                    if target.level > 1:
+                        new_stats = scale_stats_for_level(new_stats, target.level)
+                    target.transmogrify_into(new_type, new_stats)
+                    message = (
+                        f"You cast {spell['name']}. The {old_name} twists and "
+                        f"reshapes itself into a {target.name}!"
+                    )
         elif effect == "reveal_map":
             # Session 38: Castle of the Winds' Clairvoyance -- "fills in the
             # player's map of a 10x10 area anywhere on the floor." Adapted to
@@ -2452,6 +3061,8 @@ class Game:
             self._draw_bookshop_panel()
         if self.trade_open:
             self._draw_trade_panel()
+        if self.journey_open:
+            self._draw_journey_panel()
         if self.spellbook_open:
             self._draw_spellbook_panel()
         if self.journal_open:
@@ -2717,7 +3328,7 @@ class Game:
         return (
             self.inventory_open or self.quest_open or self.shop_open
             or self.spellbook_open or self.journal_open or self.healer_open
-            or self.bookshop_open or self.trade_open
+            or self.bookshop_open or self.trade_open or self.journey_open
         )
 
     def handle_room_click(self, pos):
@@ -2785,6 +3396,8 @@ class Game:
             self.close_bookshop_panel()
         elif self.trade_open:
             self.close_trade_panel()
+        elif self.journey_open:
+            self.close_journey_panel()
         elif self.spellbook_open:
             self.close_spellbook_panel()
         elif self.journal_open:
@@ -2845,13 +3458,13 @@ class Game:
             self.debug_overlay = not self.debug_overlay
             self.dirty = True
             return False
-        if key == pygame.K_i and not (self.quest_open or self.shop_open or self.journal_open or self.spellbook_open or self.healer_open or self.bookshop_open or self.trade_open):
+        if key == pygame.K_i and not (self.quest_open or self.shop_open or self.journal_open or self.spellbook_open or self.healer_open or self.bookshop_open or self.trade_open or self.journey_open):
             self.toggle_inventory()
             return False
-        if key == pygame.K_m and not (self.quest_open or self.shop_open or self.inventory_open or self.spellbook_open or self.healer_open or self.bookshop_open or self.trade_open):
+        if key == pygame.K_m and not (self.quest_open or self.shop_open or self.inventory_open or self.spellbook_open or self.healer_open or self.bookshop_open or self.trade_open or self.journey_open):
             self.toggle_journal()
             return False
-        if key == pygame.K_c and not (self.quest_open or self.shop_open or self.inventory_open or self.journal_open or self.healer_open or self.bookshop_open or self.trade_open):
+        if key == pygame.K_c and not (self.quest_open or self.shop_open or self.inventory_open or self.journal_open or self.healer_open or self.bookshop_open or self.trade_open or self.journey_open):
             self.toggle_spellbook()
             return False
 
@@ -2860,8 +3473,24 @@ class Game:
                 self.claim_quest_reward()
             return False
         if self.trade_open:
-            if key in (pygame.K_u, pygame.K_RETURN):
+            # Up/Down do nothing when there's only one offer (the straight-
+            # line route, always) -- see trade_move_cursor.
+            if key in (pygame.K_UP, pygame.K_w):
+                self.trade_move_cursor(-1)
+            elif key in (pygame.K_DOWN, pygame.K_s):
+                self.trade_move_cursor(1)
+            elif key in (pygame.K_u, pygame.K_RETURN):
                 self.attempt_trade()
+            elif key == pygame.K_n:
+                self.open_journey_panel()
+            return False
+        if self.journey_open:
+            if key in (pygame.K_UP, pygame.K_w):
+                self.journey_move_cursor(-1)
+            elif key in (pygame.K_DOWN, pygame.K_s):
+                self.journey_move_cursor(1)
+            elif key in (pygame.K_u, pygame.K_RETURN):
+                self.activate_journey_row(self.journey_cursor)
             return False
         if self.healer_open:
             if key in (pygame.K_UP, pygame.K_w):
@@ -3118,21 +3747,41 @@ class Game:
         title_font = AssetManager.get_font(16, bold=True)
         font = AssetManager.get_font(14)
 
-        quest = self.current_adventure_quest()
         npc = self.active_npc
-        matches = quest is not None and npc is not None and npc.type == quest["giver_npc"]
+        offers = self.trade_offers()
+        if len(offers) > 1:
+            # Session 53: the Open Frontier route can have several trades
+            # live at once, which the original single-action layout has no
+            # room for. Drawn as its own list-with-cursor branch rather than
+            # by generalizing the layout below, so a straight-line journey's
+            # panel (every existing save's) renders byte-identically to what
+            # sessions 45-52 shipped.
+            self._draw_multi_trade_panel(offers, npc, panel_w, title_font, font)
+            return
+
+        quest = offers[0] if offers else None
+        matches = quest is not None
 
         have = False
         if matches:
-            want_id = quest["wants"]["id"]
-            have = want_id in self.artifact_fragments
-            want_name = self.artifact_defs[want_id]["name"]
+            have = self.wants_satisfied(quest)
             raw_lines = [quest["dialogue"]["intro"]]
-            raw_lines.append(f"You carry the {want_name}." if have else quest["dialogue"]["incomplete"])
+            raw_lines.append(self._carry_line(quest) if have else quest["dialogue"]["incomplete"])
             if have:
                 raw_lines.append("Press U or click here to trade.")
+        elif self.journey_won():
+            raw_lines = ["The seal is broken and the frontier is at peace. Rest, adventurer -- you've earned it."]
         else:
             raw_lines = ["Safe travels, adventurer. I've nothing more to ask of you."]
+        # Session 52: the Guide is also where a new journey is started (Yoda
+        # Stories keeps New World on its own menu; this game has no menu
+        # during play, and the Guide is already the NPC who owns every
+        # world-progression fact). Offered unconditionally, exactly like the
+        # source game's own "discards the current world" option -- mid-chain
+        # is a legitimate time to want a different frontier, and the panel
+        # this opens makes the cost explicit before anything happens.
+        trade_row_count = len(raw_lines)
+        raw_lines.append("Press N for a new journey.")
 
         wrapped = [_wrap_text(font, line, panel_w - 20) for line in raw_lines]
         body_h = sum(16 * len(w) + 6 for w in wrapped)
@@ -3147,15 +3796,304 @@ class Game:
         y = 36
         for i, wrapped_line_group in enumerate(wrapped):
             row_top = y
+            is_journey_row = i == len(wrapped) - 1
+            color = (200, 190, 130) if is_journey_row else COLOR_TEXT
+            for wl in wrapped_line_group:
+                panel.blit(font.render(wl, True, color), (10, y))
+                y += 16
+            y += 6
+            action = None
+            if is_journey_row:
+                action = self.open_journey_panel
+            elif matches and have and i == trade_row_count - 1:
+                action = self.attempt_trade
+            if action is not None:
+                row_rect = pygame.Rect(origin[0], origin[1] + row_top, panel_w, y - row_top)
+                self.panel_click_targets.append((row_rect, action))
+
+        hint = font.render("Esc to close", True, (160, 160, 160))
+        panel.blit(hint, (10, panel_h - 24))
+
+        self.screen.blit(panel, origin)
+
+    def _draw_multi_trade_panel(self, offers, npc, panel_w, title_font, font):
+        """Session 53: the Guide's panel when more than one trade is live at
+        once -- the Open Frontier route's whole point. One row per offer with
+        a cursor, and only the selected row's dialogue spelled out underneath
+        in grey (the Spellbook/journey panels' shape), so the panel's height
+        stays bounded no matter how many frontiers are open.
+
+        The Final Area's row is deliberately in the list from the first day
+        even though it can't be traded on yet: seeing "The Sundering -- any 3
+        fragments (0/4 carried)" sitting under four biomes is how a player
+        learns the route is a branch and that one biome is optional."""
+        offers = offers[:]
+        self.trade_cursor = min(self.trade_cursor, len(offers) - 1)
+
+        route = self.route_def()
+        # Session 54: a chained route can reach this panel too, now that the
+        # seal can be its own always-offered step on one (the Short Road: one
+        # live biome trade plus the seal, so two offers). "Every frontier out
+        # there stands open" is flatly false there, so the greeting follows
+        # the route's shape.
+        # ...and a route that wants every fragment needs its own sentence
+        # rather than the same one with the number swapped: "4 fragments of
+        # the 4 will break the seal" is a sentence nobody would write.
+        total = len(self.journey_biome_order())
+        greeting_key = "open_greeting" if not route["chained"] else "chained_greeting"
+        if route["required_fragments"] >= total:
+            greeting_key += "_all"
+        greeting = self.adventure_quest_defs["templates"][greeting_key].format(
+            required_fragments=route["required_fragments"],
+            total_fragments=total,
+        )
+
+        rows = []
+        for quest in offers:
+            if quest["biome"] is None:
+                name = BIOME_DEFS[self.adventure_quest_defs["final_biome"]]["name"]
+                status = f"{len(self.artifact_fragments)}/{quest['wants']['count']} carried"
+            else:
+                name = BIOME_DEFS[quest["biome"]]["name"]
+                status = "carried" if self.wants_satisfied(quest) else "not yet found"
+            rows.append((f"{name} -- {self.wants_label(quest)} ({status})", quest))
+
+        # An offer row is a single unwrapped line (a wrapped row would break
+        # the one-row-one-hitbox mapping), so the panel is measured to fit its
+        # longest one rather than given a guessed width -- the first draft
+        # guessed 420 and a rendered screenshot caught "Scorched Wastes --
+        # Ember-Charred Fragment (not ye" clipping off the edge, which is the
+        # same lesson sessions 11/13/15/16/40/45/46/52 each learned the hard
+        # way. Capped at the window, since nothing can be drawn past it.
+        panel_w = min(
+            WINDOW_W - 40,
+            max(420, max(font.size(f"> {head}")[0] for head, _q in rows) + 20),
+        )
+        greeting_wrapped = _wrap_text(font, greeting, panel_w - 20)
+
+        selected = offers[self.trade_cursor]
+        detail = selected["dialogue"]["intro" if self.wants_satisfied(selected) else "incomplete"]
+        detail_wrapped = _wrap_text(font, detail, panel_w - 46)
+
+        action_line = (
+            "Press U or click the row to trade."
+            if self.wants_satisfied(selected)
+            else "Nothing to trade on this one yet."
+        )
+        footer = [action_line, "Press N for a new journey."]
+        footer_wrapped = [_wrap_text(font, line, panel_w - 20) for line in footer]
+
+        body_h = (
+            16 * len(greeting_wrapped) + 6
+            + len(rows) * 18
+            + 16 * len(detail_wrapped) + 8
+            + sum(16 * len(w) + 6 for w in footer_wrapped)
+        )
+        panel_h = 40 + body_h + 34
+
+        panel = self._panel_surface(panel_w, panel_h)
+        origin = self._begin_panel_hitboxes(panel_w, panel_h)
+        panel.blit(title_font.render(npc.name if npc else "Frontier Guide", True, COLOR_TEXT), (10, 8))
+
+        y = 36
+        for wl in greeting_wrapped:
+            panel.blit(font.render(wl, True, COLOR_TEXT), (10, y))
+            y += 16
+        y += 6
+
+        for i, (head, quest) in enumerate(rows):
+            prefix = "> " if i == self.trade_cursor else "  "
+            color = (230, 200, 110) if self.wants_satisfied(quest) else COLOR_TEXT
+            row_top = y
+            panel.blit(font.render(f"{prefix}{head}", True, color), (10, y))
+            y += 18
+            row_rect = pygame.Rect(origin[0], origin[1] + row_top, panel_w, y - row_top)
+            self.panel_click_targets.append((row_rect, lambda idx=i: self.activate_trade_row(idx)))
+
+        for wl in detail_wrapped:
+            panel.blit(font.render(wl, True, (170, 170, 170)), (36, y))
+            y += 16
+        y += 8
+
+        for i, wrapped_line_group in enumerate(footer_wrapped):
+            row_top = y
+            color = (200, 190, 130) if i == len(footer_wrapped) - 1 else COLOR_TEXT
+            for wl in wrapped_line_group:
+                panel.blit(font.render(wl, True, color), (10, y))
+                y += 16
+            y += 6
+            if i == len(footer_wrapped) - 1:
+                row_rect = pygame.Rect(origin[0], origin[1] + row_top, panel_w, y - row_top)
+                self.panel_click_targets.append((row_rect, self.open_journey_panel))
+
+        hint = font.render("Up/Down select, U/Enter/click trade, Esc to close", True, (160, 160, 160))
+        panel.blit(hint, (10, panel_h - 24))
+
+        self.screen.blit(panel, origin)
+
+    def _draw_journey_panel(self):
+        """Session 52: the Guide's New Journey panel -- this game's version
+        of Yoda Stories' New Game dialog, which is where that game puts its
+        world size and Combat Difficulty options. Same "list-with-cursor,
+        dynamic height" shape as the Healer/Shop/Bookshop panels, plus a
+        wrapped preamble (the trade panel's own technique) since the
+        explanation and the confirm line both run past this width.
+
+        Two states in one surface: pick a difficulty, then confirm. The
+        confirm exists because this is the only action in the game that
+        throws away progress, and the panel spells out exactly what goes and
+        what stays rather than making the player remember."""
+        overlay = pygame.Surface((WINDOW_W, WINDOW_H), pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, 140))
+        self.screen.blit(overlay, (0, 0))
+
+        panel_w = 520
+        title_font = AssetManager.get_font(16, bold=True)
+        font = AssetManager.get_font(14)
+
+        next_index = self.journey_index + 1
+        preamble = [
+            f"You're on journey {self.journey_index} ({self.route_def()['name']}): "
+            f"{self.journey_route_summary()}.",
+            "A new journey re-rolls the frontier -- new dungeon layouts, a new "
+            "order to walk them in, and a road and a difficulty of your choosing.",
+            "Your fragments are handed back to me. Your level, gear, gold, "
+            "spells and the Depths all stay exactly as they are.",
+        ]
+        wrapped = [_wrap_text(font, line, panel_w - 20) for line in preamble]
+        preamble_h = sum(16 * len(w) + 6 for w in wrapped)
+
+        # Session 53: the route section, above the difficulty rungs and
+        # sharing their cursor. Same two-part row shape (name + effect, then
+        # a wrapped grey blurb) so the two sections read as one list.
+        routes = self.adventure_quest_defs["routes"]
+        route_rows = []
+        total_fragments = len(self.adventure_quest_defs["chain_biomes"])
+        for entry in routes:
+            # The head carries the two knobs that actually decide the run --
+            # how the frontiers open and what the seal costs -- and leaves
+            # the flavor to the blurb. Session 53 kept the shape off the head
+            # (a first draft clipped at "...4 fragments break th"), but with
+            # four routes the numbers alone no longer tell two rows apart:
+            # the Open Frontier and the Short Road both cost 3 of 4. Both
+            # facts fit at this width in the compressed phrasing; verified by
+            # a rendered screenshot, same as every panel session before it.
+            shape = "one at a time" if entry["chained"] else "all open"
+            route_rows.append((
+                f"{entry['name']} -- {shape}, {entry['required_fragments']} of {total_fragments} fragments",
+                _wrap_text(font, entry["blurb"], panel_w - 46),
+            ))
+        # Session 54: with four routes, spelling out every blurb pushed this
+        # panel past the 600px window (the difficulty section below is four
+        # rows of the same shape and the preamble is three wrapped lines).
+        # Only the cursor's own route blurb is drawn, which bounds the
+        # section's height at however many routes get authored -- the same
+        # technique session 53's multi-offer trade panel already uses for its
+        # per-offer dialogue. The difficulty rungs keep all four blurbs: they
+        # aren't growing, and they're the rows a player most wants to compare
+        # side by side.
+        # Which route's blurb is spelled out: the row under the cursor while
+        # the cursor is in this section, and otherwise the route the next
+        # journey will actually run -- so the prose on screen always belongs
+        # to the row the panel is currently talking about.
+        route_cursor = (
+            self.journey_cursor if self.journey_cursor < len(routes)
+            else self._journey_route_index(self.journey_route_choice)
+        )
+        route_rows_h = sum(
+            18 + (16 * len(blurb) + 6 if i == route_cursor else 0)
+            for i, (_head, blurb) in enumerate(route_rows)
+        )
+
+        # A difficulty is a two-part row -- name + what it does to the
+        # numbers, then its flavor blurb wrapped and indented underneath in
+        # grey, the same shape the Spellbook panel already uses for spell
+        # descriptions. (First pass put all of it on one line and a rendered
+        # screenshot caught every rung clipping off the panel's right edge;
+        # this project keeps re-learning that lesson -- see sessions 11, 13,
+        # 15, 16, 40, 45, 46.)
+        rows = []
+        for entry in COMBAT_DIFFICULTIES:
+            level = entry["enemy_level"]
+            # Spell out the actual effect, not just flavor -- these rungs map
+            # onto the Depths' own scale_stats_for_level, so a player who has
+            # felt dungeon level 4 already knows what "Merciless" means.
+            effect = "enemy stats as-is" if level == 1 else \
+                f"enemy HP +{int(round((level - 1) * 20))}%, attack +{level - 1}, more XP"
+            rows.append((
+                f"{entry['name']} -- {effect}",
+                _wrap_text(font, entry["blurb"], panel_w - 46),
+            ))
+        rows_h = sum(18 + 16 * len(blurb) + 6 for _head, blurb in rows)
+
+        confirm_lines = []
+        if self.journey_pending is not None:
+            chosen = difficulty_def(self.journey_pending)
+            confirm_lines = _wrap_text(
+                font,
+                f"Set out on journey {next_index} -- "
+                f"{self.route_def(self.journey_route_choice)['name']}, {chosen['name']}? "
+                "Press U/Enter again to confirm, Esc to back out.",
+                panel_w - 20,
+            )
+
+        rows_top = 36 + preamble_h + 6
+        panel_h = rows_top + route_rows_h + rows_h + 8 + len(confirm_lines) * 16 + 34
+
+        panel = self._panel_surface(panel_w, panel_h)
+        origin = self._begin_panel_hitboxes(panel_w, panel_h)
+
+        panel.blit(title_font.render(f"Set Out on Journey {next_index}", True, COLOR_TEXT), (10, 8))
+
+        y = 36
+        for wrapped_line_group in wrapped:
             for wl in wrapped_line_group:
                 panel.blit(font.render(wl, True, COLOR_TEXT), (10, y))
                 y += 16
             y += 6
-            if matches and have and i == len(wrapped) - 1:
-                row_rect = pygame.Rect(origin[0], origin[1] + row_top, panel_w, y - row_top)
-                self.panel_click_targets.append((row_rect, self.attempt_trade))
 
-        hint = font.render("Esc to close", True, (160, 160, 160))
+        for i, (head, blurb) in enumerate(route_rows):
+            entry = routes[i]
+            prefix = "> " if i == self.journey_cursor else "  "
+            # Same two markers as the difficulty rows below: `*` for what the
+            # current journey runs, gold for what the next one will.
+            marker = "* " if entry["id"] == self.adventure_route else "  "
+            color = (230, 200, 110) if entry["id"] == self.journey_route_choice else COLOR_TEXT
+            row_top = y
+            panel.blit(font.render(f"{prefix}{marker}{head}", True, color), (10, y))
+            y += 18
+            if i == route_cursor:
+                for wl in blurb:
+                    panel.blit(font.render(wl, True, (170, 170, 170)), (36, y))
+                    y += 16
+                y += 6
+            row_rect = pygame.Rect(origin[0], origin[1] + row_top, panel_w, y - row_top)
+            self.panel_click_targets.append((row_rect, lambda idx=i: self.activate_journey_row(idx)))
+
+        for i, (head, blurb) in enumerate(rows):
+            entry = COMBAT_DIFFICULTIES[i]
+            row_index = i + len(routes)
+            prefix = "> " if row_index == self.journey_cursor else "  "
+            # A star marks the rung the current journey is already running,
+            # so "what am I on now" is answerable from this panel alone.
+            marker = "* " if entry["id"] == self.combat_difficulty else "  "
+            color = (230, 200, 110) if entry["id"] == self.journey_pending else COLOR_TEXT
+            row_top = y
+            panel.blit(font.render(f"{prefix}{marker}{head}", True, color), (10, y))
+            y += 18
+            for wl in blurb:
+                panel.blit(font.render(wl, True, (170, 170, 170)), (36, y))
+                y += 16
+            y += 6
+            row_rect = pygame.Rect(origin[0], origin[1] + row_top, panel_w, y - row_top)
+            self.panel_click_targets.append((row_rect, lambda idx=row_index: self.activate_journey_row(idx)))
+
+        y += 2
+        for wl in confirm_lines:
+            panel.blit(font.render(wl, True, (230, 200, 110)), (10, y))
+            y += 16
+
+        hint = font.render("Up/Down select, U/Enter/click choose, Esc close", True, (160, 160, 160))
         panel.blit(hint, (10, panel_h - 24))
 
         self.screen.blit(panel, origin)
@@ -3437,17 +4375,95 @@ class Game:
 
         self.screen.blit(panel, origin)
 
+    def _journal_adventure_lines(self):
+        """The Journal's Adventure Mode block, as unwrapped lines. Split out
+        of _draw_journal_panel (session 52) so the panel can measure the
+        block before it builds a surface to draw it on.
+
+        The journey line is new this session and is doing real work, not just
+        reporting a counter: once a journey can shuffle the biome order, the
+        route is no longer something a player can know from having played
+        before, so the Journal is where they read it off."""
+        lines = []
+        route = self.route_def()
+        difficulty = difficulty_def(self.combat_difficulty)["name"]
+        won = f", {self.journeys_won} won" if self.journeys_won else ""
+        lines.append(
+            f"Journey {self.journey_index} ({route['name']}, {difficulty}{won}): "
+            f"{self.journey_route_summary(with_final=True)}"
+        )
+
+        # Wrapped since session 46: a third biome/fragment pushed this past
+        # the panel's 460px width -- confirmed by an actual rendered
+        # screenshot clipping the line at "...Ember-Charred Fragment, Frost"
+        # before the wrap was added, same clipping session 45 already caught
+        # and fixed on the guide line below.
+        have = sorted(self.artifact_defs[fid]["name"] for fid in self.artifact_fragments)
+        # Session 53: on a route where three of four is enough, "2/4" alone
+        # understates how close the player is, so the requirement is named.
+        needed = "" if route["required_fragments"] >= len(self.artifact_defs) else \
+            f" ({route['required_fragments']} needed)"
+        lines.append(
+            f"Artifact Fragments: {len(have)}/{len(self.artifact_defs)}{needed}"
+            + (f" -- {', '.join(have)}" if have else "")
+        )
+
+        # Session 45: the fetch/trade quest chain's current step. Session 47:
+        # the won case is distinguished from the plain "no further requests"
+        # one -- current_adventure_quest() returns None the moment the last
+        # step is traded (unlocking the Final Area exit), but that's not the
+        # same moment as actually finishing it (opening the final vault
+        # chest, tracked separately via the synthetic "adventure_victory" id
+        # -- see handle_move's chest branch and journey_won()).
+        #
+        # Session 53: one line per live offer, since the Open Frontier route
+        # can have several at once -- the Journal is the only place a player
+        # can review the whole branch without walking back to the Guide.
+        offers = self.available_adventure_quests()
+        if self.journey_won():
+            lines.append("The frontier is at peace -- the seal is broken and the realm saved.")
+        elif not offers:
+            lines.append("Frontier Guide: no further requests.")
+        elif len(offers) == 1:
+            quest = offers[0]
+            status = "ready to trade" if self.wants_satisfied(quest) else "not yet found"
+            lines.append(f"Frontier Guide wants: {self.wants_label(quest)} -- {status}")
+        else:
+            # Five repetitions of "Frontier Guide wants:" is noise, and each
+            # one wraps to two lines at this width -- one heading and short
+            # indented rows keeps the block scannable and the panel short.
+            lines.append("Frontier Guide will take:")
+            for quest in offers:
+                status = "ready to trade" if self.wants_satisfied(quest) else "not yet found"
+                lines.append(f"  {self.wants_label(quest)} -- {status}")
+        return lines
+
     def _draw_journal_panel(self):
         overlay = pygame.Surface((WINDOW_W, WINDOW_H), pygame.SRCALPHA)
         overlay.fill((0, 0, 0, 140))
         self.screen.blit(overlay, (0, 0))
 
-        panel_w, panel_h = 460, 470
-        panel = self._panel_surface(panel_w, panel_h)
-        origin = self._begin_panel_hitboxes(panel_w, panel_h)
-
+        panel_w = 460
         title_font = AssetManager.get_font(16, bold=True)
         font = AssetManager.get_font(14)
+
+        # Session 52: this panel's height used to be the constant 470, which
+        # exactly fitted the content sessions 45-47 left it holding. A new
+        # journey line (which wraps to two lines at this width) pushed the
+        # 9x26px automap grid past the bottom edge -- so the height is now
+        # measured from the content the same "measure-then-build" way the
+        # Shop/Spellbook/trade panels already size themselves, and can't be
+        # clipped by a future line either. Everything below is laid out from
+        # the same tops as before; only the surface it lands on grew.
+        adventure_wrapped = [
+            _wrap_text(font, line, panel_w - 20) for line in self._journal_adventure_lines()
+        ]
+        adventure_h = sum(18 * len(w) for w in adventure_wrapped)
+        MAP_H = 24 + 9 * 26  # heading gap + _draw_dungeon_map's 9x9 grid of 26px cells
+        panel_h = 32 + len(self.quests) * 18 + 8 + adventure_h + 8 + MAP_H + 34
+
+        panel = self._panel_surface(panel_w, panel_h)
+        origin = self._begin_panel_hitboxes(panel_w, panel_h)
 
         panel.blit(title_font.render("Quest Log", True, COLOR_TEXT), (10, 8))
         for i, quest in enumerate(self.quests):
@@ -3460,48 +4476,17 @@ class Game:
             line = f"{quest['description']} -- {status}"
             panel.blit(font.render(line, True, COLOR_TEXT), (10, 32 + i * 18))
 
-        # Wayfarer Adventure Mode (see wayfarer/wayfarer_adventure.md): a
-        # one-line summary of fragments claimed so far. Wrapped (session 46:
-        # a third biome/fragment pushed this past the panel's 460px width --
-        # confirmed by an actual rendered screenshot clipping the line at
-        # "...Ember-Charred Fragment, Frost" before this wrap was added,
-        # same clipping session 45 already caught and fixed on the guide
-        # line below).
-        frag_top = 32 + len(self.quests) * 18 + 8
-        have = sorted(self.artifact_defs[fid]["name"] for fid in self.artifact_fragments)
-        frag_line = f"Artifact Fragments: {len(have)}/{len(self.artifact_defs)}" + (f" -- {', '.join(have)}" if have else "")
-        frag_wrapped = _wrap_text(font, frag_line, panel_w - 20)
-        for i, wl in enumerate(frag_wrapped):
-            panel.blit(font.render(wl, True, COLOR_TEXT), (10, frag_top + i * 18))
+        # Wayfarer Adventure Mode (see wayfarer/wayfarer_adventure.md): the
+        # journey/fragment/guide summary, measured above so the panel is
+        # sized to hold it (session 52 -- the three lines used to be built
+        # inline here against a fixed panel height).
+        y = 32 + len(self.quests) * 18 + 8
+        for wrapped_line_group in adventure_wrapped:
+            for wl in wrapped_line_group:
+                panel.blit(font.render(wl, True, COLOR_TEXT), (10, y))
+                y += 18
 
-        # Session 45: the fetch/trade quest chain's current step -- built
-        # this session (see current_adventure_quest/_draw_trade_panel).
-        # Wrapped (unlike frag_line above, before session 46) because
-        # "Frontier Guide wants: <name> -- ready to trade" runs past this
-        # panel's 460px width at this font -- confirmed by an actual
-        # rendered screenshot clipping the word "trade" before this wrap was
-        # added.
-        guide_top = frag_top + len(frag_wrapped) * 18
-        adventure_quest = self.current_adventure_quest()
-        # Session 47: distinguished from the plain "no further requests"
-        # case below -- current_adventure_quest() already returns None the
-        # moment guide_final is traded (unlocking the Final Area exit), but
-        # that's not the same moment as actually finishing it (opening the
-        # final vault chest, tracked separately via the synthetic
-        # "adventure_victory" id -- see handle_move's chest branch).
-        if "adventure_victory" in self.completed_adventure_quests:
-            guide_line = "The frontier is at peace -- the seal is broken and the realm saved."
-        elif adventure_quest is None:
-            guide_line = "Frontier Guide: no further requests."
-        else:
-            want_name = self.artifact_defs[adventure_quest["wants"]["id"]]["name"]
-            status = "ready to trade" if adventure_quest["wants"]["id"] in self.artifact_fragments else "not yet found"
-            guide_line = f"Frontier Guide wants: {want_name} -- {status}"
-        guide_wrapped = _wrap_text(font, guide_line, panel_w - 20)
-        for i, wl in enumerate(guide_wrapped):
-            panel.blit(font.render(wl, True, COLOR_TEXT), (10, guide_top + i * 18))
-
-        map_top = guide_top + len(guide_wrapped) * 18 + 8
+        map_top = y + 8
         panel.blit(title_font.render("Dungeon Map", True, COLOR_TEXT), (10, map_top))
         self._draw_dungeon_map(panel, 10, map_top + 24)
 
@@ -3530,11 +4515,30 @@ class Game:
         font = AssetManager.get_font(15)
 
         have = sorted(self.artifact_defs[fid]["name"] for fid in self.artifact_fragments)
+        route = self.route_def()
+        # Session 53: the opening line names all four elements, which is only
+        # true of a journey that actually collected all four -- an Open
+        # Frontier win can break the seal with three and never set foot in
+        # the fourth biome.
+        opening = (
+            "Ember, frost, storm, and mire -- reunited at last."
+            if len(have) >= len(self.artifact_defs)
+            else f"{NUMBER_WORDS.get(len(have), len(have)).capitalize()} fragments, "
+                 "laid side by side -- and the seal answers."
+        )
         lines = [
-            "Ember, frost, storm, and mire -- reunited at last.",
+            opening,
             "The Elder Dragon's seal is broken, and the frontier is at peace.",
             "",
             f"Fragments carried: {', '.join(have)}",
+            "",
+            # Session 52: which journey this was, and how to get another one.
+            # Before journeys existed there was only ever one ending, so the
+            # modal had nothing to number and nowhere to point.
+            f"Journey {self.journey_index} complete "
+            f"({route['name']}, {difficulty_def(self.combat_difficulty)['name']}) -- "
+            f"{self.journeys_won} won in all.",
+            "The Frontier Guide can set you on a new one whenever you're ready.",
         ]
         wrapped = [_wrap_text(font, line, 520) if line else [""] for line in lines]
 

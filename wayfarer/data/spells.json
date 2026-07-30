@@ -315,5 +315,16 @@
     "mana_cost": 10,
     "effect": "slow",
     "range": 5
+  },
+  {
+    "id": "transmogrify_monster",
+    "name": "Transmogrify Monster",
+    "description": "Unmakes the shape of a living thing and lets it settle into another. What crawls out of the change is anyone's guess -- weaker, stronger, or merely stranger.",
+    "category": "attack",
+    "unlock_level": 28,
+    "book_cost": 600,
+    "mana_cost": 12,
+    "effect": "transmogrify",
+    "range": 5
   }
 ]
