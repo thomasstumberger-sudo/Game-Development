@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Shaman-Chief Fae Realm</title>
+  <link rel="stylesheet" href="./src/style.css">
+</head>
+<body>
+  <!-- If this text is still on screen, main.js never ran. The overwhelmingly
+       common cause is opening this file directly: ES modules are blocked under
+       file://, so the page must be served over HTTP. -->
+  <div id="loading">
+    Loading Shaman-Chief Fae Realm&hellip;
+    <div class="hint">
+      Still here? This page must be served over HTTP, not opened as a file.<br>
+      Run <code>python3 -m http.server 8123</code> in this folder, then open
+      <code>http://localhost:8123/</code>
+    </div>
+  </div>
+  <canvas id="game" width="1024" height="640"></canvas>
+  <script type="module" src="./src/main.js"></script>
+</body>
+</html>

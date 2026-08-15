@@ -1,0 +1,56 @@
+/* All CSS for the game. Colours here must match src/palette.js. */
+
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: #141018;
+  overflow: hidden;
+  font-family: "Courier New", monospace;
+  touch-action: none;
+}
+
+body {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+canvas#game {
+  display: block;
+  max-width: 100%;
+  max-height: 100vh;
+  image-rendering: auto;
+  cursor: crosshair;
+}
+
+#loading {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  color: #d2b48c;
+  font-size: 16px;
+  letter-spacing: 0.05em;
+  text-align: center;
+}
+
+/* Delayed so a normal fast boot never flashes it. */
+#loading .hint {
+  margin-top: 18px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: #a0522d;
+  opacity: 0;
+  animation: hint-in 0s linear 2.5s forwards;
+}
+
+#loading .hint code {
+  color: #d2b48c;
+  background: rgba(0, 0, 0, 0.35);
+  padding: 1px 5px;
+}
+
+@keyframes hint-in {
+  to { opacity: 1; }
+}

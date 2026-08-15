@@ -1,0 +1,13 @@
+Build a 2D top-down pixel-art RPG in vanilla canvas.
+
+The world is a hand-authored overworld of grass, forest, water and stone paths, with proper transition tiles between terrain types — no hard grid seams. There is a village with buildings you can walk behind, NPCs that idle and can be talked to, and a dungeon entrance.
+
+The player has 4-direction walk animations, collision against terrain and props, and a smooth camera that follows with a slight lag and clamps at world edges.
+
+Combat is simple real-time: swing an attack, enemies take knockback and flash on hit, damage numbers pop, and there is screen shake on impact. Enemies have simple chase-and-attack AI and a death animation.
+
+There is a HUD with hearts for health, a small inventory bar, and a dialogue box for NPC conversations with typewriter text.
+
+Commit to a deliberate limited palette — cohesive, slightly muted, readable. Every sprite must be instantly distinguishable from the background at a glance. Add game feel throughout: particles on hit, footstep dust, torch flicker, subtle idle animation on everything.
+
+Loop on each item and have a harsh critic check it visually until the art reads as a polished commercial indie RPG, not programmer art.

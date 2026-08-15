@@ -1,0 +1,22 @@
+{
+  "name": "localforge",
+  "version": "1.0.0",
+  "description": "Autonomous multi-agent build system powered by local LLMs via Ollama",
+  "type": "module",
+  "main": "src/orchestrator.js",
+  "bin": {
+    "forge": "./bin/forge.js"
+  },
+  "scripts": {
+    "doctor": "node bin/forge.js doctor",
+    "selftest": "node bin/forge.js selftest"
+  },
+  "keywords": ["llm", "ollama", "agents", "local", "autonomous"],
+  "license": "ISC",
+  "dependencies": {
+    "puppeteer-core": "^23.11.1"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
