@@ -1,0 +1,21 @@
+node_modules/
+build/
+selftest-run/
+*.log
+shot.png
+
+# Per-run orchestrator artifacts (state, screenshots, reports) — regenerated.
+.forge/
+# Superseded / deliberately-broken workspaces kept on disk for reference only.
+shamanfae/
+shamanfae-v1-broken/
+rpg/
+# Agent leftovers: stale backups and a nested tree written through a full path.
+*.bak
+*.backup
+_stray/
+
+# Prompt files and generated game workspaces stay local to the machine that ran them.
+examples/
+shamanfae*/
+*.png
