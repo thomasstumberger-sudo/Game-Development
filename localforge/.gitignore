@@ -15,7 +15,8 @@ rpg/
 *.backup
 _stray/
 
-# Prompt files and generated game workspaces stay local to the machine that ran them.
+# Goal prompts and generated game workspaces belong to the machine that ran them.
+goals/
 examples/
 shamanfae*/
 *.png

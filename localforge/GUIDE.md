@@ -139,18 +139,20 @@ node bin/forge.js run "A 2D top-down pixel-art RPG with a village, NPCs, real-ti
 ### The realistic form (long prompts belong in a file)
 
 ```bash
-node bin/forge.js run --file examples/rpg-goal.txt --workspace ./rpg
+node bin/forge.js run --file goals/rpg-goal.txt --workspace ./rpg
 ```
 
-Two example goals ship with it:
+Goal files are yours, not the harness's — none ship with it, and `goals/` is
+gitignored so your prompts stay on your machine. The convention used throughout
+this guide is one file per build:
 
-- `examples/rpg-goal.txt` — a 2D top-down RPG. **Start here.** It's written the way prompts for this system should be written (see section 5).
-- `examples/fps-goal.txt` — your original Call of Duty prompt verbatim, if you ever want to exercise the 3D path.
+- `goals/rpg-goal.txt` — a 2D top-down RPG. **Start here.** Section 5 says how to write it.
+- `goals/fps-goal.txt` — a 3D shooter, if you ever want to exercise the 3D path.
 
 ### Run it detached so a closed terminal doesn't kill it
 
 ```bash
-nohup node bin/forge.js run --file examples/rpg-goal.txt --workspace ./rpg > rpg.log 2>&1 &
+nohup node bin/forge.js run --file goals/rpg-goal.txt --workspace ./rpg > rpg.log 2>&1 &
 tail -f rpg.log
 ```
 
@@ -162,7 +164,7 @@ Ctrl-C on the `tail` is safe — it only detaches your view, not the run.
 
 ### How to write the prompt
 
-The planner turns your prompt into 12–26 tasks. Vague prompts produce vague tasks, and vague tasks are what a 30B model fails at. `examples/rpg-goal.txt` is the template — the pattern is:
+The planner turns your prompt into 12–26 tasks. Vague prompts produce vague tasks, and vague tasks are what a 30B model fails at. The pattern to follow is:
 
 - **Name concrete systems**, not vibes. "Transition tiles between terrain types, no hard grid seams" beats "beautiful world".
 - **Say what the player does.** Movement, collision, camera behaviour, combat verbs, UI screens.
@@ -175,14 +177,14 @@ The planner turns your prompt into 12–26 tasks. Vague prompts produce vague ta
 **First real run — see the whole pipeline in ~1 hour**
 
 ```bash
-node bin/forge.js run --file examples/rpg-goal.txt --workspace ./rpg \
+node bin/forge.js run --file goals/rpg-goal.txt --workspace ./rpg \
   --rounds 1 --critique-rounds 2 --pass-score 65 --wall-clock 60
 ```
 
 **Overnight, quality-first**
 
 ```bash
-node bin/forge.js run --file examples/rpg-goal.txt --workspace ./rpg \
+node bin/forge.js run --file goals/rpg-goal.txt --workspace ./rpg \
   --rounds 3 --critique-rounds 6 --concurrency 2
 ```
 
@@ -249,7 +251,7 @@ State is saved after **every** transition, so interruption is cheap.
 node bin/forge.js resume --workspace ./rpg
 
 # start over from scratch, discarding history:
-node bin/forge.js run --file examples/fps-goal.txt --workspace ./rpg --fresh
+node bin/forge.js run --file goals/fps-goal.txt --workspace ./rpg --fresh
 ```
 
 Resume re-queues anything that was mid-flight when you stopped. Completed tasks are never redone.
@@ -356,7 +358,7 @@ A 30B local model is not Opus. It writes solid, working code in small well-speci
 
 **2D is where this system is strongest, and that's genuinely lucky for you.** A tile RPG, a puzzle game, a top-down action game — these decompose into exactly the kind of small, well-specified, individually-verifiable tasks a local model handles well. Procedural sprite generation on a canvas is far more tractable than convincing PBR materials. The gap between "local model output" and "shipped commercial quality" is much narrower in 2D than in 3D.
 
-From `examples/rpg-goal.txt`, a realistic overnight outcome is a **playable tile RPG** — a walkable world with varied terrain and transition tiles, animated 4-direction player movement with collision, a following camera, a few NPCs with dialogue, real-time combat with hit flash and knockback and damage numbers, and a hearts HUD — where every piece was screenshot-verified at 60fps with a clean console. Some tasks will be parked. Early blind comparisons against Stardew Valley will lose.
+From an RPG goal file written to the pattern in section 5, a realistic overnight outcome is a **playable tile RPG** — a walkable world with varied terrain and transition tiles, animated 4-direction player movement with collision, a following camera, a few NPCs with dialogue, real-time combat with hit flash and knockback and damage numbers, and a hearts HUD — where every piece was screenshot-verified at 60fps with a clean console. Some tasks will be parked. Early blind comparisons against Stardew Valley will lose.
 
 That is a good result, and the report tells you the truth about it either way. The system is built so its failures are visible rather than hidden behind a model's cheerful summary.
 
