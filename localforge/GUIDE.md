@@ -183,13 +183,13 @@ node bin/forge.js run --file examples/rpg-goal.txt --workspace ./rpg \
 
 ```bash
 node bin/forge.js run --file examples/rpg-goal.txt --workspace ./rpg \
-  --rounds 3 --critique-rounds 6 --concurrency 2
+  --rounds 3 --critique-rounds 6
 ```
 
 **Debugging a specific behaviour — watch the browser live**
 
 ```bash
-node bin/forge.js run "..." --workspace ./tmp --concurrency 1 --headed
+node bin/forge.js run "..." --workspace ./tmp --headed
 ```
 
 ### What each dial actually does
@@ -198,11 +198,13 @@ node bin/forge.js run "..." --workspace ./tmp --concurrency 1 --headed
 |---|---|---|---|
 | `--critique-rounds` | 6 | tasks are being accepted too ugly | linear time per task |
 | `--rounds` | 3 | the whole build needs more passes | multiplies total time |
-| `--pass-score` | 82 | you want a stricter bar | may never pass; wastes rounds |
-| `--concurrency` | 2 | you enabled `OLLAMA_NUM_PARALLEL` | more file collisions |
+| `--pass-score` | 62 | you want a stricter bar | may never pass; wastes rounds |
+| `--concurrency` | 1 | **don't** — see below | corrupts rounds |
 | `--wall-clock` | off | you need it to stop by morning | hard cutoff mid-task |
 
-**Be careful with `--pass-score`.** 82 is already demanding for a local model. Setting it to 95 means tasks burn all six rounds, fail anyway, and get accepted below the bar — you spend 3× the time for the same result. If nothing is passing, *lower* it to 70 and let the outer refinement rounds do the improving instead.
+**Be careful with `--pass-score`.** This was 82 until the numbers were checked: across 8 runs and ~301 critic evaluations, **not one task ever passed**, and the best score ever recorded was 38. The rubric's calibration rules pin a hand-drawn canvas prototype below 30 on several axes by construction, so 82 made the loop non-terminating — every task stayed below the bar, got revived forever, and the run could only ever end on the wall clock. 62 is reachable by a genuinely polished canvas build while sitting well above the 38 that placeholder art tops out at. If nothing is passing after a couple of passes, check the *scores* in the log before raising rounds: a bar nothing can clear buys you nothing but heat.
+
+**Do not raise `--concurrency` above 1.** The scheduler locks each task's declared files, but verification is global — `check_syntax({ all: true })` and a browser that loads the whole module graph — so a second worker's half-finished edits fail the first worker's round. Agents also write outside their declared set, which the locks cannot prevent.
 
 ---
 
@@ -346,7 +348,7 @@ FORGE_CTX_CODER=24576 node bin/forge.js run ...
 ```
 
 **Two agents fighting over the same file**
-Drop to `--concurrency 1`. Tasks declare their files and the scheduler locks them, but an agent that wanders outside its declared set can still collide with a peer.
+Concurrency is 1 by default now, for exactly this reason. The scheduler locks each task's declared files, but verification is global and agents write outside their declared set, so a second worker still poisons the first worker's rounds.
 
 ---
 
