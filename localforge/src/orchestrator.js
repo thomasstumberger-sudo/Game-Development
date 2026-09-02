@@ -79,7 +79,7 @@ export async function runForge({ goal, workspace, resume = false, maxRefinementR
   await scaffoldApp({ appDir: paths.app, directives });
 
   if (!state.data.tasks.length) {
-    const plan = await planProject(goal, directives);
+    const plan = await planProject(goal, directives, { appDir: paths.app });
     state.data.architecture = plan.architecture;
     state.addTasks(plan.tasks);
   }

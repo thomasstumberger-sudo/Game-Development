@@ -11,6 +11,7 @@
 import { chatJSON } from './ollama.js';
 import { log } from './logger.js';
 import { DOMAIN_KEYS, detectDomain, getRubric, assetGuidance } from './rubrics.js';
+import { surveyApp } from './survey.js';
 
 /** Schema for the directives we lift out of the user's phrasing. */
 const DIRECTIVE_SCHEMA = {
@@ -178,8 +179,118 @@ function domainPlanningNotes(domain) {
   }
 }
 
-export async function planProject(goal, directives) {
+/**
+ * Is this text just the stack description handed back to us?
+ *
+ * Compared on word overlap rather than equality: the model paraphrases, pads
+ * and reflows, so a substring test misses almost every real case.
+ */
+/**
+ * Does this read as written prose, or as a model that came off the rails?
+ *
+ * A live re-plan returned
+ * `task_graph_v1.0.0_2024-05-21T...jsonld.jsonld.jsonld.jsonld` as the
+ * architecture: 120 characters, so the length check passed it, and not an echo
+ * of anything, so the echo check passed it too. It would have gone to every
+ * coder agent as their map of the project. Degenerate output is long and
+ * confident and has almost no spaces in it.
+ */
+export function looksLikeProse(text) {
+  const t = String(text ?? '').trim();
+  if (t.length < 80) return false;
+  const words = t.split(/\s+/);
+  if (words.length < 15) return false;
+  // A repetition loop stacks one enormous token; real prose does not.
+  const longest = Math.max(...words.map((w) => w.length));
+  if (longest > 45) return false;
+  // Sentences, not identifiers.
+  if (!/[a-z]\s+[a-z]/i.test(t)) return false;
+  // Padding out the length with filler clears every check above while saying
+  // nothing. Real prose averages four to five characters a word.
+  const mean = words.reduce((a, w) => a + w.length, 0) / words.length;
+  if (mean < 3) return false;
+  return true;
+}
+
+/**
+ * Does this architecture description actually describe THIS project?
+ *
+ * Both models tried so far answer the question with a title. qwen3-coder
+ * returned a repetition loop; qwen3:32b returned "Wizard Wars Deepening &
+ * Beautification Plan (12 tasks, 1200ms total estimate...)" — grammatical,
+ * confident, prose by every earlier test, and containing not one fact about
+ * how the code is organised.
+ *
+ * A real description of an existing project names its modules. If the survey
+ * found files and symbols and the description mentions none of them, it is
+ * about nothing.
+ *
+ * @param {string} text
+ * @param {{empty:boolean, text:string}} survey
+ */
+export function mentionsProject(text, survey) {
+  if (!survey || survey.empty) return true; // nothing to ground against
+  const known = new Set();
+  for (const m of survey.text.matchAll(/^- (\S+?)(?:\.[a-z]+)? \(/gm)) {
+    known.add(m[1].split('/').pop().toLowerCase());
+  }
+  for (const m of survey.text.matchAll(/defines: ([^\n]+)/g)) {
+    for (const raw of m[1].split(',')) {
+      const name = raw.trim().replace(/,.*$/, '');
+      if (/^[A-Za-z_$][\w$]*$/.test(name) && name.length > 3) known.add(name.toLowerCase());
+    }
+  }
+  if (known.size < 2) return true;
+  const words = new Set(String(text).toLowerCase().match(/[a-z_$][\w$]*/g) ?? []);
+  let hits = 0;
+  for (const k of known) if (words.has(k)) hits++;
+  return hits >= 2;
+}
+
+export function isEchoOf(text, stack) {
+  if (!stack) return false;
+  const words = (t) => new Set(String(t).toLowerCase().match(/[a-z0-9]+/g) ?? []);
+  const a = words(text);
+  const b = words(stack);
+  if (!b.size || !a.size) return false;
+  let shared = 0;
+  for (const w of a) if (b.has(w)) shared++;
+  return shared / a.size > 0.7;
+}
+
+/** Rough classifier for the plan-balance warning. Advisory only, never a filter. */
+export function looksCosmetic(task) {
+  return /\b(shake|flash|particle|trail|glow|dust|debris|juice|polish|palette|shading|lighting|silhouette|animation|anim|parallax|strata|screen[- ]?space|damage numbers?|vfx|sfx|sound|audio)\b/i
+    .test(`${task.id} ${task.title} ${task.description ?? ''}`);
+}
+
+export async function planProject(goal, directives, { appDir = null } = {}) {
   log.step('planner', 'decomposing the goal into a task graph');
+
+  // What already exists, in the planner's own context.
+  //
+  // Without this the planner decomposes the goal in a vacuum. Handed a
+  // finished artillery game and told to "deepen and beautify" it, it planned
+  // 26 juice tasks and no gameplay, because nothing in its input said the
+  // gameplay was already written.
+  const survey = appDir ? surveyApp(appDir) : { empty: true, text: '', fileCount: 0, lineCount: 0 };
+  if (!survey.empty) {
+    log.info('planner', `surveyed ${survey.fileCount} existing file(s), ${survey.lineCount} lines`);
+  }
+  const existingBlock = survey.empty
+    ? 'EXISTING CODE: none. This is a new project.\n'
+    : `EXISTING CODE — this project is ALREADY BUILT to the state below. Read it before planning.\n`
+      + `${survey.text}\n\n`
+      + `PLAN AGAINST WHAT IS THERE:\n`
+      + `- Do NOT plan a task for something these files already define. Check the symbol lists above first.\n`
+      + `- Prefer tasks that deepen or connect existing systems over tasks that add new decoration.\n`
+      + `- If the goal is already largely met, plan FEWER, larger tasks rather than padding the graph with cosmetic effects.\n`
+      + `- AT LEAST HALF the tasks must change what the game DOES — mechanics, rules, systems, opponent\n`
+      + `  behaviour, match flow, failure states. The rest may change how it looks.\n`
+      + `- A graph made mostly of screen shake, hit flashes, damage numbers, particle trails, dust and\n`
+      + `  lighting is a failed plan, however well the goal is phrased. Those are finishing touches on\n`
+      + `  systems that must exist first.\n`;
+
   const plan = await chatJSON({
     role: 'planner',
     schema: PLAN_SCHEMA,
@@ -188,6 +299,7 @@ export async function planProject(goal, directives) {
       {
         role: 'user',
         content: `GOAL:\n${goal}\n\n`
+          + `${existingBlock}\n`
           + `PROJECT: ${directives.project_name}\n`
           + `STACK: ${directives.stack}\n`
           + `QUALITY BAR: ${directives.quality_bar}\n`
@@ -209,6 +321,42 @@ export async function planProject(goal, directives) {
     log.warn('planner', `architecture came back as "${architecture}" — too thin to be useful, dropping it`);
     architecture = '';
   }
+
+  // The length check above is not enough. Asked to describe the architecture,
+  // the model will happily paste the stack description back — it is long, it
+  // is on-topic, and it says nothing about how the code is organised. Every
+  // coder agent then gets that as its map of the project.
+  if (architecture && isEchoOf(architecture, directives.stack)) {
+    log.warn('planner', 'architecture is just the stack description echoed back — dropping it');
+    architecture = '';
+  }
+  if (architecture && !looksLikeProse(architecture)) {
+    log.warn('planner', `architecture is not prose ("${architecture.slice(0, 60)}...") — dropping it`);
+    architecture = '';
+  }
+  if (architecture && !mentionsProject(architecture, survey)) {
+    log.warn('planner', 'architecture names none of this project\'s modules — dropping it');
+    architecture = '';
+  }
+
+  // Whatever the model produced, append what is actually on disk. The survey
+  // is measured rather than described, so it cannot be wrong, and a coder that
+  // knows the load order and the symbol table does not have to spend a third
+  // of its steps grepping for them.
+  if (!survey.empty) {
+    architecture = [architecture, `CURRENT FILE MAP (measured, authoritative):\n${survey.text}`]
+      .filter(Boolean).join('\n\n');
+  }
+
+  // Say plainly how the plan is balanced. A run that spends its whole budget
+  // on polish should be visible at planning time, not inferred afterwards from
+  // a log full of juice tasks.
+  const cosmetic = tasks.filter((t) => looksCosmetic(t)).length;
+  const share = tasks.length ? Math.round((100 * cosmetic) / tasks.length) : 0;
+  const line = `plan balance: ${tasks.length - cosmetic} behavioural, ${cosmetic} cosmetic (${share}%)`;
+  if (share > 60) log.warn('planner', `${line} — this graph is mostly polish`);
+  else log.info('planner', line);
+
   return { architecture, tasks };
 }
 

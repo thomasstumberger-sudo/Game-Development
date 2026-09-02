@@ -29,6 +29,13 @@ export const config = {
    *   fast     - cheap classification/summarisation chores.
    */
   models: {
+    // Stays on the coder model despite planning being a reasoning job. qwen3:32b
+    // was measured against it on the same goal, seed and survey: 97s vs 14s per
+    // plan, and a worse task graph (67% cosmetic vs 50%, tripping the
+    // plan-balance warning). Both models return junk for the `architecture`
+    // field, which is why that field is now guarded and the measured file map
+    // is appended regardless. Planning quality came from letting the planner
+    // read the code, not from the model.
     planner: env('FORGE_MODEL_PLANNER', 'qwen3-coder:30b-64k'),
     coder: env('FORGE_MODEL_CODER', 'qwen3-coder:30b-64k'),
     critic: env('FORGE_MODEL_CRITIC', 'gemma4:26b'),
@@ -92,6 +99,22 @@ export const config = {
     // 62 is reachable by a genuinely polished canvas build while still sitting
     // far above the 38 that placeholder art has topped out at.
     passScore: num('FORGE_PASS_SCORE', 62),
+    // How much of the composite score is art direction, the rest being whether
+    // the thing actually works and the task actually got done.
+    //
+    // This used to be, implicitly, 1.0: every axis in every rubric grades
+    // visual craft, so the number the ratchet hill-climbs measured nothing but
+    // how pretty one static frame looked. A canvas game drawn with fillRect
+    // cannot win those axes — the rubrics' own rules pin it under 30 on
+    // several of them by construction — so across 8 runs and ~350 evaluations
+    // nothing ever passed, best score ever 38, and "working" and "broken"
+    // scored the same as long as neither threw an exception.
+    //
+    // At 0.65, a build that does what the task asked and still runs cleanly
+    // clears the bar on respectable-but-not-commercial art (~42), while
+    // placeholder art (~30) still fails. Art remains the majority of the
+    // score; it is simply no longer all of it.
+    artWeight: num('FORGE_ART_WEIGHT', 0.65),
     // How many blind A/B comparisons against each reference image. Odd number;
     // we swap presentation order every round to cancel positional bias.
     blindRounds: num('FORGE_BLIND_ROUNDS', 3),

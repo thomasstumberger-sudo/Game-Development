@@ -10,16 +10,10 @@
   "scripts": {
     "doctor": "node bin/forge.js doctor",
     "selftest": "node bin/forge.js selftest",
-    "test": "node test/ratchet-fixtures.mjs && node test/revival-fixtures.mjs && node test/ratchet-integration.mjs && node test/gate-fixtures.mjs",
-    "test:fast": "node test/ratchet-fixtures.mjs && node test/revival-fixtures.mjs"
+    "test": "node test/score-fixtures.mjs && node test/survey-fixtures.mjs && node test/ratchet-fixtures.mjs && node test/revival-fixtures.mjs && node test/ratchet-integration.mjs && node test/art-ratchet-integration.mjs && node test/gate-fixtures.mjs",
+    "test:fast": "node test/score-fixtures.mjs && node test/survey-fixtures.mjs && node test/ratchet-fixtures.mjs && node test/revival-fixtures.mjs"
   },
-  "keywords": [
-    "llm",
-    "ollama",
-    "agents",
-    "local",
-    "autonomous"
-  ],
+  "keywords": ["llm", "ollama", "agents", "local", "autonomous"],
   "license": "ISC",
   "dependencies": {
     "puppeteer-core": "^23.11.1"

@@ -25,6 +25,23 @@ import { config } from './config.js';
 import { log } from './logger.js';
 import { assetGuidance } from './rubrics.js';
 
+/**
+ * Does the build run cleanly enough to be worth judging on art?
+ *
+ * Used for both the ratchet baseline and each round, so the two are always
+ * decided by the same rule. `interactive` is deliberately absent: it is a
+ * relative test (see keepOrRevert), not a pass/fail one.
+ */
+function runtimeHealthy(h) {
+  return Boolean(h)
+    && !h.loadError
+    && !h.pageErrors?.length
+    && !h.consoleErrors?.length
+    && !h.blankScreen
+    && !h.deadPlayfield
+    && !h.errorScreen;
+}
+
 /** Extra briefing about the scaffold the agent is building on top of. */
 function scaffoldNotes(domain) {
   if (domain === '2d_game' || domain === '2_5d') {
@@ -120,7 +137,18 @@ function repairBrief({ task, health, critiqueResult, round, goal, wasReverted })
   if (health?.fps != null && health.fps < 30) lines.push(`## Performance\nMeasured ${health.fps} fps, which is below the 30 fps floor. Reduce draw calls, shadow resolution, or post-processing cost.\n`);
 
   if (critiqueResult) {
-    lines.push(`## Art direction review: ${critiqueResult.score}/100 (needs ${config.critic.passScore}), reads as "${critiqueResult.readsAs}"`);
+    // Split the number out. A single composite figure sends the agent to
+    // repaint things when what it actually failed was the task itself, and a
+    // run once spent every round chasing art scores while the feature it was
+    // asked for was never wired up.
+    const breakdown = critiqueResult.artScore != null
+      ? ` — art ${critiqueResult.artScore}/100, function ${critiqueResult.functionScore}/100`
+      : '';
+    lines.push(`## Review: ${critiqueResult.score}/100 (needs ${config.critic.passScore})${breakdown}, reads as "${critiqueResult.readsAs}"`);
+    if (critiqueResult.functionScore != null && critiqueResult.artScore != null
+        && critiqueResult.functionScore < critiqueResult.artScore) {
+      lines.push('\n**The functional half is the weaker one. Fix what the thing DOES before you touch how it looks.**');
+    }
     if (critiqueResult.issues.length) {
       lines.push('\n### Defects to fix');
       lines.push(critiqueResult.issues.map((i) => `- ${i}`).join('\n'));
@@ -159,7 +187,7 @@ function listProjectFiles(appDir, limit = 120) {
  * Run one task to acceptance or exhaustion.
  * @returns {Promise<{status:string, rounds:number, critiques:Array, health:object|null}>}
  */
-export async function runTask({ task, state, paths, appUrl, slot, makeAgent = null }) {
+export async function runTask({ task, state, paths, appUrl, slot, makeAgent = null, critiqueFn = critique }) {
   const name = `${slot ? `w${slot}` : 'worker'}:${task.id}`;
   const maxRounds = state.data.directives.loop_until_perfect ? config.budgets.critiqueRounds : 2;
   const critiques = [];
@@ -181,10 +209,39 @@ export async function runTask({ task, state, paths, appUrl, slot, makeAgent = nu
     shotPath: path.join(paths.shots, `${task.id}-baseline.png`),
     actions: ENTRY_ACTIONS,
   });
-  let bestFitness = fitness(baseline, null);
+  // Judge the inherited frame too, not just its health.
+  //
+  // This is the difference between a ratchet and a one-way door. Scoring the
+  // baseline as null gives it art=0, so EVERY round that merely avoids
+  // crashing outranks it and is kept — the comparison below can then only ever
+  // fire on a health tier, and a round that guts the artwork while still
+  // running at 60fps is unrevertable by construction. A 3h run lost its
+  // terrain, sky, moon and stars that way while the critic described the
+  // damage, in words, in the log, at 29/100, and the round was kept.
+  let baselineCritique = null;
+  if (task.visual && runtimeHealthy(baseline) && baseline.screenshot) {
+    try {
+      baselineCritique = await critiqueFn({
+        screenshot: baseline.screenshot,
+        task,
+        directives: state.data.directives,
+        health: baseline,
+        goal: state.data.goal,
+      });
+    } catch (err) {
+      // Fall back to health-only comparison for this task rather than aborting
+      // it, but say so: while this is null the art ratchet is off.
+      log.warn(name, `baseline critic failed (${err.message}); art regressions cannot be caught this task`);
+    }
+  }
+
+  let bestFitness = fitness(baseline, baselineCritique);
+  // Interactivity ratchets separately, on a relative test — see keepOrRevert.
+  let bestInteractive = baseline?.interactive ?? null;
   let reverted = 0;
   let wasReverted = false;
-  log.info(name, `baseline: ${describeFitness(bestFitness)}`);
+  log.info(name, `baseline: ${describeFitness(bestFitness)}`
+    + `${bestInteractive === false ? ' | not interactive' : ''}`);
 
   /**
    * The ratchet. Keep the round if it is at least as good as the best result
@@ -198,18 +255,32 @@ export async function runTask({ task, state, paths, appUrl, slot, makeAgent = nu
    */
   function keepOrRevert(round, health, crit) {
     const f = fitness(health, crit);
-    if (f >= bestFitness) {
+
+    // Interactivity is judged relatively, never absolutely. A build that never
+    // responded to a bare click may be legitimate (pointer-locked 3D,
+    // keyboard-only), so it is not condemned for staying that way. A build that
+    // WAS responding and has stopped has broken its own controls, and no art
+    // score should be able to buy that back — hence a veto rather than a tier.
+    const lostInput = bestInteractive === true && health?.interactive === false;
+
+    if (f >= bestFitness && !lostInput) {
       best = captureApp(paths.app);
       bestFitness = f;
+      if (health?.interactive !== null && health?.interactive !== undefined) {
+        bestInteractive = health.interactive;
+      }
       wasReverted = false;
       log.info(name, `round ${round} kept: ${describeFitness(f)}`);
       return true;
     }
+
+    const why = lostInput
+      ? `it stopped responding to input (was interactive at ${describeFitness(bestFitness)})`
+      : `${describeFitness(f)} is worse than ${describeFitness(bestFitness)}`;
     const { restored, removed } = restoreApp(paths.app, best);
     reverted++;
     wasReverted = true;
-    log.warn(name, `round ${round} reverted: ${describeFitness(f)} is worse than `
-      + `${describeFitness(bestFitness)} — ${restored} file(s) restored, ${removed} removed`);
+    log.warn(name, `round ${round} reverted: ${why} — ${restored} file(s) restored, ${removed} removed`);
     return false;
   }
 
@@ -282,12 +353,7 @@ export async function runTask({ task, state, paths, appUrl, slot, makeAgent = nu
     // some legitimate builds (pointer-locked 3D, keyboard-only) will not react
     // to a bare click, and failing those would stall the run for the wrong
     // reason.
-    const healthy = !lastHealth.loadError
-      && !lastHealth.pageErrors.length
-      && !lastHealth.consoleErrors.length
-      && !lastHealth.blankScreen
-      && !lastHealth.deadPlayfield
-      && !lastHealth.errorScreen;
+    const healthy = runtimeHealthy(lastHealth);
 
     log.info(name, `runtime: ${healthy ? 'clean' : 'problems'} | ${lastHealth.fps ?? '?'} fps`
       + ` | ${lastHealth.pageErrors.length} page errors | ${lastHealth.consoleErrors.length} console errors`
@@ -322,7 +388,7 @@ export async function runTask({ task, state, paths, appUrl, slot, makeAgent = nu
     }
 
     try {
-      lastCritique = await critique({
+      lastCritique = await critiqueFn({
         screenshot: lastHealth.screenshot,
         task,
         directives: state.data.directives,

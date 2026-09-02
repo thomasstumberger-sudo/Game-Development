@@ -52,6 +52,74 @@ function taskShowsUI(task, domain) {
 }
 
 /**
+ * How well the build works, as opposed to how it looks.
+ *
+ * Every rubric axis grades visual craft, so before this existed the score the
+ * ratchet compared could not tell a round that implemented its task from one
+ * that implemented nothing, nor a live build from one whose controls had died
+ * — as long as neither threw an exception, they scored identically.
+ *
+ * Acceptance criteria carry most of the weight because they are the only
+ * signal that says whether the task was actually done. The runtime terms are
+ * secondary: the health tier in `fitness()` already vetoes an outright broken
+ * build, so what is left for them to catch is the degradation that stays
+ * inside "clean" — a dropped frame rate, controls that stopped answering.
+ *
+ * `interactive === null` means the probe could not tell, which is not the same
+ * as "dead" and must not be scored as it.
+ *
+ * @returns {{score:number, parts:string[]}}
+ */
+export function functionalScore({ health, criteriaMet, criteriaTotal }) {
+  const terms = [];
+  const parts = [];
+
+  if (criteriaTotal > 0) {
+    const v = (100 * criteriaMet) / criteriaTotal;
+    terms.push({ w: 0.55, v });
+    parts.push(`criteria ${criteriaMet}/${criteriaTotal}`);
+  }
+
+  if (health) {
+    const clean = !health.pageErrors?.length && !health.consoleErrors?.length;
+    terms.push({ w: 0.10, v: clean ? 100 : 0 });
+
+    if (health.fps != null) {
+      const v = health.fps >= 55 ? 100 : health.fps >= 30 ? 60 : 0;
+      terms.push({ w: 0.15, v });
+      parts.push(`${health.fps}fps`);
+    }
+
+    if (health.interactive === true || health.interactive === false) {
+      terms.push({ w: 0.20, v: health.interactive ? 100 : 0 });
+      parts.push(health.interactive ? 'responsive' : 'NOT responsive');
+    }
+  }
+
+  if (!terms.length) return { score: 0, parts: ['no functional signal'] };
+
+  const weight = terms.reduce((a, t) => a + t.w, 0);
+  const score = terms.reduce((a, t) => a + t.v * t.w, 0) / weight;
+  return { score: Math.round(score), parts };
+}
+
+/**
+ * Blend art and function into the one number the ratchet compares.
+ *
+ * Exported so the weighting can be tested without a vision model: it is the
+ * definition of what this whole system climbs towards, and it was wrong —
+ * silently, for eight runs — precisely because nothing asserted on it.
+ *
+ * @param {number} artScore
+ * @param {number} funcScore
+ * @returns {number}
+ */
+export function compositeScore(artScore, funcScore) {
+  const w = config.critic.artWeight;
+  return Math.round(artScore * w + funcScore * (1 - w));
+}
+
+/**
  * Grade one screenshot.
  * @returns {Promise<{score:number, verdict:'PASS'|'FAIL', tier:string, issues:string[],
  *   fixes:string[], axisScores:object, readsAs:string, unmetCriteria:string[]}>}
@@ -104,10 +172,20 @@ State plainly what the image reads as. List every defect you can see with a conc
     schema: buildCritiqueSchema(rubric, { hasUI }),
   });
 
-  const score = computeScore(rubric, raw.axis_scores, { hasUI });
+  const artScore = computeScore(rubric, raw.axis_scores, { hasUI });
 
   const defects = Array.isArray(raw.defects) ? raw.defects : [];
-  const unmetCriteria = (raw.criteria_met ?? []).filter((c) => !c.met).map((c) => c.criterion);
+  const criteriaJudged = Array.isArray(raw.criteria_met) ? raw.criteria_met : [];
+  const unmetCriteria = criteriaJudged.filter((c) => !c.met).map((c) => c.criterion);
+
+  // Composite: art is the majority but no longer the entirety. See
+  // config.critic.artWeight for why this exists.
+  const fn = functionalScore({
+    health,
+    criteriaMet: criteriaJudged.filter((c) => c.met).length,
+    criteriaTotal: criteriaJudged.length,
+  });
+  const score = compositeScore(artScore, fn.score);
 
   // Objective health overrides opinion. A model cannot pass a broken build.
   let verdict = score >= config.critic.passScore && unmetCriteria.length === 0 ? 'PASS' : 'FAIL';
@@ -124,12 +202,15 @@ State plainly what the image reads as. List every defect you can see with a conc
     ...unmetCriteria.map((c) => `[unmet criterion] ${c}`),
   ];
 
-  log.info('critic', `${task.id}: ${score}/100 tier=${raw.tier} ${verdict} [${chosenDomain}] — "${raw.reads_as}"`);
+  log.info('critic', `${task.id}: ${score}/100 (art ${artScore}, function ${fn.score}${fn.parts.length ? `: ${fn.parts.join(', ')}` : ''})`
+    + ` tier=${raw.tier} ${verdict} [${chosenDomain}] — "${raw.reads_as}"`);
 
   return {
     taskId: task.id,
     domain: chosenDomain,
     score,
+    artScore,
+    functionScore: fn.score,
     verdict,
     tier: raw.tier,
     readsAs: raw.reads_as,
