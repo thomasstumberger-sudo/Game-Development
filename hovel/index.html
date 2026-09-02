@@ -99,9 +99,8 @@
   }
 
   #hovel-container {
-    transform-origin: 50% 92%;
-    transition: transform 0.1s linear, filter 0.3s ease;
-    will-change: transform, filter;
+    transition: filter 0.3s ease;
+    will-change: filter;
     filter:
       drop-shadow(0 6px 10px rgba(44,42,41,0.25))
       hue-rotate(calc(var(--goblin-pressure) * 45deg))
@@ -873,7 +872,6 @@
   const glamourValueEl = document.getElementById('glamour-value');
   const densityBlockValue = document.getElementById('density-value');
   const densityBlock = document.getElementById('density-block');
-  const hovelContainer = document.getElementById('hovel-container');
   const hovelSvg = document.getElementById('hovel-svg');
   const houseColonyGroup = document.getElementById('house-colony');
   const overflowLabel = document.getElementById('overflow-label');
@@ -1034,7 +1032,7 @@
     room.occupants += 1;
 
     const p = randomPointInRoom(room);
-    const iconScale = (0.3 + Math.random() * 0.14) * (room.scale || 1);
+    const iconScale = (0.48 + Math.random() * 0.2) * (room.scale || 1);
     const rot = (Math.random() * 16 - 8).toFixed(1);
     const skin = GOBLIN_SKIN_PALETTE[Math.floor(Math.random() * GOBLIN_SKIN_PALETTE.length)];
 
@@ -1109,6 +1107,10 @@
   const ROW_DEPTH_STEP = 140;
   const ROW_SCALE_STEP = 0.12;
   const ROOF_APEX_Y = 30;
+  // Visual-only shrink applied to every house's rendered size (and everything scaled off of
+  // it: rooms, subhouses, signage). Goblin icon size is tuned up separately in spawnGoblinVisual
+  // so a smaller, denser house still reads as "packed" with fewer actual goblin sprites.
+  const HOUSE_SIZE_MULT = 0.72;
 
   const SPECIAL_BUILDING_TYPES = [
     {
@@ -1227,11 +1229,16 @@
   }
 
   function createMainHouse(index) {
-    const { cx: houseCx, groundTargetY, scale, rowSide } = getHouseLayout(index);
+    const { cx: houseCx, groundTargetY, scale: layoutScale, rowSide } = getHouseLayout(index);
+    const scale = layoutScale * HOUSE_SIZE_MULT;
     const special = getSpecialBuildingForIndex(index);
 
     const unit = document.createElementNS(SVG_NS, 'g');
     unit.classList.add('house-unit');
+    // Pin this house's own pivot to its own foundation point, so the shared pressure-driven
+    // scale/rotate/skew (applied per house in applyHouseTransforms) rocks each hut around its
+    // own base rather than the whole colony warping around one shared point.
+    unit.style.transformOrigin = `${houseCx.toFixed(1)}px ${groundTargetY.toFixed(1)}px`;
 
     const bodyUse = document.createElementNS(SVG_NS, 'use');
     bodyUse.setAttribute('href', '#main-hovel');
@@ -1278,7 +1285,7 @@
     insertHouseInDom(unit, rowSide);
 
     const roomCenter = localToHouseSpace(house, 150, 195);
-    const baseCapacity = special ? 14 : (index === 0 ? 42 : 36);
+    const baseCapacity = special ? 8 : (index === 0 ? 24 : 20);
     rooms.push({
       cx: roomCenter.x, cy: roomCenter.y, rx: 78 * scale, ry: 55 * scale,
       capacity: Math.max(4, Math.round(baseCapacity * scale)),
@@ -1354,7 +1361,7 @@
       cy: groundY - 16 * scale,
       rx: 20 * scale,
       ry: 13 * scale,
-      capacity: Math.max(4, Math.round(10 - gen * 1.2)),
+      capacity: Math.max(3, Math.round(6 - gen * 0.8)),
       occupants: 0,
       scale: Math.max(0.4, scale * 1.3),
       groupEl: roomGroup
@@ -1419,8 +1426,6 @@
   function computeHovelTransform(pressure, t) {
     let scale = 1.0;
     let rotate = 0;
-    let tx = 0;
-    let ty = 0;
     let skew = 0;
 
     const clampedP = Math.min(pressure, 1.6);
@@ -1439,12 +1444,10 @@
       scale = 1.0 + strain * 0.3;
       rotate = Math.sin(t * 4.0) * strain * 9;
       const p2 = clampedP * clampedP;
-      tx = (Math.random() * 6 - 3) * p2;
-      ty = (Math.random() * 6 - 3) * p2;
       skew = (Math.random() * 4 - 2) * p2;
     }
 
-    return { scale, rotate, tx, ty, skew };
+    return { scale, rotate, skew };
   }
 
   function applyHovelState(pressure) {
@@ -1463,10 +1466,13 @@
     root.style.setProperty('--goblin-pressure', pressure.toFixed(3));
   }
 
-  // Each house shakes on its own smooth, desynced wave (rather than raw per-frame noise, so
-  // no CSS transition-smoothing is needed) layered on top of the shared compound-wide shake.
-  // Translate-only: no rotation, so there's no transform-origin pivot to get wrong.
-  function applyHouseJitter(pressure, t) {
+  // Each house reacts to the shared pressure (scale/rotate/skew) around its OWN foundation
+  // point (house.unit's transform-origin is pinned to that house's own ground coordinate at
+  // creation time), rather than the whole colony pivoting around one shared point. On top of
+  // that, each house shakes on its own smooth, desynced wave so the swarm reads as many
+  // independent huts straining rather than one rigid block warping in unison.
+  function applyHouseTransforms(pressure, t) {
+    const { scale, rotate, skew } = computeHovelTransform(pressure, t);
     const strain = Math.max(0, Math.min(pressure, 1.6) - 0.5);
     const intensity = strain * strain;
     for (const house of houses) {
@@ -1476,7 +1482,11 @@
         jx = Math.sin(t * house.jitterFreq + house.jitterPhase) * amp;
         jy = Math.cos(t * house.jitterFreq * 1.3 + house.jitterPhase) * amp * 0.7;
       }
-      house.unit.style.transform = `translate(${jx.toFixed(2)}px, ${jy.toFixed(2)}px)`;
+      house.unit.style.transform =
+        `translate(${jx.toFixed(2)}px, ${jy.toFixed(2)}px) ` +
+        `rotate(${rotate.toFixed(2)}deg) ` +
+        `skewX(${skew.toFixed(2)}deg) ` +
+        `scale(${scale.toFixed(4)})`;
     }
   }
 
@@ -1490,15 +1500,8 @@
     lastFrameTime = now;
     animPhaseTime += dt;
 
-    const { scale, rotate, tx, ty, skew } = computeHovelTransform(gameState.pressure, animPhaseTime);
-    hovelContainer.style.transform =
-      `translate3d(${tx.toFixed(2)}px, ${ty.toFixed(2)}px, 0) ` +
-      `rotate3d(0,0,1,${rotate.toFixed(2)}deg) ` +
-      `skewX(${skew.toFixed(2)}deg) ` +
-      `scale3d(${scale.toFixed(4)}, ${scale.toFixed(4)}, 1)`;
-
     applyHovelState(gameState.pressure);
-    applyHouseJitter(gameState.pressure, animPhaseTime);
+    applyHouseTransforms(gameState.pressure, animPhaseTime);
   }
 
   function startDisplayLoop() {

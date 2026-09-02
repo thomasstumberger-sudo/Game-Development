@@ -14,3 +14,9 @@ rpg/
 *.bak
 *.backup
 _stray/
+
+# Goal prompts and generated game workspaces belong to the machine that ran them.
+goals/
+examples/
+shamanfae*/
+*.png
