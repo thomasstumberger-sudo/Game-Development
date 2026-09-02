@@ -1,5 +1,24 @@
 # Wayfarer Adventure Mode — design/feasibility write-up
 
+> **STATUS (as of session 53) — this document is now a historical plan, not
+> a to-do list.** Everything below has been built: the phased build order
+> (four biomes, the fetch/trade quest chain, the Final Area, the win screen)
+> closed out in sessions 44-47, and both mechanics the Premise section names
+> in passing as "texture" closed out after it — sokoban push-blocks in
+> session 48 (hand-authored) and 51 (generated), colored key/gate pairs in
+> session 49 (hand-authored) and 50 (generated). **Both of the Quest Chain
+> section's own stretch goals are built too**: randomized per-playthrough
+> chains in session 52 (journeys), and the "light branch (any 2 of 3
+> fragments unlock the final area)" in session 53 (the Open Frontier route,
+> as any 3 of 4). The text below is left
+> exactly as originally written, including its Open Questions and its
+> "nothing has been built" framing, because several later sessions were
+> scoped by mining it and the record of what was *planned* vs. what got
+> revised in contact with the real code is worth keeping. **For current
+> state, open questions, and what's actually still open, read
+> `PROGRESS.MD`'s session entries and its Known Limitations list instead —
+> those are the living documents.**
+
 Speculative planning only, written on branch `wayfarer-adventure-mode`.
 Nothing in this document has been built. If/when a session picks this up,
 treat it the same as PROGRESS.MD's Known Limitations list: a menu to pull

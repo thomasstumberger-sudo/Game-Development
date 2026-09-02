@@ -29,6 +29,13 @@ export const config = {
    *   fast     - cheap classification/summarisation chores.
    */
   models: {
+    // Stays on the coder model despite planning being a reasoning job. qwen3:32b
+    // was measured against it on the same goal, seed and survey: 97s vs 14s per
+    // plan, and a worse task graph (67% cosmetic vs 50%, tripping the
+    // plan-balance warning). Both models return junk for the `architecture`
+    // field, which is why that field is now guarded and the measured file map
+    // is appended regardless. Planning quality came from letting the planner
+    // read the code, not from the model.
     planner: env('FORGE_MODEL_PLANNER', 'qwen3-coder:30b-64k'),
     coder: env('FORGE_MODEL_CODER', 'qwen3-coder:30b-64k'),
     critic: env('FORGE_MODEL_CRITIC', 'gemma4:26b'),
@@ -55,20 +62,59 @@ export const config = {
     agentSteps: num('FORGE_AGENT_STEPS', 60),
     // Max build -> verify -> critique -> fix cycles per task. This is the /loop.
     critiqueRounds: num('FORGE_CRITIQUE_ROUNDS', 6),
-    // Parallel worker agents. Ollama serialises per-model unless you raise
-    // OLLAMA_NUM_PARALLEL, so going much above 2-3 rarely helps on one box.
-    concurrency: num('FORGE_CONCURRENCY', 2),
+    // Parallel worker agents.
+    //
+    // This is 1 because the scheduler's file locks do not make fan-out safe.
+    // They cover each task's *declared* files, but verification is global by
+    // necessity: check_syntax runs with { all: true } and the browser loads the
+    // whole module graph. So worker A's round is still measured against a page
+    // that worker B has half-rewritten, and one broken file anywhere fails both.
+    // Agents also write outside their declared set — a 16h run at concurrency 2
+    // deleted a module and added an off-layout one — which the locks cannot
+    // prevent. Fan-out needs a per-worker tree and a merge step, not tighter
+    // locks, before it earns its throughput back.
+    concurrency: num('FORGE_CONCURRENCY', 1),
     // Whole-run wall clock guard, in minutes. 0 disables.
     wallClockMinutes: num('FORGE_WALL_CLOCK_MIN', 0),
     // Truncation limit for any single tool result fed back to the model.
     toolOutputChars: num('FORGE_TOOL_OUTPUT_CHARS', 12000),
     // A task that fails this many attempts in a row is parked, not retried forever.
     maxTaskAttempts: num('FORGE_MAX_TASK_ATTEMPTS', 3),
+    // How many times a stalled task may be put back in the queue by a later
+    // refinement pass. Without a cap this reset maxTaskAttempts every pass and
+    // the same handful of tasks churned the same files for days.
+    maxRevivals: num('FORGE_MAX_REVIVALS', 2),
   },
 
   critic: {
     // Score (0-100) a visual task must beat to be accepted.
-    passScore: num('FORGE_PASS_SCORE', 82),
+    //
+    // This was 82, which meant "indistinguishable from a shipped commercial
+    // title" — and across 8 runs and ~301 critic evaluations it was never once
+    // met. Best score ever recorded: 38. The rubric's own calibration rules pin
+    // a hand-drawn canvas prototype below 30 on several axes by construction,
+    // so 82 made the loop non-terminating: no task could pass, every task was
+    // revived forever, and the run could only ever end on the wall clock.
+    //
+    // 62 is reachable by a genuinely polished canvas build while still sitting
+    // far above the 38 that placeholder art has topped out at.
+    passScore: num('FORGE_PASS_SCORE', 62),
+    // How much of the composite score is art direction, the rest being whether
+    // the thing actually works and the task actually got done.
+    //
+    // This used to be, implicitly, 1.0: every axis in every rubric grades
+    // visual craft, so the number the ratchet hill-climbs measured nothing but
+    // how pretty one static frame looked. A canvas game drawn with fillRect
+    // cannot win those axes — the rubrics' own rules pin it under 30 on
+    // several of them by construction — so across 8 runs and ~350 evaluations
+    // nothing ever passed, best score ever 38, and "working" and "broken"
+    // scored the same as long as neither threw an exception.
+    //
+    // At 0.65, a build that does what the task asked and still runs cleanly
+    // clears the bar on respectable-but-not-commercial art (~42), while
+    // placeholder art (~30) still fails. Art remains the majority of the
+    // score; it is simply no longer all of it.
+    artWeight: num('FORGE_ART_WEIGHT', 0.65),
     // How many blind A/B comparisons against each reference image. Odd number;
     // we swap presentation order every round to cancel positional bias.
     blindRounds: num('FORGE_BLIND_ROUNDS', 3),

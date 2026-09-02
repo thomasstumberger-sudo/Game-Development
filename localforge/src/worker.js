@@ -20,9 +20,27 @@ import { Agent } from './agent.js';
 import { Toolbelt } from './tools.js';
 import { critique } from './critic.js';
 import { inspectApp, ENTRY_ACTIONS } from './browser.js';
+import { captureApp, restoreApp, fitness, describeFitness, SALVAGEABLE_FITNESS } from './snapshot.js';
 import { config } from './config.js';
 import { log } from './logger.js';
 import { assetGuidance } from './rubrics.js';
+
+/**
+ * Does the build run cleanly enough to be worth judging on art?
+ *
+ * Used for both the ratchet baseline and each round, so the two are always
+ * decided by the same rule. `interactive` is deliberately absent: it is a
+ * relative test (see keepOrRevert), not a pass/fail one.
+ */
+function runtimeHealthy(h) {
+  return Boolean(h)
+    && !h.loadError
+    && !h.pageErrors?.length
+    && !h.consoleErrors?.length
+    && !h.blankScreen
+    && !h.deadPlayfield
+    && !h.errorScreen;
+}
 
 /** Extra briefing about the scaffold the agent is building on top of. */
 function scaffoldNotes(domain) {
@@ -92,8 +110,19 @@ Implement this task now. Start by reading the files you will change.`;
 }
 
 /** Build the brief for a repair round from concrete, measured failures. */
-function repairBrief({ task, health, critiqueResult, round, goal }) {
+function repairBrief({ task, health, critiqueResult, round, goal, wasReverted }) {
   const lines = [`# REPAIR ROUND ${round}: ${task.title}`, ''];
+
+  // Without this the agent reads the files, finds none of the edits it made
+  // last round, and either re-applies them blindly or concludes the tools are
+  // broken. Say plainly that the work was undone and why.
+  if (wasReverted) {
+    lines.push('## Your previous round was reverted\n'
+      + 'The changes from the last round made the build measurably worse, so they '
+      + 'were rolled back and the project is now exactly as it was before that '
+      + 'attempt. Do not simply re-apply them. Work out why they broke the build '
+      + 'and take a different, smaller approach.\n');
+  }
 
   // Repair rounds are exactly where art direction gets lost, so restate it.
   if (goal) lines.push(`## The user's brief, verbatim\n${goal}\n`);
@@ -108,7 +137,18 @@ function repairBrief({ task, health, critiqueResult, round, goal }) {
   if (health?.fps != null && health.fps < 30) lines.push(`## Performance\nMeasured ${health.fps} fps, which is below the 30 fps floor. Reduce draw calls, shadow resolution, or post-processing cost.\n`);
 
   if (critiqueResult) {
-    lines.push(`## Art direction review: ${critiqueResult.score}/100 (needs ${config.critic.passScore}), reads as "${critiqueResult.readsAs}"`);
+    // Split the number out. A single composite figure sends the agent to
+    // repaint things when what it actually failed was the task itself, and a
+    // run once spent every round chasing art scores while the feature it was
+    // asked for was never wired up.
+    const breakdown = critiqueResult.artScore != null
+      ? ` — art ${critiqueResult.artScore}/100, function ${critiqueResult.functionScore}/100`
+      : '';
+    lines.push(`## Review: ${critiqueResult.score}/100 (needs ${config.critic.passScore})${breakdown}, reads as "${critiqueResult.readsAs}"`);
+    if (critiqueResult.functionScore != null && critiqueResult.artScore != null
+        && critiqueResult.functionScore < critiqueResult.artScore) {
+      lines.push('\n**The functional half is the weaker one. Fix what the thing DOES before you touch how it looks.**');
+    }
     if (critiqueResult.issues.length) {
       lines.push('\n### Defects to fix');
       lines.push(critiqueResult.issues.map((i) => `- ${i}`).join('\n'));
@@ -147,7 +187,7 @@ function listProjectFiles(appDir, limit = 120) {
  * Run one task to acceptance or exhaustion.
  * @returns {Promise<{status:string, rounds:number, critiques:Array, health:object|null}>}
  */
-export async function runTask({ task, state, paths, appUrl, slot }) {
+export async function runTask({ task, state, paths, appUrl, slot, makeAgent = null, critiqueFn = critique }) {
   const name = `${slot ? `w${slot}` : 'worker'}:${task.id}`;
   const maxRounds = state.data.directives.loop_until_perfect ? config.budgets.critiqueRounds : 2;
   const critiques = [];
@@ -156,25 +196,125 @@ export async function runTask({ task, state, paths, appUrl, slot }) {
 
   log.step(name, `starting "${task.title}" (up to ${maxRounds} rounds)`);
 
+  // ---- RATCHET BASELINE --------------------------------------------------
+  // Measure the tree we inherited before touching it. Without this the first
+  // round has nothing to be compared against, and a round that breaks a
+  // working build would be kept simply for being first.
+  //
+  // One extra page load per task, against six rounds of several minutes each:
+  // the cost is noise and it buys a correct floor.
+  let best = captureApp(paths.app);
+  const baseline = await inspectApp({
+    url: appUrl,
+    shotPath: path.join(paths.shots, `${task.id}-baseline.png`),
+    actions: ENTRY_ACTIONS,
+  });
+  // Judge the inherited frame too, not just its health.
+  //
+  // This is the difference between a ratchet and a one-way door. Scoring the
+  // baseline as null gives it art=0, so EVERY round that merely avoids
+  // crashing outranks it and is kept — the comparison below can then only ever
+  // fire on a health tier, and a round that guts the artwork while still
+  // running at 60fps is unrevertable by construction. A 3h run lost its
+  // terrain, sky, moon and stars that way while the critic described the
+  // damage, in words, in the log, at 29/100, and the round was kept.
+  let baselineCritique = null;
+  if (task.visual && runtimeHealthy(baseline) && baseline.screenshot) {
+    try {
+      baselineCritique = await critiqueFn({
+        screenshot: baseline.screenshot,
+        task,
+        directives: state.data.directives,
+        health: baseline,
+        goal: state.data.goal,
+      });
+    } catch (err) {
+      // Fall back to health-only comparison for this task rather than aborting
+      // it, but say so: while this is null the art ratchet is off.
+      log.warn(name, `baseline critic failed (${err.message}); art regressions cannot be caught this task`);
+    }
+  }
+
+  let bestFitness = fitness(baseline, baselineCritique);
+  // Interactivity ratchets separately, on a relative test — see keepOrRevert.
+  let bestInteractive = baseline?.interactive ?? null;
+  let reverted = 0;
+  let wasReverted = false;
+  log.info(name, `baseline: ${describeFitness(bestFitness)}`
+    + `${bestInteractive === false ? ' | not interactive' : ''}`);
+
+  /**
+   * The ratchet. Keep the round if it is at least as good as the best result
+   * seen for this task; otherwise put the best result back on disk.
+   *
+   * Ties are kept deliberately. Reverting on equal fitness would throw away
+   * every non-visual improvement — refactors, wiring, logic the critic cannot
+   * see — and would make progress on a plateau impossible.
+   *
+   * @returns {boolean} true if the round's work survived
+   */
+  function keepOrRevert(round, health, crit) {
+    const f = fitness(health, crit);
+
+    // Interactivity is judged relatively, never absolutely. A build that never
+    // responded to a bare click may be legitimate (pointer-locked 3D,
+    // keyboard-only), so it is not condemned for staying that way. A build that
+    // WAS responding and has stopped has broken its own controls, and no art
+    // score should be able to buy that back — hence a veto rather than a tier.
+    const lostInput = bestInteractive === true && health?.interactive === false;
+
+    if (f >= bestFitness && !lostInput) {
+      best = captureApp(paths.app);
+      bestFitness = f;
+      if (health?.interactive !== null && health?.interactive !== undefined) {
+        bestInteractive = health.interactive;
+      }
+      wasReverted = false;
+      log.info(name, `round ${round} kept: ${describeFitness(f)}`);
+      return true;
+    }
+
+    const why = lostInput
+      ? `it stopped responding to input (was interactive at ${describeFitness(bestFitness)})`
+      : `${describeFitness(f)} is worse than ${describeFitness(bestFitness)}`;
+    const { restored, removed } = restoreApp(paths.app, best);
+    reverted++;
+    wasReverted = true;
+    log.warn(name, `round ${round} reverted: ${why} — ${restored} file(s) restored, ${removed} removed`);
+    return false;
+  }
+
   for (let round = 1; round <= maxRounds; round++) {
     // ---- BUILD -----------------------------------------------------------
     const toolbelt = new Toolbelt({ workspace: paths.root, appDir: paths.app });
-    const agent = new Agent({
+    // makeAgent is a test seam. The ratchet is the one part of this loop that
+    // cannot be proved by a unit test — it only means anything if it fires in
+    // the real build -> verify -> revert sequence — and driving that with a
+    // live model would be both slow and non-deterministic.
+    const agentOpts = {
       name: `${name}#${round}`,
       toolbelt,
       systemPrompt: coderSystem(state.data.directives.visual_domain),
       role: 'coder',
       fileHints: task.files,
-    });
+    };
+    const agent = makeAgent ? makeAgent({ ...agentOpts, round }) : new Agent(agentOpts);
 
     const brief = round === 1
       ? initialBrief({ task, state, projectFiles: listProjectFiles(paths.app) })
-      : repairBrief({ task, health: lastHealth, critiqueResult: lastCritique, round, goal: state.data.goal });
+      : repairBrief({ task, health: lastHealth, critiqueResult: lastCritique, round, goal: state.data.goal, wasReverted });
 
     const result = await agent.run(brief);
     log.info(name, `round ${round} agent: ${result.status}, ${result.filesTouched.length} file(s) touched`);
 
     if (result.status === 'model_error') {
+      // The model died partway through. Whatever it had written by then is a
+      // half-applied change nobody verified, so it must not be left on disk for
+      // the next task to inherit.
+      const { restored, removed } = restoreApp(paths.app, best);
+      if (restored || removed) {
+        log.warn(name, `model error mid-round; rolled back ${restored} file(s), removed ${removed}`);
+      }
       return { status: 'failed', rounds: round, critiques, health: lastHealth, note: result.summary };
     }
     if (!result.filesTouched.length && round === 1) {
@@ -188,8 +328,12 @@ export async function runTask({ task, state, paths, appUrl, slot }) {
     const syntax = await toolbelt.check_syntax({ all: true });
     if (!syntax.ok) {
       log.warn(name, `syntax errors: ${syntax.problems.join(' | ')}`);
-      lastHealth = { pageErrors: syntax.problems, consoleErrors: [], failedRequests: [] };
+      lastHealth = { syntaxError: true, pageErrors: syntax.problems, consoleErrors: [], failedRequests: [] };
       lastCritique = null;
+      // A tree that will not parse cannot be judged and must not be inherited.
+      // Revert now so the next round — and the next task — start from something
+      // that at least loads.
+      keepOrRevert(round, lastHealth, null);
       if (round === maxRounds) break;
       continue;
     }
@@ -209,12 +353,7 @@ export async function runTask({ task, state, paths, appUrl, slot }) {
     // some legitimate builds (pointer-locked 3D, keyboard-only) will not react
     // to a bare click, and failing those would stall the run for the wrong
     // reason.
-    const healthy = !lastHealth.loadError
-      && !lastHealth.pageErrors.length
-      && !lastHealth.consoleErrors.length
-      && !lastHealth.blankScreen
-      && !lastHealth.deadPlayfield
-      && !lastHealth.errorScreen;
+    const healthy = runtimeHealthy(lastHealth);
 
     log.info(name, `runtime: ${healthy ? 'clean' : 'problems'} | ${lastHealth.fps ?? '?'} fps`
       + ` | ${lastHealth.pageErrors.length} page errors | ${lastHealth.consoleErrors.length} console errors`
@@ -229,6 +368,10 @@ export async function runTask({ task, state, paths, appUrl, slot }) {
 
     if (!healthy) {
       lastCritique = null;
+      // Unjudged, so compare on health alone. A broken round that is still an
+      // improvement on a more broken baseline is kept — that is how a task
+      // digs the project out of a hole left by an earlier one.
+      keepOrRevert(round, lastHealth, null);
       if (round === maxRounds) break;
       continue; // Never spend a vision call judging a broken build.
     }
@@ -245,7 +388,7 @@ export async function runTask({ task, state, paths, appUrl, slot }) {
     }
 
     try {
-      lastCritique = await critique({
+      lastCritique = await critiqueFn({
         screenshot: lastHealth.screenshot,
         task,
         directives: state.data.directives,
@@ -261,6 +404,11 @@ export async function runTask({ task, state, paths, appUrl, slot }) {
     state.recordCritique({ ...lastCritique, round, screenshot: shotPath });
     task.lastScore = lastCritique.score;
 
+    // Now that the round has both a health tier and an art score, it can be
+    // ranked properly. A round that renders cleanly but scores worse than the
+    // frame it replaced is a regression and goes back.
+    keepOrRevert(round, lastHealth, lastCritique);
+
     if (lastCritique.verdict === 'PASS') {
       log.ok(name, `PASSED at ${lastCritique.score}/100 after ${round} round(s)`);
       return { status: 'completed', rounds: round, critiques, health: lastHealth };
@@ -269,10 +417,12 @@ export async function runTask({ task, state, paths, appUrl, slot }) {
     log.warn(name, `round ${round} rejected at ${lastCritique.score}/100: ${lastCritique.issues[0] ?? 'below bar'}`);
   }
 
-  // Out of rounds. Keep the work if the app still runs; the outer gap-analysis
-  // loop gets another shot at it later.
-  const salvageable = lastHealth && !lastHealth.loadError && !lastHealth.pageErrors?.length && !lastHealth.blankScreen;
+  // Out of rounds. What is on disk is the best result this task produced, not
+  // the last one it tried — so salvageability is judged from the ratchet, not
+  // from lastHealth, which may describe a round that was reverted away.
+  const salvageable = bestFitness >= SALVAGEABLE_FITNESS;
   const status = salvageable ? 'completed_below_bar' : 'failed';
-  log.warn(name, `exhausted ${maxRounds} rounds -> ${status}`);
-  return { status, rounds: maxRounds, critiques, health: lastHealth };
+  log.warn(name, `exhausted ${maxRounds} rounds -> ${status}`
+    + ` (best: ${describeFitness(bestFitness)}, ${reverted} round(s) reverted)`);
+  return { status, rounds: maxRounds, critiques, health: lastHealth, bestFitness };
 }

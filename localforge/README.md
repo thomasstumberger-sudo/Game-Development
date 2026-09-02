@@ -47,7 +47,7 @@ When every task is done, the planner performs a **gap analysis** against the ori
 
 ## Why it produces usable results from a 30B model
 
-Ambitious prompts don't fail locally because the model is weak. They fail because nobody enforced structure. Six things do the heavy lifting here:
+Ambitious prompts don't fail locally because the model is weak. They fail because nobody enforced structure. Eight things do the heavy lifting here:
 
 **1. Nothing is judged until it runs.** Every task is verified in real headless Chrome on your GPU before any opinion is collected: uncaught errors, console errors, failed requests, WebGL context health, a measured frame rate, and a blank-frame test that samples the canvas. A model cannot talk its way past this gate.
 
@@ -61,7 +61,9 @@ Ambitious prompts don't fail locally because the model is weak. They fail becaus
 
 **6. The critic is domain-aware.** Rubrics live in `src/rubrics.js`, one per visual domain (`2d_game`, `2_5d`, `3d_realtime`, `ui_app`). Each carries weighted axes, calibration rules, *and explicit rules about what is not a defect* — the 2D rubric is told not to penalise a game for lacking 3D lighting, shadows or PBR materials. This matters because critic feedback becomes the next coder brief: a mis-set domain doesn't just misscore, it drives the build in the wrong direction. The domain also selects the scaffold and shapes the planner's tasks.
 
-**7. It assumes the model will misbehave.** Agents that reply in prose get escalating nudges and, if they pasted a whole file into chat, that file is extracted and written for them. Agents that claim completion without touching a file are rejected. Agents that repeat a call four times are forced to re-plan. Context is trimmed from the middle while pinning the task statement.
+**7. A round is only kept if it made things better.** Before each round the app tree is snapshotted; afterwards the result is scored — health tier first (parses → loads → no uncaught errors → not blank → play area alive), critic score second — and a round that scores worse than the best result so far is rolled back on disk. Without this the loop is a random walk: a round that broke the build left the breakage behind, the next round started from it, and the next *task* inherited it without ever being told. One 16h run spent 94% of its rounds on a tree that was already broken when the round began, and finished with fewer completed tasks than it started with. No amount of art-direction score can outrank a build that does not run, so a pretty dead frame can never displace a plain working one. See `src/snapshot.js`; the rules are pinned by `test/ratchet-fixtures.mjs` and proved end-to-end in `test/ratchet-integration.mjs`.
+
+**8. It assumes the model will misbehave.** Agents that reply in prose get escalating nudges and, if they pasted a whole file into chat, that file is extracted and written for them. Agents that claim completion without touching a file are rejected. Agents that repeat a call four times are forced to re-plan. Context is trimmed from the middle while pinning the task statement.
 
 ---
 
@@ -140,10 +142,10 @@ The last three work standalone — `forge judge` on a screenshot of your own gam
 | flag | default | meaning |
 |---|---|---|
 | `--workspace <dir>` | `./build` | where the build lives |
-| `--concurrency <n>` | 2 | parallel worker agents |
+| `--concurrency <n>` | 1 | parallel worker agents (see the warning below) |
 | `--critique-rounds <n>` | 6 | max fix cycles per task (the `/loop` depth) |
 | `--rounds <n>` | 3 | outer refinement passes |
-| `--pass-score <0-100>` | 82 | visual bar a task must clear |
+| `--pass-score <0-100>` | 62 | visual bar a task must clear |
 | `--wall-clock <min>` | off | hard stop for the whole run |
 | `--coder/--critic/--planner <model>` | — | swap models per role |
 | `--headed` | off | watch the browser work |
@@ -176,7 +178,7 @@ Those gaps feed the next refinement round. This is honest: early rounds lose, de
 
 ## Tuning for your box
 
-**Parallelism.** Ollama serialises requests to the same model unless you tell it otherwise. For `--concurrency 2` to mean anything:
+**Parallelism.** Concurrency defaults to 1 and raising it is currently unsafe — see the warning in *Known limits*. If you do raise it, Ollama also serialises requests to the same model unless you tell it otherwise:
 
 ```bash
 sudo systemctl edit ollama
@@ -190,7 +192,7 @@ With two GPUs, `OLLAMA_MAX_LOADED_MODELS=2` lets the coder and the critic stay r
 
 **Context.** `FORGE_CTX_CODER` defaults to 48k. Raising it costs VRAM; lowering it makes agents forget mid-task.
 
-**Speed vs quality.** For a fast smoke run: `--concurrency 1 --critique-rounds 2 --rounds 1 --pass-score 60`.
+**Speed vs quality.** For a fast smoke run: `--critique-rounds 2 --rounds 1 --pass-score 55`.
 
 ---
 
@@ -200,4 +202,4 @@ With two GPUs, `OLLAMA_MAX_LOADED_MODELS=2` lets the coder and the critic stay r
 - **Ambition is bounded by task granularity.** "A full Call of Duty" will not emerge. A coherent, textured, well-lit FPS prototype with recoil, hit feedback, and a HUD will — and each piece will have been screenshot-verified.
 - **It is slow.** Expect several minutes per task round. A 20-task run with looping is an overnight job. It checkpoints after every transition; `forge resume` picks up exactly where it stopped.
 - **The critic is a model, not an art director.** It is calibrated to be harsh and it is consistent, but it is not infallible. The objective gate is what makes the pipeline trustworthy; the critic is what makes it improve.
-- **Parallel agents can still collide** on files they never declared. Tasks declare their files and the scheduler locks those, but an agent that wanders outside its declared set can conflict with a peer. Lower concurrency if you see churn.
+- **Concurrency above 1 corrupts runs.** Tasks declare their files and the scheduler locks those, but that is not enough: verification is global (`check_syntax({ all: true })`, and the browser loads the whole module graph), so one worker's round is measured against a page another worker has half-rewritten. Agents also write outside their declared set, which the locks cannot prevent. A 16h run at concurrency 2 spent 94% of its rounds on a broken tree. Fan-out needs a per-worker tree and a merge step; until then leave this at 1.

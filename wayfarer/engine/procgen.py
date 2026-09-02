@@ -423,10 +423,15 @@ def _place_vault(rng, host_rect, cell_bounds):
     return None, None
 
 
-def _reachable_floor(layout, start):
+def _reachable_floor(layout, start, avoid=()):
     """BFS over every '.' tile connected to `start`. Used by
     generate_biome_room to verify a guaranteed vault's isolating wall ring
-    (see below) didn't accidentally sever some unrelated corridor."""
+    (see below) didn't accidentally sever some unrelated corridor.
+
+    `avoid` (session 51) is a set of otherwise-walkable cells to treat as
+    solid for this one flood -- a closed gate, or a push-block standing in
+    the way. `start` itself is never avoided (a flood from where the player
+    is standing has to start somewhere)."""
     h, w = len(layout), len(layout[0])
     seen = {start}
     stack = [start]
@@ -434,10 +439,41 @@ def _reachable_floor(layout, start):
         x, y = stack.pop()
         for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
             nx, ny = x + dx, y + dy
-            if 0 <= nx < w and 0 <= ny < h and layout[ny][nx] == "." and (nx, ny) not in seen:
-                seen.add((nx, ny))
-                stack.append((nx, ny))
+            if not (0 <= nx < w and 0 <= ny < h):
+                continue
+            if layout[ny][nx] != "." or (nx, ny) in seen or (nx, ny) in avoid:
+                continue
+            seen.add((nx, ny))
+            stack.append((nx, ny))
     return seen
+
+
+def _chest_payload(rng, tier):
+    """What a chest holds: one weighted family roll, then a magnitude roll
+    skewed to the top band (a chest is always vault-grade loot, hence
+    MAGNITUDE_WEIGHTS_BY_TIER[2] rather than this tier's own table), then
+    whatever per-instance rolls that family needs.
+
+    Session 51 factored this out of generate_room's inline vault-chest block
+    so the new push-block reward chest (generate_biome_room, below) can't
+    drift out of sync with it -- the same reasoning `_vault_reward` already
+    used for the fragment/win-trigger pair. Draw order is byte-identical to
+    session 17's original inline version, so every existing seed still
+    generates exactly the chest it did before (verified against a
+    pre-refactor dump of 360 Depths rooms)."""
+    family = _weighted_choice(rng, ITEM_WEIGHTS_BY_TIER[tier])
+    magnitude = _weighted_choice(rng, MAGNITUDE_WEIGHTS_BY_TIER[2])
+    if family == "equipment":
+        gear_slot = rng.choice(EQUIPMENT_SLOTS)
+        gear_tier = _MAGNITUDE_TO_GEAR_TIER[magnitude]
+        return {"equipment": {
+            "base_type": EQUIPMENT_BASE_TYPES_BY_SLOT[gear_slot][gear_tier],
+            "enchant": roll_enchant(rng),
+        }}
+    if family == "spellbook":
+        band = _MAGNITUDE_TO_GEAR_TIER[magnitude]
+        return {"spellbook": {"spell_id": rng.choice(SPELL_IDS_BY_BAND[band])}}
+    return {"item_type": family if magnitude == "normal" else f"{family}_{magnitude}"}
 
 
 def _random_free_point(rng, rect, occupied, tries=12):
@@ -687,33 +723,16 @@ def generate_room(seed, level, gx, gy, epoch=0):
                     gates.pop()
 
             chest_x, chest_y = _rect_center(vault_rect)
-            family = _weighted_choice(layout_rng, ITEM_WEIGHTS_BY_TIER[tier])
-            magnitude = _weighted_choice(layout_rng, MAGNITUDE_WEIGHTS_BY_TIER[2])
-            chest = {
+            # Rolled off layout_rng (not pop_rng) -- a chest's contents are
+            # structural/permanent, same as its lock, and must never change
+            # across a room's epoch-scoped respawn cycle. See
+            # `_chest_payload` for the equipment/spellbook branches this
+            # shares with Adventure Mode's own reward chests.
+            chests.append({
                 "id": f"proc_{seed}_{level}_{gx}_{gy}_chest0",
                 "x": chest_x, "y": chest_y,
-            }
-            if family == "equipment":
-                # Same "equipment" branch as floor loot above, but rolled
-                # off layout_rng (not pop_rng) -- a chest's contents are
-                # structural/permanent, same as its lock, and must never
-                # change across a room's epoch-scoped respawn cycle.
-                gear_slot = layout_rng.choice(EQUIPMENT_SLOTS)
-                gear_tier = _MAGNITUDE_TO_GEAR_TIER[magnitude]
-                chest["equipment"] = {
-                    "base_type": EQUIPMENT_BASE_TYPES_BY_SLOT[gear_slot][gear_tier],
-                    "enchant": roll_enchant(layout_rng),
-                }
-            elif family == "spellbook":
-                # Same "spellbook" branch as floor loot above, but rolled
-                # off layout_rng (not pop_rng) -- a chest's contents are
-                # structural/permanent, same reasoning as the equipment
-                # branch above.
-                band = _MAGNITUDE_TO_GEAR_TIER[magnitude]
-                chest["spellbook"] = {"spell_id": layout_rng.choice(SPELL_IDS_BY_BAND[band])}
-            else:
-                chest["item_type"] = family if magnitude == "normal" else f"{family}_{magnitude}"
-            chests.append(chest)
+                **_chest_payload(layout_rng, tier),
+            })
             break  # one vault attempt is enough once it succeeds
 
     return {
@@ -731,6 +750,13 @@ def generate_room(seed, level, gx, gy, epoch=0):
         "chests": chests,
         "traps": traps,
     }
+    # NOTE (session 51): the Depths deliberately ships no "blocks"/"plates" --
+    # push-block puzzles are Adventure Mode only, the same scope line
+    # sessions 44 and 50 drew for the vault-ring fix and colored locks. Same
+    # reasoning too: this generator's own vault is bonus loot backed by 43
+    # sessions of existing content and existing saves, so the blast radius
+    # of touching it is high and the payoff low. Room defaults both keys to
+    # empty (engine/room.py), so nothing here needs to say so explicitly.
 
 
 # -- Wayfarer Adventure Mode: finite biome dungeons -------------------------
@@ -756,6 +782,45 @@ BIOME_EXIT_CELL = (0, MID_Y)
 # Depths' own mid-difficulty band, reused as-is rather than inventing a
 # parallel table.
 BIOME_TIER = 1
+
+# Session 52: Adventure Mode's combat difficulty, chosen by the player when
+# a journey is started rather than derived from their level. This is what
+# the source games actually do -- Yoda Stories' New Game dialog offers a
+# world size and a Combat Difficulty slider ("from ignorable to brutal"),
+# picked at world-generation time -- and it also keeps the design doc's own
+# Open Questions answer intact ("leans fixed/curated" over auto-scaling with
+# player level): a journey's difficulty is still fixed and curated for its
+# whole length, the player just picks WHICH curve before setting out.
+#
+# `enemy_level` feeds the Depths' own long-standing scale_stats_for_level()
+# (+20% hp/xp/gold and +1 attack per rung, +1 defense every 3) rather than a
+# parallel multiplier table -- so difficulty rides machinery that 40-odd
+# sessions of Depths play have already exercised. Level 1 is that function's
+# documented identity case, which is why "wandering" is the default: every
+# save that predates this session, and every journey-1 character, sees
+# byte-identical biome rooms to before.
+COMBAT_DIFFICULTIES = [
+    {"id": "wandering", "name": "Wandering", "enemy_level": 1,
+     "blurb": "The frontier as it has always been."},
+    {"id": "restless", "name": "Restless", "enemy_level": 2,
+     "blurb": "Something out there has started paying attention."},
+    {"id": "savage", "name": "Savage", "enemy_level": 3,
+     "blurb": "The wilds have stopped pretending to be survivable."},
+    {"id": "merciless", "name": "Merciless", "enemy_level": 4,
+     "blurb": "Bring every spell you know. It will not be enough."},
+]
+DEFAULT_DIFFICULTY = COMBAT_DIFFICULTIES[0]["id"]
+
+
+def difficulty_def(difficulty_id):
+    """Look up a combat-difficulty row, falling back to the default rather
+    than raising -- a save carrying an id this build no longer defines (a
+    renamed rung, a hand-edited save.db) should degrade to today's balance,
+    not crash on boot."""
+    for entry in COMBAT_DIFFICULTIES:
+        if entry["id"] == difficulty_id:
+            return entry
+    return COMBAT_DIFFICULTIES[0]
 
 BIOME_DEFS = {
     # Terrain flavor (per wayfarer_adventure.md's biome table): desert/
@@ -860,7 +925,184 @@ def _vault_reward(biome):
     return {"artifact": {"fragment_id": biome["fragment_id"]}}
 
 
-def generate_biome_room(seed, biome_id):
+# -- push-block (sokoban) puzzles in generated biome rooms (session 51) -----
+# Sessions 48/49 built the two mechanics wayfarer_adventure.md's premise
+# names as "texture around the trade-chain spine" (sokoban blocks, colored
+# key/gate pairs); session 50 wired the colored-key half into this
+# generator, riding session 44's existing vault-ring reachability proof.
+# Push-blocks had no such proof to ride, which is exactly why they were left
+# for last: a generated block puzzle has to guarantee the block is
+# reachable, the push lane is clear, the sealed reward pocket doesn't sever
+# anything else -- *and*, uniquely among this engine's fixtures, that the
+# player can't put the puzzle into a permanently unsolvable state, since a
+# block's pushed position is persisted forever (engine/save.py's
+# block_positions) and this game has no undo and no per-puzzle reset.
+#
+# That last constraint is what picked the geometry. Session 48's
+# hand-authored Crypt puzzle sits in an open room, where a block can be
+# shoved sideways off its lane into a corner and stranded -- verifiable by
+# hand for one authored room, not provable for a generated one. So a
+# generated puzzle instead stamps a **dead-end corridor** whose only mouth
+# is behind the block:
+#
+#       o:   -2  -1   0   1   2   3      4          o = offset along push dir
+#     q=-1:   .   #   #   #   #   #      .          q = offset across it
+#     q= 0:   .   .   B   .   .   P(=k)  #          B block, P plate
+#     q=+1:   .   #   G   #   #   #      .          G gate (pocket's only door)
+#     q=+2:   .   #   K   #   .   .      .          K reward chest in the pocket
+#     q=+3:   .   #   #   #   .   .      .
+#
+# The player can only ever stand *behind* the block (every other cell
+# adjacent to the lane is forced wall, and the far end past the plate is a
+# forced dead end), so the block can only ever be pushed along the lane,
+# toward the plate, and can never overshoot it. Every push is therefore
+# legal, ordered, and terminal -- the puzzle is unruinable by construction
+# rather than by playtesting. Once the block settles on the plate the gate
+# opens and the player, now standing one tile behind the block, walks back
+# out the way they came and into the pocket the block's own weight unlocked
+# (the gate deliberately sits on the *entrance* side of the lane: putting it
+# past the plate, the way Crypt's does, would leave the player sealed behind
+# their own block with the reward permanently out of reach).
+#
+# Everything above is geometry the stamp forces; what the stamp can't know
+# by construction is whether it fits the *rest* of the room, so each
+# candidate placement is verified by flood-fill before being accepted and
+# rolled back if it fails -- same snapshot/verify/undo pattern session 44's
+# vault ring already uses, see `_place_push_puzzle`.
+PUSH_LANE_LENGTHS = (4, 3)  # candidate push counts, longest (best) first
+PUSH_PLACEMENT_ATTEMPTS = 6  # random origins tried per host/direction/length
+
+
+def _push_stamp(origin, along, across, pushes):
+    """Cell lists for one push-block puzzle stamp at `origin` (the block's
+    own start cell), pushed in direction `along`, with the reward pocket on
+    the `across` side. See this section's header for the diagram these
+    offsets encode.
+
+    Returns (floor, walls, parts): `floor` must be carved open, `walls`
+    forced solid, `parts` the named cells the caller needs back
+    (mouth/block/plate/gate/pocket/approach). `approach` is the room-floor
+    cell just outside the corridor mouth -- not part of the stamp itself
+    (nothing is forced there), but it has to be inside the host room for the
+    mouth to be enterable at all."""
+    ax, ay = along
+    cx, cy = across
+    ox, oy = origin
+
+    def cell(o, q):
+        return (ox + o * ax + q * cx, oy + o * ay + q * cy)
+
+    lane = range(-1, pushes + 1)  # mouth, block start, ..., plate
+    floor = [cell(o, 0) for o in lane] + [cell(0, 1), cell(0, 2)]
+    walls = (
+        [cell(o, -1) for o in lane]                      # far side of the lane
+        + [cell(o, 1) for o in lane if o != 0]           # near side, minus the gate
+        + [cell(pushes + 1, 0)]                          # dead end past the plate
+        + [cell(-1, 2), cell(1, 2)]                      # pocket's own sides
+        + [cell(o, 3) for o in (-1, 0, 1)]               # pocket's far wall
+    )
+    parts = {
+        "approach": cell(-2, 0),
+        "mouth": cell(-1, 0),
+        "block": cell(0, 0),
+        "plate": cell(pushes, 0),
+        "gate": cell(0, 1),
+        "pocket": cell(0, 2),
+        "lane": [cell(o, 0) for o in range(0, pushes + 1)],
+    }
+    return floor, walls, parts
+
+
+def _place_push_puzzle(layout, rng, core_rects, keep_clear, must_reach, landing):
+    """Stamp one push-block puzzle into whichever core room can host it.
+
+    `keep_clear` is every cell the stamp must not touch (enemies, loot,
+    traps, the vault's door/key/chest, room centers where corridors land,
+    the entry landing and the town exit); `must_reach` is every cell that
+    must still be reachable from `landing` afterwards. Returns the accepted
+    stamp's `parts` dict, or None if no placement passed -- an unplaceable
+    puzzle is simply skipped (it's optional bonus loot, never progression),
+    the same "no room for one, don't ship a broken one" fallback
+    `_place_vault` already takes.
+
+    Each candidate is applied to `layout` for real, then verified by three
+    floods and rolled back from a snapshot unless all of them pass:
+      1. with the gate closed and the block on its start cell, everything in
+         `must_reach` is still reachable and the corridor mouth is
+         enterable -- i.e. the stamp severed nothing and the player can
+         actually start pushing;
+      2. with the gate closed, the pocket is *not* reachable -- i.e. the
+         puzzle really is what gates the reward, not decoration (the same
+         property session 44's vault ring has to hold for the fragment);
+      3. with the gate open and the block parked on the plate, the pocket
+         *is* reachable and nothing in `must_reach` was stranded behind the
+         block -- i.e. solving it pays out, and the settled block (a
+         permanent obstacle, see main.py's _blocked_positions) doesn't wall
+         anything off on its way.
+    """
+    hosts = list(range(len(core_rects)))
+    rng.shuffle(hosts)
+    directions = list(DIRECTIONS.values())
+    rng.shuffle(directions)
+    for host_i in hosts:
+        rect = core_rects[host_i]
+        rx, ry, rw, rh = rect
+        for along in directions:
+            for side in (1, -1):
+                across = (-along[1] * side, along[0] * side)
+                for pushes in PUSH_LANE_LENGTHS:
+                    origins = []
+                    for oy in range(ry, ry + rh):
+                        for ox in range(rx, rx + rw):
+                            floor, walls, parts = _push_stamp((ox, oy), along, across, pushes)
+                            cells = floor + walls + [parts["approach"]]
+                            if all(_rect_contains(rect, c) for c in cells):
+                                origins.append((ox, oy))
+                    rng.shuffle(origins)
+                    for origin in origins[:PUSH_PLACEMENT_ATTEMPTS]:
+                        floor, walls, parts = _push_stamp(origin, along, across, pushes)
+                        # The approach cell is deliberately not in this
+                        # check: it stays plain room floor either way, so an
+                        # item or trap sitting there is harmless. Inside the
+                        # corridor it would not be -- an item on a lane cell
+                        # is *east of the block*, unreachable behind it, and
+                        # a push into an occupied tile fails (see
+                        # Player.try_move), which would strand the puzzle.
+                        if any(c in keep_clear for c in floor + walls):
+                            continue
+                        snapshot = {c: layout[c[1]][c[0]] for c in floor + walls}
+                        for x, y in floor:
+                            layout[y][x] = "."
+                        for x, y in walls:
+                            layout[y][x] = "#"
+
+                        closed = _reachable_floor(
+                            layout, landing, avoid={parts["block"], parts["gate"]})
+                        solved = _reachable_floor(layout, landing, avoid={parts["plate"]})
+                        ok = (
+                            must_reach <= closed
+                            and parts["mouth"] in closed
+                            and parts["pocket"] not in closed
+                            and must_reach <= solved
+                            and parts["pocket"] in solved
+                        )
+                        if ok:
+                            return parts
+                        for (x, y), ch in snapshot.items():
+                            layout[y][x] = ch
+    return None
+
+
+def generate_biome_room(seed, biome_id, enemy_level=1):
+    """`enemy_level` (session 52) is the journey's combat difficulty
+    expressed as a Depths dungeon level -- it is written onto every emitted
+    enemy template's `level` field and applied by main.py's load_room via
+    scale_stats_for_level, exactly the way a Depths room's depth scaling
+    already works. It deliberately draws from neither rng, so a room
+    generated at any difficulty has a bit-identical layout, vault, puzzle,
+    item and trap population to the same seed at difficulty 1 -- only the
+    enemies' stat block differs. (Verified byte-for-byte, see PROGRESS.MD
+    session 52.)"""
     biome = BIOME_DEFS[biome_id]
     layout_rng = random.Random(f"{seed}:biome:{biome_id}:layout")
     pop_rng = random.Random(f"{seed}:biome:{biome_id}:pop")
@@ -952,7 +1194,7 @@ def generate_biome_room(seed, biome_id):
                 "id": f"biome_{biome_id}_{seed}_e{e_i}",
                 "type": _weighted_choice(pop_rng, ENEMY_WEIGHTS_BY_TIER[tier]),
                 "x": pt[0], "y": pt[1],
-                "level": 1,
+                "level": enemy_level,
             })
             e_i += 1
         if pop_rng.random() < item_chance:
@@ -1081,7 +1323,7 @@ def generate_biome_room(seed, biome_id):
             "id": f"biome_{biome_id}_{seed}_boss",
             "type": biome["boss_type"],
             "x": boss_pt[0], "y": boss_pt[1],
-            "level": 1,
+            "level": enemy_level,
         })
 
         chest_x, chest_y = _rect_center(vault_rect)
@@ -1111,7 +1353,7 @@ def generate_biome_room(seed, biome_id):
             "id": f"biome_{biome_id}_{seed}_boss",
             "type": biome["boss_type"],
             "x": boss_pt[0], "y": boss_pt[1],
-            "level": 1,
+            "level": enemy_level,
         })
         chest_pt = _random_free_point(pop_rng, rect, occupied) or _rect_center(rect)
         occupied.add(chest_pt)
@@ -1119,6 +1361,65 @@ def generate_biome_room(seed, biome_id):
             "id": f"biome_{biome_id}_{seed}_chest0",
             "x": chest_pt[0], "y": chest_pt[1],
             **_vault_reward(biome),
+        })
+
+    # -- optional push-block puzzle sealing a bonus reward pocket (session
+    # 51 -- see this module's PUSH_LANE_LENGTHS section for the geometry and
+    # why it's a dead-end corridor rather than Crypt's open-room layout).
+    # Deliberately last: the vault above is mandatory progression (it holds
+    # the biome's artifact fragment), so it gets first pick of the room's
+    # geometry and is never disturbed or re-rolled by this -- the puzzle is
+    # bonus loot that fits itself around whatever's left, and skips itself
+    # entirely if nothing fits. Being last also means every seed's
+    # pre-existing layout/population/vault is bit-identical to what it
+    # generated before this session (verified against a pre-change dump of
+    # 200 biome rooms), since nothing here draws from layout_rng until every
+    # other decision is already made.
+    blocks, plates = [], []
+    keep_clear = {(e["x"], e["y"]) for e in enemies}
+    keep_clear |= {(i["x"], i["y"]) for i in items}
+    keep_clear |= {(d["x"], d["y"]) for d in equipment_drops}
+    keep_clear |= {(d["x"], d["y"]) for d in spellbook_drops}
+    keep_clear |= {(t["x"], t["y"]) for t in traps}
+    keep_clear |= {(c["x"], c["y"]) for c in chests}
+    keep_clear |= {(d["x"], d["y"]) for d in locked_doors}
+    keep_clear |= {(g["x"], g["y"]) for g in gates}
+    keep_clear |= {(s["x"], s["y"]) for s in switches}
+    # Corridors all terminate at core-room centers, and the entry landing /
+    # town exit are where the player materializes -- walling any of them off
+    # would be caught by the reachability floods below anyway, but they're
+    # cheap to exclude up front rather than burning placement attempts on.
+    keep_clear |= {_rect_center(r) for r in core_rects}
+    keep_clear |= {landing, (exit_x, exit_y), (in_x, in_y)}
+    # Every one of those is also somewhere the player has to still be able
+    # to *get* to once the stamp is carved -- the mini-boss, the fragment
+    # chest, the vault key and its door especially, since that's the
+    # biome's actual progression path.
+    must_reach = set(keep_clear)
+    parts = _place_push_puzzle(layout, layout_rng, core_rects, keep_clear, must_reach, landing)
+    if parts is not None:
+        gate_id = f"biome_{biome_id}_{seed}_pgate0"
+        blocks.append({
+            "id": f"biome_{biome_id}_{seed}_block0",
+            "x": parts["block"][0], "y": parts["block"][1],
+        })
+        plates.append({
+            "id": f"biome_{biome_id}_{seed}_plate0",
+            "x": parts["plate"][0], "y": parts["plate"][1],
+            "gate_id": gate_id,
+        })
+        gates.append({
+            "id": gate_id,
+            "x": parts["gate"][0], "y": parts["gate"][1],
+        })
+        # No switch_id on that gate: a plate-triggered gate has no switch,
+        # exactly like session 48's hand-authored crypt_gate0 (main.py reads
+        # switch_id off the *switch*, never off the gate, so nothing needs a
+        # placeholder here).
+        chests.append({
+            "id": f"biome_{biome_id}_{seed}_pchest0",
+            "x": parts["pocket"][0], "y": parts["pocket"][1],
+            **_chest_payload(layout_rng, tier),
         })
 
     return {
@@ -1135,4 +1436,6 @@ def generate_biome_room(seed, biome_id):
         "switches": switches,
         "chests": chests,
         "traps": traps,
+        "blocks": blocks,
+        "plates": plates,
     }

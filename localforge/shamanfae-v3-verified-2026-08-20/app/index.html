@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Shaman Chief Fae Realm</title>
+    <link rel="stylesheet" href="./src/style.css">
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+        }
+        #game {
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
+    </style>
+</head>
+<body>
+    <div id="loading-overlay">Loading...</div>
+    <canvas id="game"></canvas>
+    <script type="module">
+        import { initGame } from './src/main.js';
+        // Initialize the game when the module loads
+        const canvas = document.getElementById('game');
+        if (canvas) {
+            initGame(canvas);
+        }
+    </script>
+</body>
+</html>

@@ -1,50 +1,127 @@
-[
-  {
-    "id": "guide_frostreach",
-    "giver_npc": "guide",
-    "biome": "scorched_wastes",
-    "wants": {"type": "artifact", "id": "ember_fragment"},
-    "gives": {"type": "unlock_biome", "id": "frostreach"},
-    "dialogue": {
-      "intro": "The northern pass into the Frostreach is sealed by old magic. Bring me proof you've bested the Scorched Wastes and I'll open the way.",
-      "incomplete": "Still no word from the Wastes. Come back once you've claimed what's guarded there.",
-      "success": "An Ember-Charred Fragment -- so it's true. The northern pass is open to you now. The Frostreach awaits, adventurer."
+{
+  "_comment": [
+    "Session 52: this file used to be a fixed, hand-authored LIST of four",
+    "chain steps (scorched_wastes -> frostreach -> stormfell -> fenmire ->",
+    "final_area), one dialogue block per step. Journeys (Yoda Stories' 'New",
+    "World' option) can shuffle the biome order per playthrough, so a step's",
+    "dialogue can no longer be authored against one specific (source,",
+    "target) pair. Instead each biome carries its own three authored phrases",
+    "-- how the Guide describes opening it, how he describes it staying",
+    "shut, and how he describes it opening -- and `templates` below splices",
+    "a source biome's name/fragment into them. Journey 1's canonical order",
+    "reproduces the original hand-authored text almost verbatim; see",
+    "main.py's Game._build_adventure_chain."
+  ],
+  "_comment_routes": [
+    "Session 53: a journey now also picks a ROUTE -- the shape of the chain,",
+    "not just its order. `old_road` is the straight line sessions 45-52",
+    "built (one frontier open at a time, each unlocked by the previous",
+    "step's trade, all four fragments required) and is what every existing",
+    "save is on. `open_frontier` is wayfarer_adventure.md's own unbuilt",
+    "stretch goal ('any 2 of 3 fragments unlock the final area'), scaled to",
+    "this game's four biomes: every frontier open from the start, walked in",
+    "any order, and the seal answers to three of the four -- so one biome is",
+    "genuinely optional. `chained` is what distinguishes them: it decides",
+    "whether a step unlocks the next biome (and therefore whether more than",
+    "one step can be offered at once)."
+  ],
+  "_comment_knobs": [
+    "Session 54: `chained` and `required_fragments` are now independent",
+    "knobs, not two names for one route shape. Session 53 shipped only the",
+    "two corners where they agree (chained+all, open+fewer) because the",
+    "chain builder hung the Final Area off the LAST BIOME STEP whenever the",
+    "route was chained, which forces the seal to cost every fragment. The",
+    "builder now decides that separately: the seal rides the last biome step",
+    "only when a chained route also wants every fragment (the legacy Old",
+    "Road shape, kept byte-identical for journey 1), and otherwise gets its",
+    "own biome-less step wanting a COUNT -- which is what makes the other",
+    "two corners below expressible. Any (chained, required_fragments) pair",
+    "is now authorable here with no code change; the four routes shipped are",
+    "the four corners, not a closed set."
+  ],
+  "routes": [
+    {
+      "id": "old_road",
+      "name": "The Old Road",
+      "chained": true,
+      "required_fragments": 4,
+      "blurb": "One frontier at a time, each opened by the trade before it. The frontier as it has always been walked."
+    },
+    {
+      "id": "open_frontier",
+      "name": "The Open Frontier",
+      "chained": false,
+      "required_fragments": 3,
+      "blurb": "Every frontier open at once, walked in any order -- and one biome is yours to skip entirely."
+    },
+    {
+      "id": "wide_frontier",
+      "name": "The Wide Frontier",
+      "chained": false,
+      "required_fragments": 4,
+      "blurb": "Every frontier open at once and walked in any order, but the seal answers to nothing less than all four fragments."
+    },
+    {
+      "id": "short_road",
+      "name": "The Short Road",
+      "chained": true,
+      "required_fragments": 3,
+      "blurb": "One frontier at a time as on the Old Road, but the seal breaks at three -- so the last leg is yours to walk or leave."
+    }
+  ],
+  "chain_biomes": [
+    "scorched_wastes",
+    "frostreach",
+    "stormfell",
+    "fenmire"
+  ],
+  "final_biome": "final_area",
+  "giver_npc": "guide",
+  "biomes": {
+    "scorched_wastes": {
+      "approach": "The eastern road into the Scorched Wastes is buried under ash, and I'm the only one who still knows where it ran.",
+      "sealed": "The ash road stays buried",
+      "opened": "The eastern road is yours now. The Scorched Wastes await, adventurer -- carry water.",
+      "prose": "the Scorched Wastes"
+    },
+    "frostreach": {
+      "approach": "The northern pass into the Frostreach is sealed by old magic.",
+      "sealed": "The northern pass stays sealed",
+      "opened": "The northern pass is open to you now. The Frostreach awaits, adventurer.",
+      "prose": "the Frostreach"
+    },
+    "stormfell": {
+      "approach": "The western ruins of Stormfell answer to nothing but a storm's own fury.",
+      "sealed": "The western ruins stay dark",
+      "opened": "The western ruins are open. Mind the lightning in Stormfell, adventurer.",
+      "prose": "Stormfell"
+    },
+    "fenmire": {
+      "approach": "South of here the Fenmire swallows every path whole -- but I'll open a way through the bog.",
+      "sealed": "The bog stays sealed",
+      "opened": "The Fenmire's paths are open. Watch your footing in the bog, adventurer.",
+      "prose": "the Fenmire"
     }
   },
-  {
-    "id": "guide_stormfell",
-    "giver_npc": "guide",
-    "biome": "frostreach",
-    "wants": {"type": "artifact", "id": "frost_fragment"},
-    "gives": {"type": "unlock_biome", "id": "stormfell"},
-    "dialogue": {
-      "intro": "The western ruins of Stormfell answer to nothing but a storm's own fury -- and proof from the Frostreach, if you've truly walked it.",
-      "incomplete": "The ruins stay dark without word from the Frostreach. Bring me what's guarded there.",
-      "success": "A Frost-Bound Fragment -- the Frostreach is truly conquered, then. The western ruins are open. Mind the lightning in Stormfell, adventurer."
-    }
-  },
-  {
-    "id": "guide_fenmire",
-    "giver_npc": "guide",
-    "biome": "stormfell",
-    "wants": {"type": "artifact", "id": "storm_fragment"},
-    "gives": {"type": "unlock_biome", "id": "fenmire"},
-    "dialogue": {
-      "intro": "South of here the Fenmire swallows every path whole -- but I'll open a way through the bog, if you've truly weathered Stormfell's storms.",
-      "incomplete": "The bog stays sealed without word from Stormfell. Bring me what's guarded there.",
-      "success": "A Storm-Cloven Fragment -- Stormfell answers to you now. The Fenmire's paths are open. Watch your footing in the bog, adventurer."
-    }
-  },
-  {
-    "id": "guide_final",
-    "giver_npc": "guide",
-    "biome": "fenmire",
-    "wants": {"type": "artifact", "id": "mire_fragment"},
-    "gives": {"type": "unlock_biome", "id": "final_area"},
-    "dialogue": {
-      "intro": "Four fragments, four corners of the frontier -- if the Fenmire has truly yielded its own, you hold everything the old seal at the world's heart was built to keep out.",
-      "incomplete": "The seal answers to all four fragments together, not three. Find what the Fenmire guards.",
-      "success": "Ember, frost, storm, and mire, all in one hand -- the seal breaks. What waits beyond is yours to face, adventurer. Go carefully."
-    }
+  "templates": {
+    "step_intro": "{target_approach} Bring me proof you've bested {source_prose} and I'll open the way.",
+    "step_incomplete": "{target_sealed} without word from {source_prose}. Come back once you've claimed what's guarded there.",
+    "step_success": "{fragment_name} -- so {source_prose} yields at last. {target_opened}",
+    "final_intro": "Four fragments, four corners of the frontier -- if {source_prose} has truly given up its own, you hold everything the old seal at the world's heart was built to keep out.",
+    "final_incomplete": "The seal answers to all four fragments together, not three. Find what {source_prose} guards.",
+    "final_success": "Ember, frost, storm, and mire, all in one hand -- the seal breaks. What waits beyond is yours to face, adventurer. Go carefully.",
+    "open_greeting": "Every frontier out there stands open, and I'll take them in whatever order they fall. {required_fragments} fragments of the {total_fragments} will break the seal.",
+    "open_intro": "{source_prose} still keeps what it keeps. Bring me its fragment and I'll count it against the seal.",
+    "open_incomplete": "No word yet out of {source_prose}. Come back once you've claimed what's guarded there.",
+    "open_success": "{fragment_name} -- so {source_prose} yields at last. Lay enough of these before me and the old seal will listen.",
+    "openfinal_intro": "The seal at the world's heart answers to {required_fragments} fragments, not all {total_fragments} -- and it's yours to say which {required_fragments}. Show me them and the road to {final_name} is open.",
+    "openfinal_incomplete": "{required_fragments} fragments, laid side by side. You aren't there yet.",
+    "openfinal_success": "{required_fragments} is enough -- the seal breaks. What waits beyond is yours to face, adventurer. Go carefully.",
+    "chained_greeting": "One frontier at a time, and the road opens ahead of you as you walk it. Any {required_fragments} fragments of the {total_fragments} will break the seal.",
+    "open_greeting_all": "Every frontier out there stands open, and I'll take them in whatever order they fall. Nothing less than all {total_fragments} fragments will break the seal.",
+    "chained_greeting_all": "One frontier at a time, and the road opens ahead of you as you walk it. Nothing less than all {total_fragments} fragments will break the seal.",
+    "fullfinal_intro": "All {required_fragments} fragments, the whole of the frontier in one hand -- lay them before me and the road to {final_name} is open.",
+    "fullfinal_incomplete": "All {required_fragments} fragments, laid side by side, and no fewer. You aren't there yet.",
+    "fullfinal_success": "All {required_fragments} -- the seal breaks. What waits beyond is yours to face, adventurer. Go carefully."
   }
-]
+}

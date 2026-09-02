@@ -2,7 +2,7 @@
 /**
  * localforge CLI.
  *
- *   forge run "<goal>" [--workspace ./out] [--concurrency 2] [--rounds 3]
+ *   forge run "<goal>" [--workspace ./out] [--concurrency 1] [--rounds 3]
  *   forge run --file goal.txt
  *   forge resume [--workspace ./out]
  *   forge status [--workspace ./out]
@@ -50,6 +50,7 @@ function applyFlagOverrides() {
     'critique-rounds': (v) => { config.budgets.critiqueRounds = Number(v); },
     'agent-steps': (v) => { config.budgets.agentSteps = Number(v); },
     'pass-score': (v) => { config.critic.passScore = Number(v); },
+    'max-revivals': (v) => { config.budgets.maxRevivals = Number(v); },
     'wall-clock': (v) => { config.budgets.wallClockMinutes = Number(v); },
     coder: (v) => { config.models.coder = v; },
     critic: (v) => { config.models.critic = v; },
@@ -81,6 +82,7 @@ Options
   --critique-rounds <n>   max fix cycles per task (default ${config.budgets.critiqueRounds})
   --rounds <n>            outer refinement passes (default 3)
   --pass-score <0-100>    visual bar to clear (default ${config.critic.passScore})
+  --max-revivals <n>      times a stalled task may be requeued (default ${config.budgets.maxRevivals})
   --wall-clock <minutes>  hard stop for the whole run
   --coder/--critic/--planner <model>   override models
   --domain <name>         force the critique rubric:

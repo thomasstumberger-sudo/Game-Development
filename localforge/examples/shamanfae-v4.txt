@@ -1,0 +1,372 @@
+Continue development of the turn-based strategy game specified in the design document below. The core is already built, verified and playable. Your job is to deepen and beautify it, NOT to rebuild it.
+
+STACK: vanilla canvas 2D in the browser. Ignore the "TARGET ENGINE: GODOT" line in the document — that is a legacy target and does not apply. Do not create .tscn, .gd, or project.godot files. No third-party libraries, no import map, no CDN dependencies.
+
+==========================================================
+READ THIS BEFORE PLANNING — WHAT ALREADY WORKS
+==========================================================
+The workspace is not empty and it is not broken. As of the last verification it boots clean at 60fps with zero page errors and zero console errors, renders a live map, and responds correctly to input. The following are DONE and confirmed working by screenshot and by a scripted click-through:
+
+- Hex grid on flat-top axial coordinates, with correct pixel<->hex conversion in both directions.
+- Six terrain types (grass, forest, mountain, swamp, water, fae land), each with per-tile colour variation, a distinguishing glyph, movement cost and resource bonus.
+- Three visibility tiers — explored / adjacent / outer ring — updating as the tribe travels, with previously seen ground staying on the map.
+- Click-to-move: cost-aware Dijkstra pathfinding that honours movement costs and refuses impassable water, with an eased movement tween along the route.
+- Turn loop: arriving on a hex advances the turn and charges upkeep scaled to population, with a morale penalty at zero food or water.
+- Encounters: a library gated by terrain, triggering on arrival, drawn as a modal window with selectable options, resolving to a resource delta that is applied to state.
+- Resource HUD: top bar with food/water/morale/magic/tribe and a turn counter, a tribe roster panel, a hovered-terrain readout, and floating fade-out feedback when resources change.
+- Hover highlight, selection ring, and an active-unit pulse.
+
+DO NOT PLAN TASKS FOR ANY OF THE ABOVE. A plan containing "implement the hex grid", "set up the game loop", "add click-to-move", "create the resource HUD" or "establish canvas wiring" is a wrong plan — that work is finished, and redoing it is how the last run spent twelve hours and went backwards. Read the existing source before planning anything.
+
+==========================================================
+WHAT IS ACTUALLY MISSING — BUILD THIS
+==========================================================
+Ranked. Finish each before starting the next.
+
+1. VISUAL DEPTH. This is the single biggest gap and most of the run should go here. The renderers are correct but plain. Tiles need real procedural texture — stippling, grain, noise fields drawn to offscreen canvases and reused, not flat fills. The Shaman-Chief needs to read as a figure at a glance. The UI needs the carved-bone and woad-stain treatment the brief calls for. Terrain must stay distinguishable at all times: legibility beats atmosphere, every time.
+2. RITUALS, made reachable. `encounters.js` already contains Bind, Bargain, Banish and Blessing entries with costs and chain definitions, but the trigger filter excludes `type === 'ritual'`, so a player can never see one. Give the player a way to cast deliberately — an action bar or hotkeys — spend magic, roll against skill, and show the outcome.
+3. TILE REGENERATION. `tile.regenCounter` exists on every tile and nothing reads it. Implement the document's rule: regeneration starts after 5+ turns since last visit, 10% base chance per turn, +2% per extra turn to a 50% cap, mutating with Weirdness.
+4. COURT INFLUENCE. `tile.courtInfluence` exists on every tile with seelie/unseelie/wild values and nothing reads it. Spread it between adjacent tiles per turn, let it colour encounter outcomes and ritual success, and show it on the map without drowning the terrain.
+5. SPIRIT SYSTEM. Deceased Shaman-Chiefs as stacking passive bonuses, sacrificeable in rituals.
+6. ENCOUNTER BREADTH. More entries in the existing data shape, plus chain encounters. The plumbing is there; it wants content.
+
+==========================================================
+FILE LAYOUT — FIXED. DO NOT ADD TO IT.
+==========================================================
+index.html            the single entry page, and the only .html file
+src/style.css         all CSS
+src/main.js           entry module: boot, frame loop, layer registry, wiring
+src/state.js          game state, canvas wiring, resources, turn logic
+src/palette.js        every colour in the game, as named exports
+src/hex.js            hex math, grid model, terrain, visibility
+src/render-map.js     terrain and tile drawing
+src/render-unit.js    Shaman-Chief and map markers
+src/hud.js            HUD, tribe roster, encounter window, and its hit-testing
+src/input.js          mouse and keyboard, hex picking
+src/movement.js       pathfinding and movement tweens
+src/encounters.js     encounter data, triggering, resolution
+
+Twelve files. That is the whole project.
+
+FORBIDDEN, without exception:
+- Creating any file not on that list.
+- Any file named `*-fixed.*`, `simple-*`, `test-*`, `debug-*`, `*.backup`, `*-v2.*`, or any other variant of a name already on the list. The run before last produced seventy files this way, most unreachable from the entry point.
+- A second implementation of something that already exists. If a module is broken, FIX IT IN PLACE.
+- Leaving dead code. If you replace an approach, delete what it replaced.
+
+==========================================================
+DEFECT PATTERNS THAT HAVE ALREADY COST THIS PROJECT DAYS
+==========================================================
+Every one of these shipped in a previous run. They are cheap to avoid and expensive to find.
+
+- FALSY GUARDS ON NUMBERS. `if (!startQ) return []` is true when startQ is 0. The unit stands at (0,0), so this one line silently disabled all pathfinding for an entire twelve-hour run. Guard with `== null` or a type check, never with `!`.
+- BUILDING A SUBSYSTEM AND NEVER CONNECTING IT. An encounter system was constructed, then never given state, never triggered, never drawn, and never clickable. If you add a system, wire all of its ends in the same task and prove it fires.
+- SPLITTING DRAWING FROM HIT-TESTING. Option buttons were drawn from one set of numbers and hit-tested from another, and the hit-tester was left returning null forever. Derive both from one shared layout function.
+- DROPPING THE CAMERA TRANSFORM. World-space layers must draw inside `ctx.translate(camera.x, camera.y)`; screen-space layers (HUD, modals) must draw outside it. Omitting it puts the whole map off the corner of the canvas while the HUD still looks fine.
+- MODULE-SCOPE DOM ACCESS. Only `main.js` may have side effects at import time. Every other module exports functions and does nothing when imported — no `document.createElement`, no `addEventListener`, no object construction at module scope. Build sprites lazily on first use and memoise.
+- SWALLOWING ERRORS. A `try/catch` that logs `console.warn` and continues hid a method call to a function that never existed, firing sixty times a second for twelve hours. Do not catch what you have not handled.
+- COSMETIC EFFECTS THAT DESTROY LEGIBILITY. A transition-gradient pass stacked translucent hexes over every terrain boundary until the whole map was one undifferentiated green. If an effect reduces terrain distinctness, it is a regression no matter how nice the idea was.
+
+==========================================================
+DEFINITION OF DONE
+==========================================================
+The build is checked in a real browser after every task. It must have zero uncaught page errors and zero console errors, and it is also measured for:
+- BLANK FRAME — the whole canvas being one flat colour.
+- DEAD PLAY AREA — the centre 60% of the canvas being one flat colour while the edges have content. A HUD rendering over an empty map fails here. This is a hard failure.
+- RESPONDS TO INPUT — whether clicking the canvas changes anything beyond idle animation. A build that renders beautifully and ignores the mouse is not done.
+
+Before claiming any task complete: load the page, confirm the map is visible, and confirm a click still moves the Shaman-Chief. If your change broke movement, you have not finished the task, whatever it looks like in a screenshot.
+
+The final task in the plan must be an integration pass owning `index.html` and `src/main.js`, adding no new files, accepted only when the page loads clean, the map is visible with distinguishable terrain, the Shaman-Chief is legible against the tile beneath him, the HUD is readable, and clicking a hex still moves him.
+
+==========================================================
+ART DIRECTION
+==========================================================
+A deliberate limited palette — earthy Bronze Age tones for the tribe against cold, unnatural Fae colours, cohesive and slightly muted. All colours come from `src/palette.js` as named exports; no hard-coded colour strings anywhere else. Hex tiles must read as distinct terrain at a glance, with clean edges and no muddy seams. Every unit and marker must be instantly distinguishable from the tile beneath it. UI is diegetic and readable: carved bone and woad stain, not default browser widgets. Game feel: hover highlights, smooth movement tweens, a subtle pulse on the active unit, particle flourishes on ritual casts.
+
+Fan out sub-agents to work in parallel. /loop on each item with a harsh critic checking it visually until it reads as a polished commercial indie strategy game, not programmer art. Ultracode.
+
+Below is the complete design document. Honour its specific mechanics, numbers and naming.
+
+﻿==========================
+SHAMAN-CHIEF FAE REALM – COMPLETE GAME DESIGN DOCUMENT
+==========================
+
+
+VERSION: 1.0
+TARGET ENGINE: GODOT 4.6.X
+PLATFORMS: PC (Windows/macOS), Mobile (iOS/Android)
+GAME TYPE: Turn-Based Strategy / Survival / Narrative
+
+
+----------------------------------------------------------
+1. GAME OVERVIEW
+----------------------------------------------------------
+You play as the Shaman-Chief of a Bronze Age nomadic tribe that has wandered into the land of the Fae. The goal is to either escape the realm or find a safe place to build a society and stop wandering. The game is played on a hex-based map and combines strategy, resource management, narrative encounters, ritual magic, and dynamic Fae politics.
+
+
+Key Features:
+- Turn-based strategy with dynamic tile regeneration
+- Ritual magic system (Bind, Bargain, Banish, Blessings)
+- Spirit system: deceased Shaman-Chiefs provide aid
+- Tribe management: roles, aging, death, tasks
+- Fae Courts: Seelie, Unseelie, Wild
+- Encounter library: 120+ events with chaining and mutating mechanics
+- Multiple game lengths (Short, Medium, Long, Epic, Endless)
+- Scoring system with cumulative stats
+
+
+----------------------------------------------------------
+2. CORE SYSTEMS
+----------------------------------------------------------
+2.1 Hex Map
+- Hex grid of tiles
+- Tile properties: terrain type, encounter type, visited boolean, regeneration counter, Court influence
+- Visibility: 
+  - Explored tiles: fully visible
+  - Adjacent tiles: terrain + encounter type hint
+  - Outer ring: terrain only
+- Tile regeneration: 
+  - Starts after ≥5 turns since last visit
+  - Base 10% chance per turn to regenerate encounter, +2% per extra turn (max 50%)
+  - Mutates based on Weirdness and Court influence
+
+
+2.2 Shaman-Chief
+- Single role and unit: leader and shaman
+- Attributes: Health, Magic Pool, Morale, Skill/Aptitude, Status/Conditions
+- Actions:
+  - Move (1 turn, 1 food/water per member)
+  - Rest (1 turn, 1 food/water)
+  - Rituals (Minor/Major Blessings, Bind, Bargain, Banish)
+  - Forage/Explore (1 turn)
+- Spirit Continuation:
+  - Upon death, a new Shaman-Chief takes over
+  - Deceased Shaman-Chiefs become spirits providing bonuses:
+    - +1 magic per turn per spirit
+    - Minor morale boost
+    - Can be sacrificed for rituals
+
+
+2.3 Tribe Members
+- Roles: Hunter/Gatherer, Scout/Pathfinder, Warrior/Protector, Craftsman/Builder
+- Attributes: Health, Morale, Age
+- Aging: Child → Adolescent → Adult → Elder → Ancient
+- Death impacts morale and efficiency
+- Assignable to tasks for resource collection, ritual support, defense, or exploration
+
+
+2.4 Resources
+| Resource     | Function                                      | Notes |
+|--------------|-----------------------------------------------|-------|
+| Food/Water   | Sustains population                           | Low → health/morale penalty |
+| Morale       | Tribe cohesion                                | Boosted by success, rituals, Spirit aid; reduced by deaths/failure |
+| Population   | Supporting members                            | Drives efficiency, ritual support |
+| Materials    | Crafting, rituals                             | Gathered by tribe roles |
+| Magic        | Shaman-Chief pool                             | Used for rituals; boosted by Spirit aid |
+| Weirdness    | World instability                             | High → mutated encounters & terrain |
+| Court Favor  | Seelie / Unseelie / Wild                      | Modifies encounter outcomes & ritual success |
+
+
+2.5 Turn Structure
+- **Start-of-Turn**: Consume resources, apply Weirdness, update Court influence, Spirit effects
+- **Decision Phase**: Shaman-Chief chooses actions (move, rituals, forage, Bind/Bargain/Banish)
+- **Encounter Phase**: Trigger tile encounters
+- **Aftermath Phase**: Apply delayed effects, Spirit bonuses, queued chain encounters
+- **End-of-Turn**: Update turn counter, UI, check victory/defeat, scaling
+
+
+----------------------------------------------------------
+3. RITUAL & MAGIC SYSTEM
+----------------------------------------------------------
+Rituals can be Minor Blessings, Major Blessings, Bind, Bargain, Banish, Environmental, Weird Manipulation.
+
+
+- **Bind**: 1 magic, temporarily control Fae/Wild effect
+- **Bargain**: 1 magic, negotiate with Fae
+- **Banish**: 2 magic, remove threat
+- **Minor Blessing**: 1 magic, heal or small resource gain
+- **Major Blessing**: 2–3 magic, substantial benefit
+- **Environmental Rituals**: 1–3 magic, modify tile effects
+- **Weird Manipulation**: 2–5 magic, alter Weirdness
+
+
+Modifiers:
+- Shaman-Chief skill, Tribe support, Court favor, Weirdness, Spirit aid, Material components
+- Outcomes: Full success, Partial success, Failure (Weirdness spike, injury, Court reaction)
+
+
+----------------------------------------------------------
+4. SPIRIT SYSTEM
+----------------------------------------------------------
+- Deceased Shaman-Chiefs provide passive bonuses (+magic/turn, morale)
+- Sacrificable in rituals for greater effect
+- Stackable
+- Influence tile regeneration, encounter outcomes, and ritual success
+
+
+----------------------------------------------------------
+5. ENCOUNTERS
+----------------------------------------------------------
+- Library: 120+ encounters, some chained by story
+- Triggered by tile terrain, tier, Court influence, Weirdness, story tags
+- Chain encounters triggered by prior actions or rituals
+- Regeneration after ≥5 turns
+- Can mutate based on Weirdness + Court influence
+- Spirit aid can stabilize/amplify outcomes
+
+
+----------------------------------------------------------
+6. COURT INFLUENCE
+----------------------------------------------------------
+- Three Courts: Seelie, Unseelie, Wild
+- Tiles have Court influence values (0–100 per Court)
+- Influence spreads ±5–10 per turn to adjacent tiles
+- High favor affects encounter difficulty, ritual success, chain events
+- All Fae associated with a Court, even lone or unaffiliated Fae
+
+
+----------------------------------------------------------
+7. GAME LENGTHS & SCALING
+| Mode    | Turn Range | Notes |
+|---------|-----------|-------|
+| Short   | 20–25     | Focused runs |
+| Medium  | 30–36     | Default balance |
+| Long    | 45–50     | Extended strategy |
+| Epic    | 100+      | Deep challenge, generational |
+| Endless | ∞         | No victory; wander until tribe perishes |
+
+
+- Game balanced around Medium length
+- Resources, Weirdness, and encounter difficulty scale with turn count
+
+
+----------------------------------------------------------
+8. SCORING
+----------------------------------------------------------
+- Hidden per-run calculation
+- Tracked metrics:
+  - Tiles discovered
+  - Years traveling
+  - Largest tribe population
+  - Most Weirdnesses encountered
+  - Total time played
+  - Quests completed, Fae favor
+- End-of-run display:
+  1. Score this run
+  2. Best score from all previous runs
+  3. Total cumulative score across all runs
+
+
+----------------------------------------------------------
+9. GAMEFLOW & UI
+----------------------------------------------------------
+**Launch sequence**
+- Fade in company logo → fade out → main menu
+
+
+**Main Menu**
+- New Game → select journey length → start game
+- Continue → load last save
+- Settings → sound/graphics/resolution
+- Exit → closes game
+
+
+**Gameplay Area – 4 Windows**
+1. Hex Map Window
+   - Hex grid with tile selection
+   - Resource bar + buttons (Tribe, Settings)
+   - Pan map / select tile → triggers move/encounter
+
+
+2. Tribe Window
+   - Shows tribe members, resources, quests, promises, rituals
+   - Assign tasks and resources
+   - End turn / return to map
+
+
+3. Encounter Window
+   - Triggered by entering a hex with a challenge
+   - Top: picture background (terrain, tribe right, Fae left, optional items center)
+   - Bottom: text + options, costs/bonuses displayed
+   - Resolution shows gains/losses and updates resources
+   - Persists until dismissed → returns to Tribe Window
+
+
+4. Settings Window
+   - Mirrors main menu settings + Exit game button
+
+
+**Controls**
+- Mobile: tap, swipe, pinch-zoom
+- PC: click, hotkeys
+
+
+**Save System**
+- Auto-save on moving to a new tile
+- Includes: turn, tile map, Shaman-Chief stats & spirits, tribe member stats, resources, quests
+
+
+----------------------------------------------------------
+10. DATA STRUCTURE
+----------------------------------------------------------
+- JSON or ScriptableObjects for:
+  - Encounters.json (120+)
+  - Rituals.json
+  - TribeMembers.json
+  - Courts.json
+
+
+- Supports procedural encounter generation, chain events, and Spirit integration
+
+
+----------------------------------------------------------
+11. GODOT 4.6.X PROJECT STRUCTURE
+----------------------------------------------------------
+ShamanChiefFae/
+├── project.godot
+├── Scenes/
+│   ├── Main.tscn
+│   ├── MenuLayer.tscn
+│   ├── GameplayLayer/
+│   │   ├── HexMapWindow.tscn
+│   │   ├── ResourceBar.tscn
+│   │   ├── TribeWindow.tscn
+│   │   ├── SettingsWindow.tscn
+│   │   └── EncounterWindow.tscn
+│   ├── ScoreScreen.tscn
+├── Scripts/
+│   ├── GameManager.gd
+│   ├── UIManager.gd
+│   ├── HexTile.gd
+│   ├── ShamanChief.gd
+│   ├── TribeMember.gd
+│   ├── Encounter.gd
+│   ├── Ritual.gd
+│   ├── Spirit.gd
+│   └── Court.gd
+├── Tiles/Terrain
+├── Tiles/Overlays
+├── Audio/Music
+├── Audio/SFX
+├── UI/Icons
+├── UI/Fonts
+├── Data/
+├── Settings/
+
+
+----------------------------------------------------------
+12. DESIGN DECISIONS & NOTES
+----------------------------------------------------------
+- Single Shaman-Chief unit is both leader and shaman
+- Spirit system encourages long-term strategic planning
+- Encounter regeneration makes the Fae realm dynamic
+- Court system adds global strategic dimension
+- Resource economy is influenced by tribe role assignments
+- Game balances narrative, resource management, and tactical decision-making
+- Supports multi-platform with responsive UI for mobile and PC
+
+
+==========================
+END OF DOCUMENT
+==========================

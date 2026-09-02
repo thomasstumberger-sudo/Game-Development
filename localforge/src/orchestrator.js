@@ -79,7 +79,7 @@ export async function runForge({ goal, workspace, resume = false, maxRefinementR
   await scaffoldApp({ appDir: paths.app, directives });
 
   if (!state.data.tasks.length) {
-    const plan = await planProject(goal, directives);
+    const plan = await planProject(goal, directives, { appDir: paths.app });
     state.data.architecture = plan.architecture;
     state.addTasks(plan.tasks);
   }
@@ -141,10 +141,20 @@ export async function runForge({ goal, workspace, resume = false, maxRefinementR
       // The planner decides "ship" from task titles and scores alone — it never
       // sees the build. It is not allowed to overrule the measured bar: while
       // any visually-judged task sits under passScore, the run keeps going.
+      // Only tasks that could still be retried count against stopping. A task
+      // that is below the bar but out of revivals, or that stopped improving,
+      // is as finished as it is going to get — counting it here is what kept
+      // the outer loop spinning until the wall clock every single time.
       const belowBar = state.data.tasks.filter(
-        (t) => t.visual && t.lastScore != null && t.lastScore < config.critic.passScore,
+        (t) => t.visual
+          && t.lastScore != null
+          && t.lastScore < config.critic.passScore
+          && (t.revivals ?? 0) < config.budgets.maxRevivals
+          && !(t.scoreAtLastRevival != null && t.lastScore <= t.scoreAtLastRevival),
       );
-      const unfinished = state.data.tasks.filter((t) => t.status === 'parked').length;
+      const unfinished = state.data.tasks.filter(
+        (t) => t.status === 'parked' && (t.revivals ?? 0) < config.budgets.maxRevivals,
+      ).length;
 
       if (gap.verdict === 'ship' && (belowBar.length || unfinished)) {
         log.warn('forge', `planner said ship, but ${belowBar.length} task(s) are below the `
@@ -337,28 +347,57 @@ async function executePass({ state, paths, appUrl, outOfTime }) {
  *
  * @returns {{parked:number, belowBar:number}}
  */
-function reviveStalledTasks(state) {
+export function reviveStalledTasks(state) {
   let parked = 0;
   let belowBar = 0;
+  let exhausted = 0;
+  let plateaued = 0;
+
   for (const t of state.data.tasks) {
-    if (t.status === 'parked') {
-      t.status = 'pending';
-      t.attempts = 0;
-      delete t.note;
-      parked++;
-    } else if (
-      t.status === 'completed'
+    const isParked = t.status === 'parked';
+    const isBelowBar = t.status === 'completed'
       && t.visual
       && t.lastScore != null
-      && t.lastScore < config.critic.passScore
-    ) {
-      t.status = 'pending';
-      t.attempts = 0;
-      delete t.note;
-      belowBar++;
+      && t.lastScore < config.critic.passScore;
+    if (!isParked && !isBelowBar) continue;
+
+    // Reviving reset t.attempts to 0, which quietly made maxTaskAttempts
+    // unenforceable: the same task could be retried without limit for as long
+    // as the wall clock ran. Revivals are now counted separately and never
+    // reset, so retrying is bounded even though attempts still are not.
+    const revivals = t.revivals ?? 0;
+    if (revivals >= config.budgets.maxRevivals) {
+      exhausted++;
+      continue;
     }
+
+    // A task that came back from its last revival no better than it went in is
+    // not going to be fixed by a third identical attempt. Stop spending rounds
+    // on it and leave the budget for work that is still moving.
+    if (
+      isBelowBar
+      && t.scoreAtLastRevival != null
+      && t.lastScore != null
+      && t.lastScore <= t.scoreAtLastRevival
+    ) {
+      plateaued++;
+      continue;
+    }
+
+    t.scoreAtLastRevival = t.lastScore ?? null;
+    t.revivals = revivals + 1;
+    t.status = 'pending';
+    t.attempts = 0;
+    delete t.note;
+    if (isParked) parked++;
+    else belowBar++;
   }
+
   if (parked || belowBar) state.save();
+  if (exhausted || plateaued) {
+    log.info('forge', `left alone: ${exhausted} task(s) out of revivals, `
+      + `${plateaued} not improving between attempts`);
+  }
   return { parked, belowBar };
 }
 
