@@ -32,6 +32,7 @@ import { startStaticServer, closeBrowser, inspectApp, ENTRY_ACTIONS } from '../s
 import { config } from '../src/config.js';
 
 let failures = 0;
+const calls = { n: 0 };
 function report(pass, name, detail) {
   if (!pass) failures++;
   console.log(`${pass ? 'PASS' : 'FAIL'}  ${name.padEnd(46)} ${detail}`);
@@ -145,7 +146,7 @@ let port = 8794;
  * @param {boolean} o.judgeBaseline  false reproduces the old unscored baseline
  * @returns {Promise<string>} the file left on disk after the task
  */
-async function run({ seed, round1, seedScore, roundScore, judgeBaseline }) {
+async function run({ seed, round1, round2 = null, seedScore, roundScore, judgeBaseline }) {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-art-ratchet-'));
   const appDir = path.join(tmp, 'app');
   fs.mkdirSync(path.join(appDir, 'src'), { recursive: true });
@@ -170,7 +171,10 @@ async function run({ seed, round1, seedScore, roundScore, judgeBaseline }) {
     visual: true,
   };
 
-  const script = { 1: () => fs.writeFileSync(path.join(appDir, 'src/main.js'), round1), 2: () => {} };
+  const script = {
+    1: () => fs.writeFileSync(path.join(appDir, 'src/main.js'), round1),
+    2: round2 ? () => fs.writeFileSync(path.join(appDir, 'src/main.js'), round2) : () => {},
+  };
   const makeAgent = ({ round }) => ({
     async run() {
       (script[round] ?? (() => {}))();
@@ -181,8 +185,10 @@ async function run({ seed, round1, seedScore, roundScore, judgeBaseline }) {
   // First call is the baseline, the rest are rounds. Verdict is always FAIL so
   // the loop never exits early and the ratchet decision is always reached.
   let call = 0;
+  calls.n = 0;
   const critiqueFn = async () => {
     call++;
+    calls.n++;
     if (call === 1) {
       if (!judgeBaseline) throw new Error('baseline judgement suppressed (old behaviour)');
       return { score: seedScore, verdict: 'FAIL', issues: ['seed'], fixes: [], tier: 't', reads_as: 'seed' };
@@ -264,5 +270,27 @@ report(INTERACTIVE !== INTERACTIVE_BROKEN, 'the two input variants really differ
   'template produced a genuine pair');
 
 await closeBrowser();
+// --- the deterministic gate fires before the vision call --------------------
+// The critic is the scarcest thing in the system: one 16h run judged 17 of 322
+// rounds. A round that writes a function nobody calls cannot pass on any
+// screenshot, so it must not cost a vision call to find that out.
+const ORPHAN = RICH.replace('frame();', 'frame();\nfunction neverCalledAnywhere(){ return 42; }\n');
+out = await run({ seed: RICH, round1: ORPHAN, seedScore: 40, roundScore: 95, judgeBaseline: true });
+report(out === RICH, 'a round that introduced dead code is reverted',
+  out === RICH ? 'orphan round rolled back' : 'orphan survived');
+// Round 1 is gated and costs nothing; round 2 runs on the restored tree and is
+// judged legitimately. So one baseline call plus one round call — not three.
+report(calls.n === 2, 'the gated round cost no vision call',
+  `${calls.n} calls: baseline + round 2 only`);
+
+// Both rounds gated: the critic is never spent on the round loop at all.
+out = await run({
+  seed: RICH, round1: ORPHAN, round2: ORPHAN,
+  seedScore: 40, roundScore: 95, judgeBaseline: true,
+});
+report(out === RICH, 'both dead-code rounds reverted', 'seed survives intact');
+report(calls.n === 1, 'neither gated round reached the critic',
+  `${calls.n} call: baseline only`);
+
 console.log(failures ? `\n${failures} art-ratchet fixture(s) failed` : '\nall art-ratchet fixtures passed');
 process.exit(failures ? 1 : 0);
