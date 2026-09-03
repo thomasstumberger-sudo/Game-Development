@@ -24,6 +24,7 @@ import { captureApp, restoreApp, fitness, describeFitness, SALVAGEABLE_FITNESS }
 import { config } from './config.js';
 import { log } from './logger.js';
 import { assetGuidance } from './rubrics.js';
+import { analyzeApp, newFindings, blocking, describeFindings } from './static-checks.js';
 
 /**
  * Does the build run cleanly enough to be worth judging on art?
@@ -110,7 +111,7 @@ Implement this task now. Start by reading the files you will change.`;
 }
 
 /** Build the brief for a repair round from concrete, measured failures. */
-function repairBrief({ task, health, critiqueResult, round, goal, wasReverted }) {
+function repairBrief({ task, health, critiqueResult, round, goal, wasReverted, findings = [] }) {
   const lines = [`# REPAIR ROUND ${round}: ${task.title}`, ''];
 
   // Without this the agent reads the files, finds none of the edits it made
@@ -163,6 +164,13 @@ function repairBrief({ task, health, critiqueResult, round, goal, wasReverted })
     if (axes) lines.push(`\nWeakest axes, attack these: ${axes}`);
   }
 
+  // Structural defects go in ahead of the closing instruction, and reach the
+  // agent whether or not a critique ran. For most of a long run no critique
+  // does: one 16h run judged 17 of 322 rounds, so a brief that only carries
+  // art feedback carries nothing at all on 95% of rounds.
+  const structural = describeFindings(findings);
+  if (structural) lines.push(`\n${structural}`);
+
   lines.push('\nFix every item above. Do not rewrite working code that was not criticised. Read the relevant files first, then make targeted changes.');
   return lines.join('\n');
 }
@@ -193,6 +201,7 @@ export async function runTask({ task, state, paths, appUrl, slot, makeAgent = nu
   const critiques = [];
   let lastHealth = null;
   let lastCritique = null;
+  let lastFindings = [];
 
   log.step(name, `starting "${task.title}" (up to ${maxRounds} rounds)`);
 
@@ -233,6 +242,13 @@ export async function runTask({ task, state, paths, appUrl, slot, makeAgent = nu
       // it, but say so: while this is null the art ratchet is off.
       log.warn(name, `baseline critic failed (${err.message}); art regressions cannot be caught this task`);
     }
+  }
+
+  // What the tree already trips, so the gate below can tell an inherited defect
+  // from one this task introduced.
+  const baselineFindings = analyzeApp(paths.app).findings;
+  if (baselineFindings.length) {
+    log.info(name, `baseline static findings: ${baselineFindings.map((f) => f.rule).join(', ')}`);
   }
 
   let bestFitness = fitness(baseline, baselineCritique);
@@ -302,7 +318,7 @@ export async function runTask({ task, state, paths, appUrl, slot, makeAgent = nu
 
     const brief = round === 1
       ? initialBrief({ task, state, projectFiles: listProjectFiles(paths.app) })
-      : repairBrief({ task, health: lastHealth, critiqueResult: lastCritique, round, goal: state.data.goal, wasReverted });
+      : repairBrief({ task, health: lastHealth, critiqueResult: lastCritique, round, goal: state.data.goal, wasReverted, findings: lastFindings });
 
     const result = await agent.run(brief);
     log.info(name, `round ${round} agent: ${result.status}, ${result.filesTouched.length} file(s) touched`);
@@ -337,6 +353,13 @@ export async function runTask({ task, state, paths, appUrl, slot, makeAgent = nu
       if (round === maxRounds) break;
       continue;
     }
+
+    // Static analysis runs here, not after the health check, because the
+    // health check is where 95% of rounds stop. A brief that only gets
+    // findings on healthy rounds gets them almost never — and an unhealthy
+    // round is exactly when "movement.updateMove is never called" is the most
+    // useful sentence you can hand an agent.
+    lastFindings = analyzeApp(paths.app).findings;
 
     const shotPath = path.join(paths.shots, `${task.id}-r${round}.png`);
     // Two-shot: boot frame proves it loads, post-entry frame is what gets judged.
@@ -374,6 +397,29 @@ export async function runTask({ task, state, paths, appUrl, slot, makeAgent = nu
       keepOrRevert(round, lastHealth, null);
       if (round === maxRounds) break;
       continue; // Never spend a vision call judging a broken build.
+    }
+
+    // ---- GATE (deterministic, before any vision call) --------------------
+    // The critic is the scarcest thing in the system and the last to run. A
+    // round that wrote a function nobody calls, or that allocates a canvas
+    // every frame, cannot pass however it photographs — and the critic could
+    // never see either defect anyway. Catch them here, spend no vision call,
+    // and hand the agent the exact symbol and line instead of "it looks
+    // unfinished".
+    //
+    // Only findings this round INTRODUCED can fail it. Gating on the absolute
+    // set would stall forever on a seed that already trips a rule, which is
+    // the same reason the interactivity check is relative.
+    const introduced = newFindings(baselineFindings, lastFindings);
+    const blockers = blocking(introduced);
+    if (blockers.length) {
+      for (const f of blockers) {
+        log.warn(name, `${f.rule}: ${f.file}:${f.line} ${f.symbol} — ${f.message}`);
+      }
+      lastCritique = null;
+      keepOrRevert(round, lastHealth, null);
+      if (round === maxRounds) break;
+      continue; // No vision call: this round cannot pass on any screenshot.
     }
 
     // ---- JUDGE (subjective) ---------------------------------------------
