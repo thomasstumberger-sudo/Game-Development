@@ -1,6 +1,6 @@
 # Game Specification: Cafeteria Coup
 
-> **Status:** Design only — no prototype yet. This is the build-ready expansion of the pitch at `localforge/examples/cafeteria_coup_game_design.md`. Everything in that pitch is treated as **canon** and kept intact: the 5-stage heist loop, the tool/spell table, the Alibi Engine, the two useless artifacts, the Adaptive Security table, and the Pride Cover-Up. Anything this doc invents on top of it is tagged **(new)** so it can be kept, cut, or renamed without hunting for it. Target is the same as the other folders here: a single-file `cafeteria/index.html`, vanilla canvas + JS, no build step.
+> **Status:** A playable **Chapter 1 vertical slice** now exists at `cafeteria/index.html`. Open it directly in a browser; there's no build step and no server. §1–§16 are the design as written. **§17 describes what was actually built**, including where the build had to settle something the design left open or contradictory. The source pitch is `localforge/examples/cafeteria_coup_game_design.md`, and everything in it stays **canon**. Additions on top of it are tagged **(new)**.
 
 ---
 
@@ -534,7 +534,110 @@ Library Intel and the Clocktower key site are cuttable from the first slice (sta
 
 * **Chapter 4's key site and Archmage** are deliberately unfinished (§2.3, §11.2). Ledger Tower / Provost Ashmark is a placeholder name.
 * **Artifacts 3 and 4** (§8) are proposals, not canon. Keep the rule, swap the specifics freely.
-* **Roast/comeback writing** is the single largest content cost in the game and none of it is written yet. Needs ~40 student roasts, ~25 comebacks, ~4 elevated variants per Archmage, and one insider line per relic. This is where the game's voice lives — worth writing by hand, not generating.
+* **Roast/comeback writing** is the single largest content cost in the game. Chapter 1's set is written (§17.4); the rest is not. Needs ~40 student roasts, ~25 comebacks, ~4 elevated variants per Archmage, and one insider line per relic. This is where the game's voice lives — worth writing by hand, not generating.
 * **What happens if you just… don't return a relic?** Currently Act 3 is mandatory. A harder, meaner branch where you keep it — the Archmage can't flex, no insider line, but you hold an extra Visual Punctuation forever — would make the return an actual choice. Unbuilt, undecided.
 * **Combat** is intentionally absent. You never win a fight; you only cause them, avoid them, or end them with a marble bust. Worth holding that line.
 * **Mother Ladle's crew** (§10) is a found-family thread with one sentence of design behind it. It could carry a lot more — each cook with a reason they've stayed thirty years ladling sludge.
+
+---
+
+## 17. Chapter 1 Slice — As Built
+
+`cafeteria/index.html` is a single file of about 2,900 lines: vanilla canvas plus a little DOM for the panels. It has the same separation as `weather/` and `capsize/`. A fixed 20 Hz simulation (`tick()`) owns all state in one `G` object, and `render()` only reads it. `cafeteria/verify.cjs` drives it headlessly (§17.6).
+
+### 17.1 What's in, what's cut
+* **In:**
+  * **The Quad hub:** students, 4 snobs, 2 duelists, Mother Ladle's counter, the notice board, and Gilt's pavilion.
+  * **The Sunspire:** 3 floors plus grounds. There are 5 ways in: front door, servant door, dumbwaiter, ivy trellis to the balcony, and sewer vent. There are 2 ways up: the main stairs, and the servant stair, reached through a locked pantry door or a hidden library door.
+  * **The vault:** ward-lines and a rune housing.
+  * **Act 1, Intermission, Act 3 and the Council Trial,** run end to end.
+* **Cut, as §15 allowed:**
+  * Library Intel and the Clocktower. You start holding the logbook and the master key, and the logbook's contents are in the notebook's *Intel* tab.
+  * Chapters 2–4, seats 5–7, the Final Session, and Mother Ladle's crew.
+  * Titan's Majestic Stature, which belongs to Chapter 2.
+
+### 17.2 Where the build had to decide something
+* **Visual Punctuation vs. the Return Trip.** §9.3 says punctuation uses relics you *own*. §7.4 makes you give the Phoenix back before the trial. **Resolution:** flexing a relic in a duel *attunes* it. At the trial you call down its **phantom**: once per attuned relic, the roast is cancelled and Ego takes −10. (This replaces "loses their next turn", which had no clear effect in a debate.) Keeping a relic instead of returning it, as in §16, would still be the way to get a *second* use.
+* **Alibis can't be split across places.** §6.2 scores the best sighting in the ±10 s window. As built, *any* sighting inside the window that puts you near the scene voids the alibi. Without that rule, being seen in the quad nine seconds before an incident still cleared you after you'd run into the tower.
+* **Insider Knowledge and the relic comeback stack.** On a clean Return Trip, Gilt's Phoenix flex goes into the trial as her third roast. The insider line deals −40. The ordinary relic comeback also answers it, for −20.
+* **The Phoenix is too big for back routes.** While carrying it you can't use the trellis, the dumbwaiter or the vent. You come in and go out by stairs and doors. That turns "how do I get out" into its own puzzle, and Act 3 starts at the gate already carrying it.
+* **Guards slip.** A guard without cleats who walks onto grease or ice goes down for 6 s. Gust shoves a guard standing on a slippery tile, and a wall hit at speed knocks them out (an environmental KO). Spiked cleats, from the heat-rune countermeasure, make guards immune to all of this, which is why §7.3's "ice blocks still wall them" matters.
+* **Knockouts use momentum, not speed.** `speed × mass ≥ KO_MOMENTUM (12)`. That equals the spec's 4 tiles/s for a bust and holds for heavier objects too. Gust is a fixed impulse, so every object leaves at the same momentum; a bust on grease stays dangerous for about 5 tiles. Ferns shatter instead.
+* **How `noise_distractions` counts:**
+  * +1 per incident fired (noisemaker or ice-rune).
+  * +1 more on a failed alibi, as §6.2 specifies.
+  * +1 per player-caused impact, shatter, smashed window or relocated wire that pulls a guard.
+  * +1 per noisemaker a guard finds and disarms.
+* **What counts as the vault floor going loud:** any ALERT on F2 during Act 3, whether from a guard, Gilt or a tripped ward-line. Any of those voids the clean return. Gilt sleeps at night and wakes for 30 s when a noise reaches her. Dawn is not a fail state: she simply wakes up and stays up.
+* **Heat bands, as built:**
+  * *Watched* (40+): a prefect tails you in the quad. He is also a credibility-2 witness, which is funny.
+  * *Wanted* (60+): when a stage is (re)built, the servant door is locked and guards start at suspicion 20.
+  * *Hunted*: nothing extra yet. Getting caught always restarts the stage, never the chapter.
+* **Death exists, so the canon prompt can.** Burning slick costs a heart per second, with 3 hearts. At 0 you see the death screen, which shows `[Press 'F' to cast Phoenix (Unavailable: You are dead)]` if you've ever held the Phoenix. Pressing F there says so again.
+* **Other numbers:**
+  * Office hours run :00–:30. The campus clock moves 0.5 game-minutes per real second and starts at 9:40.
+  * Gilt's office-hours monologue (14 lines) does not pause the game, and she reacts if the tower goes off mid-sentence.
+  * Mother Ladle counts as a credibility-2 faculty witness inside the cafeteria.
+  * The cafeteria is the only warm-lit interior.
+* **Sneak is on C, not Ctrl** (§3.2). Ctrl+W, sneaking while walking up, closes the browser tab, and a page can't intercept it.
+* **Night routes:** only the vault warden and the entrance-hall guard have Act 3 variants, both sentry posts. True-sight adds three wardens: corridor, library, and servant room.
+
+### 17.3 Constants that differ from §13
+| Constant | §13 | As built | Why |
+|---|---|---|---|
+| `KO_SPEED` | 4 tiles/s | `KO_MOMENTUM = 12` | See §17.2 |
+| Exterior ambient light | — | day 0.80 / night 0.13 | Grounds read as night, while daytime approaches stay possible |
+| Interior ambient light | — | day 0.14 / night 0.05 (cafeteria 0.62) | |
+| `ARCHMAGE_*` | — | range 8, ±50°, suspicion ×3 | "Walking into their sight is an instant ALERT" (§11.3) |
+
+### 17.4 Chapter 1 notebook
+* **Comebacks:** six, one per topic: spellcraft, fashion, intellect, lineage, diet, relic.
+* **Roasts:** nine.
+* **Gilt's trial material:** five elevated variants plus the Phoenix flex.
+* **The insider line:** *"Wonderful. Do let us know how it works after you die."*
+* **Where comebacks come from:**
+  * You start knowing **diet**.
+  * Two snobs teach **intellect** and **fashion** when you roast them.
+  * Percival's duel teaches **spellcraft**, the hard way.
+  * Cressida's duel teaches **lineage**.
+  * Flexing the Phoenix in a duel teaches **relic**.
+
+Every trial answer has exactly one source in the slice. When you lose an exchange you "think of the perfect comeback on the walk home", and it's logged.
+
+### 17.5 Playability probe (blind bot, 12–16 randomized runs per route)
+A bot walked each route at a fixed pace, with no waiting and no hiding. "Spotted" means some guard reached suspicion 60.
+
+| Route | Spotted | Alert or caught |
+|---|---|---|
+| Gate → vent / trellis (sneak, day) | 0% | 0% |
+| F2 servant stair → vault, **Gilt at office hours** | 0% | 0% |
+| F2 servant stair → vault, **Gilt home** | 75% | 58% |
+| F2 vault → upper stairs, carrying | 42% | 42% |
+| … same, with a noisemaker Vacuum on F1 | **0%** | **0%** |
+| F1 gallery end to end, carrying | 75–88% | 67–81% |
+| F1 pantry → library → main stairs, carrying | 33% | 0% |
+| F0 main stairs → front door → gate, carrying | 100% | 100% |
+| F0 main stairs → servant door → gate, carrying | 75% | 50% |
+
+That is the intended shape. The approach is readable. Gilt's study is a timing puzzle set by office hours. Getting the relic *out* is the hard part, and the tools the design built for it work: the Vacuum, the library route, and timing the gallery patrol (or knocking him out). The ground-floor exit is still the hardest leg against a bot that won't wait. That is the first thing to watch in a human playtest.
+
+### 17.6 Verification
+`NODE_PATH=$(npm root -g) node cafeteria/verify.cjs [--shots]` runs 35 checks in headless Chromium:
+* **Map integrity:** links pair up, every guard waypoint is walkable and reachable across floors, and the vault can be reached from the quad.
+* **Real input:** title click, WASD, Tab, E, and the shop.
+* **Every combo in the §5.5 table,** plus the heat-rune reactions.
+* **The Alibi Engine:** a clean alibi, a missing alibi, the at-scene rule, and the Vacuum crossing floors.
+* **Office hours,** and Gilt counting as a credibility-4 witness.
+* **Ledger → countermeasures → Act 3:** helmets block the crowbar, earmuffs block noise, runes and sap are placed, and a ward-line in the vault spoils the return.
+* **Duels:** learning on a loss, and attunement.
+* **The trial:** insider line, punctuation, and a clean shatter.
+* **No console errors.**
+
+`--shots` writes screenshots to `cafeteria/shots/`, which git ignores.
+
+### 17.7 Open threads (slice)
+* **Balance is untested against a human.** §17.5 is a blind bot. Start with the ground-floor exit and the gallery patrol.
+* **Guards path around objects but don't collide with them in motion.** A sliding crate can overlap a walking guard without a KO if it's slow.
+* **Things guards ignore:** doors you leave open, an emptied pedestal, and a cut window. Only people, bodies, noise and ward-lines alert them. "The vault door is open" should probably make a guard curious.
+* **No hiding bodies, no saving, no minimap,** and no touch controls.
+* **Audio is minimal:** synthesized blips that follow noise loudness.
