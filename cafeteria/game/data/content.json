@@ -1,0 +1,267 @@
+{
+  "topics": [
+    "spellcraft",
+    "fashion",
+    "intellect",
+    "lineage",
+    "diet",
+    "relic"
+  ],
+  "roasts": {
+    "spell1": {
+      "topic": "spellcraft",
+      "text": "Your incantations sound like a goose reading a tax form."
+    },
+    "spell2": {
+      "topic": "spellcraft",
+      "text": "I've seen more magical talent in a damp sock."
+    },
+    "fash1": {
+      "topic": "fashion",
+      "text": "Those robes look like they lost a duel with a laundry cauldron."
+    },
+    "fash2": {
+      "topic": "fashion",
+      "text": "Did you dress in the dark, or does the dark dress you?"
+    },
+    "int1": {
+      "topic": "intellect",
+      "text": "Talking to you is like reading a book with all the words removed."
+    },
+    "int2": {
+      "topic": "intellect",
+      "text": "Your thoughts are so slow they arrive by owl."
+    },
+    "lin1": {
+      "topic": "lineage",
+      "text": "Your bloodline is so thin it's mostly apology."
+    },
+    "diet1": {
+      "topic": "diet",
+      "text": "You smell like the cafeteria. All of it."
+    },
+    "relic1": {
+      "topic": "relic",
+      "text": "A phoenix you can only cast once you're dead? Practical as a chocolate cauldron."
+    }
+  },
+  "comebacks": {
+    "spellcraft": "Still, my spells finish. Yours are still in committee.",
+    "fashion": "At least my robes fit. Yours were tailored for your ego, and it's still growing.",
+    "intellect": "Then you'll finally have something you can read.",
+    "lineage": "At least mine apologizes. Yours just sends invoices.",
+    "diet": "It builds character. You should try a bowl.",
+    "relic": "Practical? My dear, this is a university."
+  },
+  "gilt_roasts": [
+    {
+      "topic": "lineage",
+      "text": "The Gilt line has produced eleven Archmages. Yours has produced a rumor."
+    },
+    {
+      "topic": "spellcraft",
+      "text": "Your so-called thaumaturgy is an insult to the very concept of intention."
+    },
+    {
+      "topic": "fashion",
+      "text": "One shudders to imagine what tailor would consent to clothe such ambition."
+    },
+    {
+      "topic": "intellect",
+      "text": "I have reviewed your academic record. It was brief. It was blank."
+    },
+    {
+      "topic": "diet",
+      "text": "This Council will not be lectured on cuisine by a creature raised on sludge."
+    }
+  ],
+  "gilt_flex": {
+    "topic": "relic",
+    "insider": true,
+    "text": "Behold — the Radiant Resuscitation of the Eternal Sun! Let it be known the Sunspire fears no death!"
+  },
+  "insider_line": "Wonderful. Do let us know how it works after you die.",
+  "gilt_office_lines": [
+    "Ah. A student. During office hours. How novel.",
+    "You'll want to know about the Sunspire, of course. Everyone does.",
+    "Eleven Archmages in the Gilt line. Eleven. I have their portraits. In the stairwell. In order of height.",
+    "My great-grandmother once out-argued a thunderstorm. It apologised. In writing.",
+    "People ask me, 'Ostentia, how do you maintain such radiance?' And I say: discipline. And gold leaf.",
+    "The Phoenix? Oh, you've heard. Yes. It restores the caster entirely. In a pillar of holy fire.",
+    "The circumstances of casting are... specific. Don't concern yourself with the circumstances.",
+    "The cafeteria? I am told there is one. I have never been. I have a man.",
+    "Budget reform is a fascinating little idea. Like a kitten. Best kept small, and out of the Council chamber.",
+    "My tower is the most secure on campus, naturally. Nothing has ever happened there.",
+    "Nothing will ever happen there.",
+    "You may go. No — stay. I wasn't finished being admired.",
+    "Where was I. Eleven Archmages.",
+    "Very well. You may tell your friends you spoke with me. They won't believe you. That's the point."
+  ],
+  "gilt_incident_line": "...Was that my tower? No. It was not. Nothing happens at my tower. Do continue listening.",
+  "snobs": [
+    {
+      "name": "Bartleby Fenwick-Throop",
+      "you_say": "Nice hat. Did it come with a refund?",
+      "they_say": "Then you'll finally have something you can read.",
+      "teaches": {
+        "comeback": "intellect"
+      }
+    },
+    {
+      "name": "Ophelia Starchwell",
+      "you_say": "I'd roast your robes, but the laundry cauldron already did.",
+      "they_say": "At least my robes fit. Yours were tailored for your ego, and it's still growing.",
+      "teaches": {
+        "comeback": "fashion"
+      }
+    },
+    {
+      "name": "Mortimer Vane-Vane",
+      "you_say": "Lovely weather for being insufferable.",
+      "they_say": "Your bloodline is so thin it's mostly apology.",
+      "teaches": {
+        "roast": "lin1"
+      }
+    },
+    {
+      "name": "Clementine Quillfeather",
+      "you_say": "Is that a thought on your face, or a rash?",
+      "they_say": "Your thoughts are so slow they arrive by owl.",
+      "teaches": {
+        "roast": "int2"
+      }
+    }
+  ],
+  "duelists": [
+    {
+      "id": "percival",
+      "name": "Percival Snoot",
+      "title": "Second-year, Department of Being Correct",
+      "roasts": [
+        "spell1",
+        "fash1",
+        "int1",
+        "spell1",
+        "fash1"
+      ],
+      "knows": [
+        "fashion",
+        "spellcraft"
+      ],
+      "win_line": "This is a clerical error. I shall be filing a grievance with myself.",
+      "lose_line": "Run along. The sludge is getting cold."
+    },
+    {
+      "id": "cressida",
+      "name": "Lady Cressida Vane",
+      "title": "Fourth-year, heir to a modest fortune of immodest size",
+      "roasts": [
+        "lin1",
+        "diet1",
+        "spell2",
+        "fash2",
+        "lin1"
+      ],
+      "knows": [
+        "intellect",
+        "lineage",
+        "diet"
+      ],
+      "win_line": "How dreadfully common of you to win.",
+      "lose_line": "Do give my regards to the gruel."
+    }
+  ],
+  "student_lines": [
+    "Did you hear? Classes are optional again. They were always optional. It is just nice to hear.",
+    "The sludge today was a sort of... beige. Last week it was a sort of beige too, but louder.",
+    "I tried to read a book once. The book read me first. I don't want to talk about it.",
+    "Gilt holds office hours on the hour. Mostly so people can watch her hold them.",
+    "Mother Ladle has been here thirty years. Nobody knows what she ladled before the sludge.",
+    "I am majoring in Merit Points. Minor in Grandstanding."
+  ],
+  "ladle_lines": [
+    "Don't tell me what it's for, love. I don't want to know. I know.",
+    "Thirty years ladling this. You get to recognise a face that wants something better.",
+    "Eat something first. No? Then buy something.",
+    "The Archmages had lobster again. I could smell it through two floors. Go on, then."
+  ],
+  "notices_base": [
+    "COUNCIL NOTICE — The cafeteria budget remains under review. It has been under review for eleven years. The review is going well.",
+    "ARCHMAGE GILT will hold office hours at the Sunspire Pavilion from :00 to :30, every hour, so that she may be consulted.",
+    "LOST: one sense of proportion. Last seen near the Sunspire. If found, do not return."
+  ],
+  "countermeasures": {
+    "helmets": {
+      "name": "Iron bucket helmets & neck collars",
+      "rule": "melee_ko ≥ 2",
+      "effect": "Crowbar takedowns fail (CLONK). Busts still work.",
+      "notice": "The Sunspire is pleased to announce the acquisition of forty iron bucket helmets, for no particular reason."
+    },
+    "trueSight": {
+      "name": "Lantern-eye true-sight over-patrol",
+      "rule": "alerts = 0",
+      "effect": "Shadows stop hiding you. Extra wardens. Smoke and steam still block sight.",
+      "notice": "The Sunspire announces a generous staffing initiative: additional night wardens, each fitted with lantern-eye lenses. Unrelatedly, nothing has happened."
+    },
+    "heatRunes": {
+      "name": "Heated floor runes + spiked cleats",
+      "rule": "grease_casts ≥ 3",
+      "effect": "Grease on a rune becomes burning slick. Guards no longer slip.",
+      "notice": "Floor heating has been installed throughout the Sunspire, for comfort. Staff are reminded to wear the provided spiked cleats at all times. For comfort."
+    },
+    "sap": {
+      "name": "Anti-magic sap on keyholes",
+      "rule": "magehand_locks ≥ 2",
+      "effect": "Mage Hand fizzles on locks. Pick them in person.",
+      "notice": "The Sunspire has treated all keyholes with a decorative sap. It is decorative."
+    },
+    "earmuffs": {
+      "name": "Enchanted noise-canceling earmuffs",
+      "rule": "noise_distractions ≥ 3",
+      "effect": "Guards are deaf — to distractions and to your sprinting.",
+      "notice": "Sunspire staff will now be issued enchanted earmuffs, to protect them from the noise of absolutely nothing happening."
+    }
+  },
+  "shop": [
+    {
+      "id": "smoke",
+      "name": "Smoke Bomb",
+      "price": 10,
+      "desc": "3×3 cloud, blocks sight 8s. Douse → wet fog. Freeze → ice-block seal.",
+      "tool": "smoke",
+      "amount": 1
+    },
+    {
+      "id": "noisemaker",
+      "name": "Clockwork Noisemaker",
+      "price": 15,
+      "desc": "Timer 15s–5min ([ and ]). Radius-10 noise. The Alibi Engine's plant.",
+      "tool": "noisemaker",
+      "amount": 1
+    },
+    {
+      "id": "iceRune",
+      "name": "Ice-Rune Charge",
+      "price": 20,
+      "desc": "Fires when its ice melts: 3 min, or 45s on a heated floor. Cannot be disarmed.",
+      "tool": "iceRune",
+      "amount": 1
+    },
+    {
+      "id": "snips",
+      "name": "Wire-snips (3 uses)",
+      "price": 10,
+      "desc": "Cut physical wires; disable a Revealed rune housing.",
+      "tool": "snips",
+      "amount": 3
+    },
+    {
+      "id": "glassCutter",
+      "name": "Glass Cutter (2 uses)",
+      "price": 10,
+      "desc": "Remove a window pane silently.",
+      "tool": "glassCutter",
+      "amount": 2
+    }
+  ]
+}
