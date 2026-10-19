@@ -1,0 +1,368 @@
+{
+  "maps": {
+    "hub": {
+      "name": "The Quad",
+      "building": "campus",
+      "floor": 0,
+      "interior": [
+        [
+          2,
+          17,
+          13,
+          25
+        ]
+      ]
+    },
+    "f0": {
+      "name": "Sunspire — Grounds & Ground Floor",
+      "building": "sunspire",
+      "floor": 0,
+      "interior": [
+        [
+          17,
+          7,
+          43,
+          26
+        ]
+      ]
+    },
+    "f1": {
+      "name": "Sunspire — Gallery Floor",
+      "building": "sunspire",
+      "floor": 1,
+      "interior": [
+        [
+          17,
+          7,
+          43,
+          26
+        ]
+      ]
+    },
+    "f2": {
+      "name": "Sunspire — Archmage Floor",
+      "building": "sunspire",
+      "floor": 2,
+      "interior": [
+        [
+          17,
+          7,
+          43,
+          26
+        ]
+      ]
+    }
+  },
+  "tower_maps": [
+    "f0",
+    "f1",
+    "f2"
+  ],
+  "links": {
+    "1": {
+      "kind": "gate",
+      "label": "Sunspire gate",
+      "guards": false
+    },
+    "2": {
+      "kind": "stairs",
+      "label": "Main stairs",
+      "guards": true
+    },
+    "3": {
+      "kind": "dumbwaiter",
+      "label": "Dumbwaiter",
+      "guards": false,
+      "noise": 3
+    },
+    "4": {
+      "kind": "trellis",
+      "label": "Ivy trellis",
+      "guards": false
+    },
+    "5": {
+      "kind": "vent",
+      "label": "Sewer vent",
+      "guards": false,
+      "locked": true
+    },
+    "6": {
+      "kind": "stairs",
+      "label": "Upper stairs",
+      "guards": true
+    },
+    "7": {
+      "kind": "stairs",
+      "label": "Servant stair",
+      "guards": true
+    }
+  },
+  "object_kinds": {
+    "b": {
+      "kind": "bust",
+      "name": "marble bust",
+      "mass": 3
+    },
+    "A": {
+      "kind": "armor",
+      "name": "suit of armor",
+      "mass": 5
+    },
+    "c": {
+      "kind": "crate",
+      "name": "crate",
+      "mass": 4
+    },
+    "k": {
+      "kind": "bookcart",
+      "name": "bookcart",
+      "mass": 2
+    },
+    "p": {
+      "kind": "fern",
+      "name": "potted fern",
+      "mass": 1
+    }
+  },
+  "guards": [
+    {
+      "id": "g1",
+      "map": "f0",
+      "name": "Front sentry",
+      "route": [
+        [
+          15,
+          17
+        ]
+      ],
+      "face": 3.141593
+    },
+    {
+      "id": "g2",
+      "map": "f0",
+      "name": "Grounds patrol",
+      "route": [
+        [
+          12,
+          3
+        ],
+        [
+          45,
+          3
+        ],
+        [
+          45,
+          29
+        ],
+        [
+          12,
+          29
+        ]
+      ]
+    },
+    {
+      "id": "g3",
+      "map": "f0",
+      "name": "Servant hall",
+      "route": [
+        [
+          18,
+          22
+        ],
+        [
+          28,
+          22
+        ],
+        [
+          28,
+          25
+        ],
+        [
+          20,
+          25
+        ]
+      ]
+    },
+    {
+      "id": "g4",
+      "map": "f0",
+      "name": "Entrance hall",
+      "route": [
+        [
+          18,
+          13
+        ],
+        [
+          24,
+          13
+        ],
+        [
+          24,
+          18
+        ],
+        [
+          18,
+          18
+        ]
+      ],
+      "night": [
+        [
+          22,
+          16
+        ]
+      ]
+    },
+    {
+      "id": "g5",
+      "map": "f0",
+      "name": "Guard room",
+      "route": [
+        [
+          31,
+          14
+        ],
+        [
+          42,
+          17
+        ]
+      ]
+    },
+    {
+      "id": "g6",
+      "map": "f1",
+      "name": "Gallery patrol",
+      "route": [
+        [
+          18,
+          13
+        ],
+        [
+          41,
+          13
+        ]
+      ]
+    },
+    {
+      "id": "g7",
+      "map": "f1",
+      "name": "Barracks",
+      "route": [
+        [
+          33,
+          17
+        ],
+        [
+          38,
+          25
+        ],
+        [
+          31,
+          25
+        ]
+      ]
+    },
+    {
+      "id": "g8",
+      "map": "f1",
+      "name": "Trophy rooms",
+      "route": [
+        [
+          19,
+          9
+        ],
+        [
+          40,
+          8
+        ]
+      ]
+    },
+    {
+      "id": "g9",
+      "map": "f2",
+      "name": "Vault warden",
+      "route": [
+        [
+          37,
+          16
+        ],
+        [
+          34,
+          9
+        ],
+        [
+          42,
+          9
+        ]
+      ],
+      "night": [
+        [
+          37,
+          17
+        ]
+      ],
+      "night_face": -1.570796
+    },
+    {
+      "id": "x1",
+      "map": "f0",
+      "name": "Lantern-eye warden",
+      "route": [
+        [
+          17,
+          8
+        ],
+        [
+          43,
+          9
+        ]
+      ],
+      "cm": "trueSight"
+    },
+    {
+      "id": "x2",
+      "map": "f1",
+      "name": "Lantern-eye warden",
+      "route": [
+        [
+          25,
+          17
+        ],
+        [
+          18,
+          18
+        ]
+      ],
+      "cm": "trueSight"
+    },
+    {
+      "id": "x3",
+      "map": "f2",
+      "name": "Lantern-eye warden",
+      "route": [
+        [
+          20,
+          22
+        ],
+        [
+          28,
+          25
+        ]
+      ],
+      "cm": "trueSight"
+    }
+  ],
+  "gilt_tower_pos": {
+    "map": "f2",
+    "x": 23,
+    "y": 9,
+    "face": 1.570796
+  },
+  "hub_start": {
+    "x": 17,
+    "y": 21
+  },
+  "f0_gate": {
+    "x": 1,
+    "y": 16
+  }
+}
