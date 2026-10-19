@@ -1,0 +1,4 @@
+# Godot editor cache and local builds (commit .import files and export_presets.cfg)
+.godot/
+build/
+shots/

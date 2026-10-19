@@ -40,12 +40,12 @@ static func make_gilt(is_night: bool) -> Entities.Guard:
 	return g
 
 
-static func clear_path(g) -> void:
+static func clear_path(g: Entities.Guard) -> void:
 	g.has_path = false
 	g.path = []
 
 
-static func set_goal(sim: Sim, g, goal: Dictionary) -> void:
+static func set_goal(sim: Sim, g: Entities.Guard, goal: Dictionary) -> void:
 	g.goal = goal
 	var res := Pathfinder.find(sim, Content.world["tower_maps"], {"map": g.map_id, "x": floori(g.x), "y": floori(g.y)}, goal, Pathfinder.guard_passable, true)
 	g.has_path = res["ok"]
@@ -53,7 +53,7 @@ static func set_goal(sim: Sim, g, goal: Dictionary) -> void:
 	g.repath_t = 1.0
 
 
-static func start_search(sim: Sim, g, at: Dictionary, loud: bool = false) -> void:
+static func start_search(sim: Sim, g: Entities.Guard, at: Dictionary, loud: bool = false) -> void:
 	g.state = "search"
 	g.stim = at
 	g.search_t = C.SEARCH_TIME if loud else C.SEARCH_TIME * 0.75
@@ -61,12 +61,12 @@ static func start_search(sim: Sim, g, at: Dictionary, loud: bool = false) -> voi
 	set_goal(sim, g, at)
 
 
-static func start_return(sim: Sim, g) -> void:
+static func start_return(sim: Sim, g: Entities.Guard) -> void:
 	g.state = "return"
 	set_goal(sim, g, {"map": g.home, "x": int(g.route[g.wp][0]), "y": int(g.route[g.wp][1])})
 
 
-static func go_alert(sim: Sim, g, why: String) -> void:
+static func go_alert(sim: Sim, g: Entities.Guard, why: String) -> void:
 	if g.alert_cooldown > 0.0:
 		return
 	g.alert_cooldown = 5.0
@@ -88,7 +88,7 @@ static func go_alert(sim: Sim, g, why: String) -> void:
 
 
 ## Move along the path; true when the path is exhausted (or there is none).
-static func step_along_path(sim: Sim, g, speed: float) -> bool:
+static func step_along_path(sim: Sim, g: Entities.Guard, speed: float) -> bool:
 	if not g.has_path or g.path.is_empty():
 		return true
 	var n: Dictionary = g.path[0]
@@ -130,7 +130,7 @@ static func step_along_path(sim: Sim, g, speed: float) -> bool:
 	return g.path.is_empty()
 
 
-static func _try_shatter_adjacent_ice(sim: Sim, g) -> void:
+static func _try_shatter_adjacent_ice(sim: Sim, g: Entities.Guard) -> void:
 	if g.blocked_t < 8.0:
 		return
 	var m: GameMap = sim.maps[g.map_id]
@@ -150,7 +150,7 @@ static func _try_shatter_adjacent_ice(sim: Sim, g) -> void:
 				return
 
 
-static func _on_enter_tile(sim: Sim, g, m: GameMap, x: int, y: int) -> void:
+static func _on_enter_tile(sim: Sim, g: Entities.Guard, m: GameMap, x: int, y: int) -> void:
 	var i := m.idx(x, y)
 	if m.tiles[i] == "-" and m.wire_moved.has(i):
 		m.wire_moved.erase(i)
@@ -158,7 +158,7 @@ static func _on_enter_tile(sim: Sim, g, m: GameMap, x: int, y: int) -> void:
 		sim.toast("A guard trips your relocated wire. *BRRRING*", Color("a58bd8"))
 
 
-static func speed_for(g) -> float:
+static func speed_for(g: Entities.Guard) -> float:
 	match g.state:
 		"pursuit": return C.GUARD_SPEED["pursuit"]
 		"investigate": return C.GUARD_SPEED["investigate"]
@@ -167,11 +167,11 @@ static func speed_for(g) -> float:
 	return C.GUARD_SPEED["patrol"]
 
 
-static func _here(g) -> Dictionary:
+static func _here(g: Entities.Guard) -> Dictionary:
 	return {"map": g.map_id, "x": floori(g.x), "y": floori(g.y)}
 
 
-static func update(sim: Sim, g) -> void:
+static func update(sim: Sim, g: Entities.Guard) -> void:
 	if g.archmage:
 		_update_archmage(sim, g)
 		return
@@ -355,7 +355,7 @@ static func update(sim: Sim, g) -> void:
 				g.wait_t = 0.5
 
 
-static func _random_nearby_tile(sim: Sim, g, r: float) -> Dictionary:
+static func _random_nearby_tile(sim: Sim, g: Entities.Guard, r: float) -> Dictionary:
 	var m: GameMap = sim.maps[g.map_id]
 	for tries in 12:
 		var x := floori(g.x + randf_range(-r, r))
@@ -365,7 +365,7 @@ static func _random_nearby_tile(sim: Sim, g, r: float) -> Dictionary:
 	return {}
 
 
-static func _update_slide(sim: Sim, g) -> void:
+static func _update_slide(sim: Sim, g: Entities.Guard) -> void:
 	var m: GameMap = sim.maps[g.map_id]
 	var res := PropPhysics.slide_body(m, g, C.GUARD_R)
 	if res["hit_wall"] and res["speed"] * 3.0 >= C.KO_MOMENTUM:
@@ -382,7 +382,7 @@ static func _update_slide(sim: Sim, g) -> void:
 		g.slip = C.SLIP_TIME * 0.5
 
 
-static func _update_archmage(sim: Sim, g) -> void:
+static func _update_archmage(sim: Sim, g: Entities.Guard) -> void:
 	g.away = sim.is_office_hours()
 	if g.away:
 		return

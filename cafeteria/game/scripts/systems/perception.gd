@@ -37,7 +37,7 @@ static func emit_noise(sim: Sim, map_id: String, x: float, y: float, r: float, k
 	return pulled
 
 
-static func hear(sim: Sim, g, map_id: String, x: float, y: float, r: float, kind: String) -> bool:
+static func hear(sim: Sim, g: Entities.Guard, map_id: String, x: float, y: float, r: float, kind: String) -> bool:
 	if g.archmage:
 		if g.asleep:
 			g.asleep = false
@@ -71,7 +71,7 @@ static func hear(sim: Sim, g, map_id: String, x: float, y: float, r: float, kind
 
 
 ## Distance to the target if the guard can see it, else -1.
-static func can_see(sim: Sim, g, tx: float, ty: float, tmap: String) -> float:
+static func can_see(sim: Sim, g: Entities.Guard, tx: float, ty: float, tmap: String) -> float:
 	if g.map_id != tmap:
 		return -1.0
 	var rng := C.ARCHMAGE_RANGE if g.archmage else C.VISION_RANGE
@@ -90,7 +90,7 @@ static func can_see(sim: Sim, g, tx: float, ty: float, tmap: String) -> float:
 	return d
 
 
-static func player_visibility(sim: Sim, g) -> float:
+static func player_visibility(sim: Sim, g: Entities.Guard) -> float:
 	if g.true_sight:
 		return 1.0
 	return 0.25 + 0.75 * sim.cur_map().light_at(sim.player.x, sim.player.y)

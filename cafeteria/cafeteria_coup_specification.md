@@ -1,6 +1,6 @@
 # Game Specification: Cafeteria Coup
 
-> **Status:** A playable **Chapter 1 vertical slice** now exists at `cafeteria/index.html`. Open it directly in a browser; there's no build step and no server. §1–§16 are the design as written. **§17 describes what was actually built**, including where the build had to settle something the design left open or contradictory. The source pitch is `localforge/examples/cafeteria_coup_game_design.md`, and everything in it stays **canon**. Additions on top of it are tagged **(new)**.
+> **Status:** A playable **Chapter 1 vertical slice** exists as a **Godot 4.7 project** at `cafeteria/game/`. See `cafeteria/game/README.md` for how to open, play, test and export it. §1–§16 are the design as written. **§17 describes what was actually built**, including where the build had to settle something the design left open or contradictory. **§18 covers the move from the first web prototype to Godot.** The source pitch is `localforge/examples/cafeteria_coup_game_design.md`, and everything in it stays **canon**. Additions on top of it are tagged **(new)**.
 
 ---
 
@@ -543,7 +543,7 @@ Library Intel and the Clocktower key site are cuttable from the first slice (sta
 
 ## 17. Chapter 1 Slice — As Built
 
-`cafeteria/index.html` is a single file of about 2,900 lines: vanilla canvas plus a little DOM for the panels. It has the same separation as `weather/` and `capsize/`. A fixed 20 Hz simulation (`tick()`) owns all state in one `G` object, and `render()` only reads it. `cafeteria/verify.cjs` drives it headlessly (§17.6).
+The slice was first built as a single-file web prototype (`cafeteria/index.html`, now retired, see §18) and then ported to Godot 4.7 with the same rules and numbers. Everything in §17.1–§17.5 holds for both. A fixed 20 Hz simulation owns all state, and the views only read it.
 
 ### 17.1 What's in, what's cut
 * **In:**
@@ -622,22 +622,58 @@ A bot walked each route at a fixed pace, with no waiting and no hiding. "Spotted
 That is the intended shape. The approach is readable. Gilt's study is a timing puzzle set by office hours. Getting the relic *out* is the hard part, and the tools the design built for it work: the Vacuum, the library route, and timing the gallery patrol (or knocking him out). The ground-floor exit is still the hardest leg against a bot that won't wait. That is the first thing to watch in a human playtest.
 
 ### 17.6 Verification
-`NODE_PATH=$(npm root -g) node cafeteria/verify.cjs [--shots]` runs 35 checks in headless Chromium:
+`cafeteria/game/tools/run_tests.sh` runs the Godot suite headlessly: **49 checks**, and the run fails on any engine or script error.
 * **Map integrity:** links pair up, every guard waypoint is walkable and reachable across floors, and the vault can be reached from the quad.
-* **Real input:** title click, WASD, Tab, E, and the shop.
+* **Real input through the InputMap:** movement, Tab, E, and the shop's buttons.
 * **Every combo in the §5.5 table,** plus the heat-rune reactions.
-* **The Alibi Engine:** a clean alibi, a missing alibi, the at-scene rule, and the Vacuum crossing floors.
+* **The Alibi Engine:** a clean alibi, a missing alibi, and the Vacuum crossing floors.
 * **Office hours,** and Gilt counting as a credibility-4 witness.
-* **Ledger → countermeasures → Act 3:** helmets block the crowbar, earmuffs block noise, runes and sap are placed, and a ward-line in the vault spoils the return.
-* **Duels:** learning on a loss, and attunement.
-* **The trial:** insider line, punctuation, and a clean shatter.
-* **No console errors.**
+* **Ledger → countermeasures → Act 3,** duels, the trial, and a sim-tick performance check (about 1.8 ms against a 50 ms budget).
+* **The whole chapter played through the in-game E prompts:** gate → vent → dumbwaiter → servant stair → snip → vault → back down the stairs → snobs and duels → Return Trip → clean return → trial shattered → end screen.
 
-`--shots` writes screenshots to `cafeteria/shots/`, which git ignores.
+`run_tests.sh --shots` also writes screenshots to `cafeteria/game/shots/`, using xvfb-run when it's available.
 
 ### 17.7 Open threads (slice)
 * **Balance is untested against a human.** §17.5 is a blind bot. Start with the ground-floor exit and the gallery patrol.
 * **Guards path around objects but don't collide with them in motion.** A sliding crate can overlap a walking guard without a KO if it's slow.
 * **Things guards ignore:** doors you leave open, an emptied pedestal, and a cut window. Only people, bodies, noise and ward-lines alert them. "The vault door is open" should probably make a guard curious.
-* **No hiding bodies, no saving, no minimap,** and no touch controls.
+* **No hiding bodies, no saving, no minimap,** no settings or rebinding menu (the actions are rebindable, but there's no screen for it yet), and no touch controls.
 * **Audio is minimal:** synthesized blips that follow noise loudness.
+
+---
+
+## 18. Move to Godot (new)
+
+The web prototype proved the systems. A game meant for publication needs an engine that exports to Windows, Mac and Linux (Steam), keeps a web build as an option, and doesn't make the art pass a rewrite. Chapter 1 now lives in `cafeteria/game/`, a Godot 4.7 project. The web prototype (`cafeteria/index.html` and its `verify.cjs`) was removed once the port matched it. It remains in git history.
+
+### 18.1 Why Godot
+* MIT-licensed, with no royalties or seat fees.
+* 2D-first.
+* Text-based scenes and scripts that diff cleanly in git.
+* Exports to every desktop platform and the web. Consoles go through porting partners.
+* It runs headlessly, so the test suite runs anywhere.
+* The repo's sprite pipeline (`assets/outputs/*.import`) was already producing Godot import files.
+
+### 18.2 Layout
+| Path | What it is |
+|---|---|
+| `data/maps/*.txt` | The four maps, one character per tile, same legend as before. Rows are padded on load, so editors that strip trailing spaces can't break them. |
+| `data/content.json` | All writing: roasts, comebacks, Gilt's lines, snobs, duelists, notices, countermeasures, the shop. |
+| `data/world.json` | Layout data: map metadata, links, guard routes and night variants, spawn points, prop masses. |
+| `scripts/core/` | Constants (`consts.gd`), the data loader, the map model with the light map, entities, the multi-floor pathfinder. |
+| `scripts/sim/sim.gd` | The `Sim` node: all game state and the fixed 20 Hz tick. |
+| `scripts/systems/` | Game rules as static modules taking the `Sim`: guards, perception, hub NPCs, physics, player, spells, Alibi, interactions, dialogue, stage flow. |
+| `scripts/view/` | Placeholder art and UI: world, darkness and light, the readability layer, HUD, menus, synthesized sound. |
+| `scripts/tests/`, `tools/run_tests.sh` | The headless suite. |
+
+### 18.3 What the port changes, and what it keeps
+* **Logic is a 1:1 translation.** Every rule, constant and line of writing from §17 is unchanged. The suite re-proves the same behaviour, plus the full playthrough the web build was only checked by hand.
+* **Logic and drawing are separate.** Views read the `Sim` and nothing in `scripts/systems/` draws. Real art replaces `scripts/view/` (most naturally a TileMapLayer per floor plus sprites) without touching game rules.
+* **Input goes through InputMap actions** (`scripts/input_setup.gd`), so a rebinding screen only has to edit those actions. Sneak stays on C.
+* **Display is 1280×720 at 16:9,** using `canvas_items` stretch with an expanding aspect, and the camera zoomed 1.25×. That shows slightly more of the map than the web build's 960×640.
+* **The renderer is GL Compatibility,** so the same project runs on older hardware and in a web export.
+
+### 18.4 Before a release, still to do
+* Art, music and sound to replace the placeholders, and export presets (Windows, Linux, macOS, Web) committed once export templates are installed.
+* A settings screen (key rebinding, volume, window mode) and a save system.
+* A human balance pass, still the first item from §17.7.

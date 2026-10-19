@@ -26,9 +26,9 @@ var maps := {}                          # id -> GameMap
 var links := {}                         # digit -> [{"map","x","y"}, {"map","x","y"}]
 var link_state := {}                    # digit -> {"locked": bool}
 var player := Entities.Player.new()
-var guards: Array = []                  # Entities.Guard (Gilt included, archmage = true)
+var guards: Array[Entities.Guard] = []  # Gilt included (archmage = true)
 var gilt: Entities.Guard
-var npcs: Array = []                    # Entities.Npc
+var npcs: Array[Entities.Npc] = []
 var noise_rings: Array = []
 var toasts: Array = []
 var particles: Array = []
@@ -87,7 +87,7 @@ func build_tower(is_night: bool) -> void:
 	var opts := {"heat_runes": is_night and cms.has("heatRunes"), "sap": is_night and cms.has("sap"), "wanted": heat >= 60.0}
 	for id in Content.world["tower_maps"]:
 		maps[id] = GameMap.build(id, opts)
-	guards = []
+	guards.clear()
 	for d in Content.world["guards"]:
 		if d.has("cm") and not (is_night and cms.has(d["cm"])):
 			continue

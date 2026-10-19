@@ -54,7 +54,7 @@ static func build(sim: Sim) -> void:
 		sim.npcs.append(n)
 
 
-static func present(sim: Sim, n) -> bool:
+static func present(sim: Sim, n: Entities.Npc) -> bool:
 	if n.kind == "gilt":
 		return sim.is_office_hours()
 	if n.kind == "prefect":

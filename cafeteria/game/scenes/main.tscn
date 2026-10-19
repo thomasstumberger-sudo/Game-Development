@@ -1,0 +1,59 @@
+[gd_scene load_steps=9 format=3]
+
+[ext_resource type="Script" path="res://scripts/main.gd" id="1_main"]
+[ext_resource type="Script" path="res://scripts/sim/sim.gd" id="2_sim"]
+[ext_resource type="Script" path="res://scripts/view/world_view.gd" id="3_world"]
+[ext_resource type="Script" path="res://scripts/view/darkness_view.gd" id="4_dark"]
+[ext_resource type="Script" path="res://scripts/view/above_view.gd" id="5_above"]
+[ext_resource type="Script" path="res://scripts/view/hud.gd" id="6_hud"]
+[ext_resource type="Script" path="res://scripts/view/ui.gd" id="7_ui"]
+[ext_resource type="Script" path="res://scripts/view/sfx.gd" id="8_sfx"]
+
+[node name="Main" type="Node"]
+script = ExtResource("1_main")
+
+[node name="Sim" type="Node" parent="."]
+script = ExtResource("2_sim")
+
+[node name="World" type="Node2D" parent="."]
+script = ExtResource("3_world")
+
+[node name="Darkness" type="Node2D" parent="."]
+texture_filter = 2
+script = ExtResource("4_dark")
+
+[node name="Above" type="Node2D" parent="."]
+script = ExtResource("5_above")
+
+[node name="Camera" type="Camera2D" parent="."]
+zoom = Vector2(1.25, 1.25)
+position_smoothing_enabled = true
+position_smoothing_speed = 6.0
+
+[node name="HUD" type="CanvasLayer" parent="."]
+
+[node name="HudView" type="Control" parent="HUD"]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+script = ExtResource("6_hud")
+
+[node name="UI" type="CanvasLayer" parent="."]
+layer = 2
+
+[node name="UiRoot" type="Control" parent="UI"]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+script = ExtResource("7_ui")
+
+[node name="Sfx" type="Node" parent="."]
+script = ExtResource("8_sfx")
